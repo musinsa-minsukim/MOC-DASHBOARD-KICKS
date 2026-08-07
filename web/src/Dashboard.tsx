@@ -390,7 +390,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
         const a = Math.max(0, Math.min(1, (p.value || 0) / brandMaxRatio));
         const [base, scale] = dark ? [0.14, 0.46] : [0.06, 0.5];
         const rgb = dark ? "129,140,248" : "99,102,241";
-        return { textAlign: "right", backgroundColor: `rgba(${rgb},${(base + scale * a).toFixed(3)})`, color: dark ? "#e2e8f0" : undefined, fontWeight: a > 0.55 ? 600 : 400 };
+        return { textAlign: "right", backgroundColor: `rgba(${rgb},${(base + scale * a).toFixed(3)})`, ...(dark ? { color: "#e2e8f0" } : {}), fontWeight: a > 0.55 ? 600 : 400 };
       },
     }),
     [brandMaxRatio, dark]

@@ -2,9 +2,10 @@ name: Deploy to Cloud Run
 
 # 무신사 오프라인 대시보드 자동배포 (기존 라이브 서비스 musinsa-dashboard).
 # - 트리거: main 브랜치 push (또는 수동 실행).
+# - 게이트: test 잡(타입체크 tsc + 프론트 빌드 + 파이썬 문법)이 통과해야만 deploy 실행.
+#   → "프론트 고치면 다른 뷰 깨짐 / 백엔드 고치면 값 틀어짐" 류 회귀를 배포 전에 차단.
 # - 인증: Workload Identity Federation (장기 키 파일 없음).
-# - 배포: `gcloud run deploy --source .` → Cloud Build가 Dockerfile로 빌드.
-#   기존 서비스 설정(메모리 4Gi/CPU1/min0·max1·시크릿·GCS볼륨)은 그대로 보존 → scale-to-zero 무료 유지.
+# - 배포: `gcloud run deploy --source .` → 기존 서비스 설정(4Gi/CPU1/min0·max1·시크릿·GCS볼륨) 보존 = 무료 유지.
 # - ⚠️ 데이터 갱신(mode=full, 8Gi 필요)은 이 파이프라인과 무관 — Scheduler/수동으로 별도 수행.
 # 최초 1회 설정: GITHUB-SETUP.md 참조.
 
@@ -15,14 +16,50 @@ on:
 
 permissions:
   contents: read
-  id-token: write          # WIF OIDC 토큰 발급
+  id-token: write          # WIF OIDC 토큰 발급 (deploy 잡)
 
 concurrency:
   group: deploy-prod
   cancel-in-progress: false  # 배포 중복 방지(진행 중이면 대기)
 
 jobs:
+  # ── 배포 전 검증 게이트 ────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck (tsc --noEmit)   # 타입/props 회귀 → 다른 뷰 깨짐 차단
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Frontend build
+        working-directory: web
+        run: npm run build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python syntax check (backend)   # db/api/store 등 문법오류 배포 전 차단
+        run: python -m compileall -q api.py db.py store.py drill.py cmptab.py invtab.py prodmeta.py daily.py serve.py
+
+  # ── 배포 (게이트 통과 시에만) ──────────────────────────
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

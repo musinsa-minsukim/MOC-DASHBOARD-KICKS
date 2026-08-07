@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import { ModuleRegistry, AllCommunityModule, themeQuartz } from "ag-grid-community";
-import type { ColDef } from "ag-grid-community";
+import type { ColDef, CellStyle } from "ag-grid-community";
 import { Pin, ChevronUp, ChevronDown } from "lucide-react";
 import { won as wonFmt, num as numFmt, compact as compactFmt } from "./lib";
 
@@ -118,7 +118,7 @@ export function colNum(field: string, header: string, fmt: Fmt = "num", opts: Pa
 export function colRatio(field: string, header: string, opts: Partial<ColDef> = {}): ColDef {
   return {
     field, headerName: header, type: "numericColumn", minWidth: 84,
-    cellStyle: (p: any) => {
+    cellStyle: (p: any): CellStyle => {
       const v = p.value;
       if (typeof v !== "string") return { textAlign: "right" };
       let color = "var(--ratio-neutral)";
