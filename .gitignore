@@ -1,0 +1,25 @@
+# ── 시크릿 (절대 커밋 금지) ──────────────────────────────
+auth_config.yaml
+INITIAL_LOGIN.txt
+.streamlit/secrets.toml
+*.env
+.env*
+
+# ── 런타임 데이터 캐시 (parquet) ─────────────────────────
+cache/
+
+# ── Python ──────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ── Node / 프론트 빌드 ──────────────────────────────────
+web/node_modules/
+web/dist/
+web/dev-dist/
+
+# ── 기타 ────────────────────────────────────────────────
+.DS_Store
+*.log

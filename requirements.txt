@@ -1,0 +1,8 @@
+streamlit>=1.40
+databricks-sql-connector>=3.4
+pandas>=2.0
+plotly>=5.20
+truststore>=0.9
+duckdb>=1.0
+streamlit-authenticator>=0.4
+PyYAML>=6.0

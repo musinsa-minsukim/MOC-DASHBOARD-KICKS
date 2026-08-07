@@ -1,0 +1,221 @@
+@import "tailwindcss";
+
+/* 클래스 기반 다크모드: <html class="dark"> 일 때 dark: 변형 적용 (Tailwind v4) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ───────────── 디자인 토큰 (Tailwind v4 @theme) ─────────────
+   여기서 토큰만 바꿔도 기존 유틸 클래스(rounded-*, font-sans)가 일괄 갱신된다. */
+@theme {
+  /* 타이포 — Inter(라틴·숫자) → Pretendard(한글) 폴백 체인 */
+  --font-sans: "Inter Variable", "Pretendard Variable", Pretendard, ui-sans-serif, system-ui,
+    -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+
+  /* 보더 라운드 — 트렌디하고 일관된 스케일 (8 / 10 / 14 / 18px) */
+  --radius-md: 0.5rem;     /* 8  — 작은 요소 */
+  --radius-lg: 0.625rem;   /* 10 — 버튼·칩·인풋 */
+  --radius-xl: 0.875rem;   /* 14 — 카드 */
+  --radius-2xl: 1.125rem;  /* 18 — 큰 패널 */
+}
+
+/* ───────────── 시맨틱 컬러 / 그림자 (라이트) ───────────── */
+:root {
+  --brand: #4f46e5;
+  --ring: 79 70 229; /* rgb — 포커스/셀렉션 알파용 */
+
+  /* recharts 인라인 스타일용(기존 유지) */
+  --grid: #eef2f7;
+  --axis: #94a3b8;
+  --tt-bg: #ffffff;
+  --tt-border: #e2e8f0;
+  --tt-fg: #475569;
+
+  /* 신장율/증감 셀 색 (colRatio) — 라이트 */
+  --ratio-up: #16a34a;
+  --ratio-down: #dc2626;
+  --ratio-new: #2563eb;
+  --ratio-neutral: #94a3b8;
+
+  /* 프리미엄 소프트 섀도 — 저스프레드 + 미세 틴트의 다층 그림자 */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 2px 6px rgba(15, 23, 42, 0.05);
+  --shadow-card-hover: 0 2px 6px rgba(15, 23, 42, 0.06), 0 12px 26px -10px rgba(15, 23, 42, 0.14);
+  --shadow-pop: 0 10px 30px -8px rgba(15, 23, 42, 0.22), 0 2px 8px rgba(15, 23, 42, 0.08);
+
+  --bg: #f6f7f9;
+}
+html.dark {
+  --brand: #818cf8;
+  --ring: 129 140 248;
+
+  --grid: #1e293b;
+  --axis: #64748b;
+  --tt-bg: #0f172a;
+  --tt-border: #334155;
+  --tt-fg: #cbd5e1;
+
+  /* 신장율/증감 셀 색 (colRatio) — 다크(밝게) */
+  --ratio-up: #4ade80;
+  --ratio-down: #f87171;
+  --ratio-new: #60a5fa;
+  --ratio-neutral: #94a3b8;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.26);
+  --shadow-card-hover: 0 2px 8px rgba(0, 0, 0, 0.32), 0 14px 30px -10px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 12px 34px -8px rgba(0, 0, 0, 0.6), 0 2px 10px rgba(0, 0, 0, 0.4);
+
+  --bg: #0b1220;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: #1e293b;
+  font-family: var(--font-sans);
+  letter-spacing: -0.011em; /* 라틴/한글 모두 살짝 조여 고급스러운 밀도 */
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+html.dark body {
+  color: #e2e8f0;
+}
+* {
+  box-sizing: border-box;
+}
+
+/* 제목 계층 — 디스플레이는 트래킹을 더 타이트하게 (본문 대비 강한 위계) */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.021em;
+}
+
+/* 숫자 정렬 — 표/그리드 셀은 고정폭 숫자로 자릿수 정렬 */
+.ag-cell {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* 합계(총계) 행 강조 — rowData 최상단 고정 행(__muTotal) */
+.ag-row.mu-total {
+  font-weight: 700;
+  background-color: #f8fafc;
+}
+html.dark .ag-row.mu-total {
+  background-color: #111c31;
+}
+.ag-row.mu-total .ag-cell {
+  border-top: 1px solid var(--tt-border);
+  border-bottom: 1px solid var(--tt-border);
+}
+
+/* 드래그 범위 선택 하이라이트 (엑셀식 직사각형 복사) */
+.ag-cell.mu-range {
+  background-color: rgb(var(--ring) / 0.16) !important;
+}
+/* 선택된 열의 헤더 하이라이트 (복사 시 헤더 포함됨을 시각화) */
+.ag-header-cell.mu-hcol {
+  background-color: rgb(var(--ring) / 0.16);
+}
+
+/* 포커스 — 키보드 포커스에만 브랜드 링(마우스 클릭 시엔 안 뜸). 인풋은 자체 ring 사용 */
+:where(a, button, [role="button"], summary):focus-visible {
+  outline: 2px solid rgb(var(--ring) / 0.85);
+  outline-offset: 2px;
+}
+:where(input, textarea, select):focus-visible {
+  outline: none;
+}
+
+/* 텍스트 선택 색 — 브랜드 틴트 */
+::selection {
+  background: rgb(var(--ring) / 0.22);
+}
+
+/* 플레이스홀더 */
+::placeholder {
+  color: #94a3b8;
+  opacity: 1;
+}
+html.dark ::placeholder {
+  color: #475569;
+}
+
+/* 스크롤바 — 얇고 은은하게, hover 시 진해짐 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+  border: 2.5px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+  background-clip: padding-box;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: #334155;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+html.dark * {
+  scrollbar-color: #334155 transparent;
+}
+
+/* ───────────── 마이크로 인터랙션 키프레임 ───────────── */
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-pop {
+  animation: popIn 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: top;
+}
+.animate-rise {
+  animation: fadeInUp 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 모션 최소화 선호 존중 (접근성) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

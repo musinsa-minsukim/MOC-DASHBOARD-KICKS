@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.pyc
+cache/
+web/node_modules
+web/dist
+web/dev-dist
+.streamlit/secrets.toml
+auth_config.yaml
+INITIAL_LOGIN.txt
+*.env
+.env*
+*.log
