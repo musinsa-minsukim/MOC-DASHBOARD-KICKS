@@ -214,6 +214,24 @@ def _settlement_totals(f: dict):
     return _num(r.nt), _num(r.cp)
 
 
+def _settlement_by_brand(f: dict) -> dict:
+    """필터 하에서 (사업구분, 브랜드)별 net_take·cp 합. settlement는 goods 단위라
+       sales의 goods→(사업구분,브랜드) 매핑으로 집계. {(business_type, brand_nm): (net_take, cp)}."""
+    try:
+        wsales, psales = build_where(f)
+        wstl, pstl = build_where_settlement(f)
+        df = store.query(f"""
+            WITH gb AS (SELECT DISTINCT goods_no, business_type, brand_nm FROM sales{wsales}),
+                 st AS (SELECT goods_no, sum(net_take) nt, sum(cp) cp FROM settlement{wstl} GROUP BY goods_no)
+            SELECT gb.business_type, gb.brand_nm,
+                   CAST(sum(st.nt) AS DOUBLE) net_take, CAST(sum(st.cp) AS DOUBLE) cp
+            FROM gb JOIN st ON st.goods_no = gb.goods_no
+            GROUP BY 1, 2""", psales + pstl)
+    except Exception:
+        return {}
+    return {(r.business_type, r.brand_nm): (_num(r.net_take), _num(r.cp)) for r in df.itertuples()}
+
+
 def _aov(f: dict):
     """receipts 뷰에서 객단가 계산(전체/내국인/외국인). receipts 캐시가 아직 없으면 None."""
     try:
@@ -783,6 +801,12 @@ def sales_brands(f: dict = Depends(get_filters),
                     "goods": int(_num(r.goods)),
                     "discount_rate": (1 - gmv / normal) * 100 if normal else 0,
                     "foreign_ratio": (fgn / gmv * 100) if gmv else 0})
+    # 순이익(Net Take)·공헌이익(CP) 브랜드 합 (settlement, editorial_summary_v)
+    stl = _settlement_by_brand(f)
+    for r in out:
+        nc = stl.get((r["business_type"], r["brand_nm"]))
+        r["net_take"] = nc[0] if nc else None
+        r["cp"] = nc[1] if nc else None
     # 점별 재고(브랜드 합) 부여 (#2)
     store_cols = prodmeta.store_columns()
     stk = prodmeta.stock_by_brand([r["brand_nm"] for r in out])

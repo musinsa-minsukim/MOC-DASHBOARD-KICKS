@@ -46,6 +46,8 @@ const BRAND_COLS = [
   colNum("gmv", "GMV", "compact"),
   colNum("normal_amt", "정상가매출", "compact"),
   colNum("pay", "실결제", "compact"),
+  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = editorial_summary_v.profit · 미커버 브랜드는 공란 · 원천 ~1일 지연" }),
+  colNum("cp", "공헌이익(CP)", "compact", { minWidth: 104, headerTooltip: "공헌이익(CP) = contribution_profit_pre · 매장 고정비 배부값이라 음수 가능·최근 ~2개월 잠정" }),
   colNum("foreign_gmv", "외국인GMV", "compact"),
   colNum("foreign_ratio", "외국인비중", "num", { valueFormatter: pct0 }),
   colNum("discount_rate", "할인율", "num", { valueFormatter: pct1 }),
@@ -245,10 +247,11 @@ function SectionStat({ cur, byBiz }: { cur: Summary | null; byBiz: any[] }) {
 }
 
 function brandCsv(rows: any[], storeCols: string[] = []) {
-  const head = ["사업구분", "브랜드", "상품수", "순판매수량", "GMV", "정상가매출", "실결제", "외국인GMV", "외국인비중%", "할인율%", ...storeCols];
+  const head = ["사업구분", "브랜드", "상품수", "순판매수량", "GMV", "정상가매출", "실결제", "순이익(NetTake)", "공헌이익(CP)", "외국인GMV", "외국인비중%", "할인율%", ...storeCols];
   const esc = (v: any) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const won0 = (v: any) => (v == null ? "" : Math.round(v));
   const lines = [head.join(",")];
-  for (const r of rows) lines.push([r.business_type, r.brand_nm, r.goods, Math.round(r.qty), Math.round(r.gmv), Math.round(r.normal_amt), Math.round(r.pay), Math.round(r.foreign_gmv), r.foreign_ratio.toFixed(1), r.discount_rate.toFixed(1), ...storeCols.map((s) => Math.round(r[s] || 0))].map(esc).join(","));
+  for (const r of rows) lines.push([r.business_type, r.brand_nm, r.goods, Math.round(r.qty), Math.round(r.gmv), Math.round(r.normal_amt), Math.round(r.pay), won0(r.net_take), won0(r.cp), Math.round(r.foreign_gmv), r.foreign_ratio.toFixed(1), r.discount_rate.toFixed(1), ...storeCols.map((s) => Math.round(r[s] || 0))].map(esc).join(","));
   const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "offline_sales_by_brand.csv"; a.click(); URL.revokeObjectURL(a.href);
 }
