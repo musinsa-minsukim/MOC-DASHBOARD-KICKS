@@ -1,0 +1,71 @@
+name: Refresh sales (hourly)
+
+# 가벼운 "매시 판매 갱신"(판매·영수증 증분만)을 GitHub Actions에서 실행 — 시간대별 매출·객단가 최신화.
+# full(재고·상품·고객·국가별)은 별도 워크플로(refresh.yml, 매일 07:00). 여기선 sales+receipts만.
+# ⚠️ GitHub cron은 부정확(밀리거나 스킵 가능) — 정확한 시각이 중요하면 Cloud Scheduler→Cloud Run 유지가 나음.
+# 이 워크플로 도입 시 Cloud Scheduler의 mok-refresh-sales 잡은 pause(중복 방지).
+# 성능: 전체 캐시 대신 sales/receipts/_meta 3개 파일만 동기화 → 빠르고 Actions 분 절약.
+
+on:
+  schedule:
+    - cron: "25 2-14 * * *"   # 매시 25분(KST 11:25~23:25 = UTC 02:25~14:25) · 영업시간대
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: data-refresh          # refresh.yml(full)과 같은 그룹 → 동시 실행 방지(파일 충돌 방지)
+  cancel-in-progress: false
+
+jobs:
+  refresh-sales:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Download sales/receipts cache only
+        run: |
+          mkdir -p cache
+          B="gs://${{ vars.GCS_CACHE_BUCKET }}"
+          gcloud storage cp "$B/sales.parquet" "$B/receipts.parquet" "$B/_meta.json" ./cache/ || true
+
+      - name: Run sales refresh (증분)
+        env:
+          WAREHOUSE_CACHE: ${{ github.workspace }}/cache
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: python refresh.py          # 인자 없음 = 판매·영수증 증분만 (스냅샷 미포함)
+
+      - name: Upload sales/receipts cache only
+        run: |
+          B="gs://${{ vars.GCS_CACHE_BUCKET }}"
+          gcloud storage cp ./cache/sales.parquet ./cache/receipts.parquet ./cache/_meta.json "$B/"
+
+      - name: Slack notify — 실패 시에만
+        if: failure()
+        run: |
+          curl -s -X POST -H 'Content-type: application/json' "${{ secrets.SLACK_WEBHOOK_URL }}" -d @- <<EOF
+          {"text":":x: 무신사 대시보드 *매시 판매 갱신 실패* — <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|로그 확인>"}
+          EOF
