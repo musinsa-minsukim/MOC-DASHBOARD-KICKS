@@ -1,0 +1,81 @@
+name: Refresh data (daily full)
+
+# 무거운 "전체 갱신"(판매 증분 + 재고·상품·고객·입객·국가별 스냅샷)을 GitHub 16GB 러너에서 실행.
+# → Cloud Run 4Gi의 OOM(8/3 동결) 문제 해결. Cloud Run은 조회 서빙만 담당.
+# 흐름: GCS 캐시 다운로드 → Databricks 재조회로 parquet 재생성 → GCS 업로드 → 슬랙 알림(성공/실패).
+# ⚠️ 가벼운 "매시 판매 갱신"은 그대로 Cloud Scheduler → Cloud Run(4Gi)이 담당(정밀 시각).
+#    이 워크플로 도입 후 Cloud Scheduler의 mok-refresh-full 잡은 pause 하세요(중복 방지).
+
+on:
+  schedule:
+    - cron: "0 22 * * *"    # 07:00 KST (UTC+9) 매일 — 필요 시 분/시 조정
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write            # WIF (GCS 읽기/쓰기)
+
+concurrency:
+  group: data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Download current cache from GCS
+        run: |
+          mkdir -p cache
+          gcloud storage rsync --recursive "gs://${{ vars.GCS_CACHE_BUCKET }}" ./cache || true
+
+      - name: Run full refresh (판매 증분 + 스냅샷 전체)
+        id: refresh
+        env:
+          WAREHOUSE_CACHE: ${{ github.workspace }}/cache
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: python refresh.py --snapshots
+
+      - name: Upload refreshed cache to GCS
+        run: gcloud storage rsync --recursive ./cache "gs://${{ vars.GCS_CACHE_BUCKET }}"
+
+      - name: Capture freshness
+        if: always()
+        run: |
+          echo "MAXDATE=$(WAREHOUSE_CACHE=./cache python -c "import store;print(store.status().get('sales_max_date','?'))" 2>/dev/null || echo '?')" >> "$GITHUB_ENV"
+
+      - name: Slack notify — 성공
+        if: success()
+        run: |
+          curl -s -X POST -H 'Content-type: application/json' "${{ secrets.SLACK_WEBHOOK_URL }}" -d @- <<EOF
+          {"text":":white_check_mark: 무신사 대시보드 데이터 갱신 *성공* — 판매 \`${MAXDATE:-?}\`까지 · <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|실행 로그>"}
+          EOF
+
+      - name: Slack notify — 실패
+        if: failure()
+        run: |
+          curl -s -X POST -H 'Content-type: application/json' "${{ secrets.SLACK_WEBHOOK_URL }}" -d @- <<EOF
+          {"text":":x: 무신사 대시보드 데이터 갱신 *실패* — <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|로그에서 원인 확인>"}
+          EOF
