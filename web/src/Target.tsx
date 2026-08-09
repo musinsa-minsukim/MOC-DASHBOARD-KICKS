@@ -51,16 +51,16 @@ export default function Target({ meta, dark }: { meta: Meta; dark: boolean }) {
   const cols = useMemo(() => [
     colText("shop_type", "채널", { pinned: "left", minWidth: 92, valueGetter: (p: any) => (p.data?.__muTotal ? "" : p.data?.shop_type) }),
     colText("store_name", "매장명", { pinned: "left", minWidth: 178, cellRenderer: (p: any) => (p.data?.__muTotal ? "합계" : (<span><span style={{ color: rc(p.data?.rate_mtd ?? 0), marginRight: 6 }}>●</span>{p.data?.store_name}</span>)) }),
+    colNum("pm_actual", "전월실적", "compact", { minWidth: 100 }),
     colNum("goal_full", "월목표", "compact", { minWidth: 100 }),
-    colNum("goal_day", "전일목표", "compact", { minWidth: 96 }),
-    colNum("actual_day", "전일실적", "compact", { minWidth: 96 }),
-    rateCol("rate_day", "달성율"),
-    colNum("goal_mtd", "누계목표", "compact", { minWidth: 100 }),
-    colNum("actual_mtd", "당월누계", "compact", { minWidth: 100 }),
-    rateCol("rate_mtd", "누계달성율", 100),
     colNum("proj", "예상마감금액", "compact", { minWidth: 112 }),
     rateCol("proj_rate", "예상달성율", 100),
-    colNum("pm_actual", "전월실적", "compact", { minWidth: 100 }),
+    colNum("goal_mtd", "당월누계목표", "compact", { minWidth: 114 }),
+    colNum("actual_mtd", "당월누계실적", "compact", { minWidth: 114 }),
+    rateCol("rate_mtd", "누계달성율", 100),
+    colNum("goal_day", "일목표", "compact", { minWidth: 96 }),
+    colNum("actual_day", "전일실적", "compact", { minWidth: 96 }),
+    rateCol("rate_day", "전일달성율", 100),
     colNum("py_actual", "전년동월실적", "compact", { minWidth: 112 }),
   ], [dark]); // eslint-disable-line react-hooks/exhaustive-deps
 
