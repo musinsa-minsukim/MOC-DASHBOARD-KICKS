@@ -331,6 +331,12 @@ def load_goods_master() -> pd.DataFrame:
           JOIN ocmp.moss.order_master om ON om.order_id = oo.order_id
           JOIN dim_store st ON st.shop_no = om.shop_no
           WHERE om.dummy_order = 0
+        ),
+        px AS (   -- 온라인 1차세일가(현재가) = 상품별 최신 1건 (channel_id=1). goods-master 스킬과 동일 정의.
+          SELECT CAST(goods_id AS BIGINT) AS goods_no, sale_price AS online_sale
+          FROM musinsa.itgg.goods_sale_price_changes
+          WHERE channel_id = 1
+          QUALIFY row_number() OVER (PARTITION BY goods_id ORDER BY created_at DESC) = 1
         )
         SELECT g.goods_no,
                ANY_VALUE(g.goods_nm) AS goods_nm,
@@ -338,10 +344,12 @@ def load_goods_master() -> pd.DataFrame:
                MIN(CAST(g.reg_dm AS DATE)) AS reg_date,
                ANY_VALUE(g.style_no) AS style_no,
                CAST(ANY_VALUE(g.normal_price) AS DOUBLE) AS normal_price,
-               CAST(ANY_VALUE(g.price)        AS DOUBLE) AS sale_price
+               -- 판매가 = 온라인 1차세일가(goods_sale_price_changes), 이력 없으면 bizest price→정상가 폴백
+               CAST(COALESCE(ANY_VALUE(px.online_sale), ANY_VALUE(g.price), ANY_VALUE(g.normal_price)) AS DOUBLE) AS sale_price
         FROM musinsa.bizest.goods g
         JOIN sold sg ON CAST(g.goods_no AS BIGINT) = sg.goods_no
         LEFT JOIN musinsa.partnerportal.brand b ON b.brand = g.brand
+        LEFT JOIN px ON px.goods_no = CAST(g.goods_no AS BIGINT)
         GROUP BY g.goods_no
     """
     d = run_df(q)
@@ -351,7 +359,7 @@ def load_goods_master() -> pd.DataFrame:
     d["reg_date"] = pd.to_datetime(d["reg_date"], errors="coerce")  # 상품 등록일(reg_dm) — 신규 판정 기준
     d["style_no"] = d["style_no"].fillna("")
     d["normal_price"] = pd.to_numeric(d["normal_price"], errors="coerce").fillna(0.0)   # 현재 정상가
-    d["sale_price"] = pd.to_numeric(d["sale_price"], errors="coerce").fillna(0.0)       # 현재 판매가(bizest.goods.price)
+    d["sale_price"] = pd.to_numeric(d["sale_price"], errors="coerce").fillna(0.0)       # 판매가 = 온라인 1차세일가(폴백 bizest→정상가)
     return d
 
 
