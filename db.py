@@ -318,12 +318,13 @@ def load_concept_map() -> dict:
 
 @st.cache_data(ttl=86400, persist="disk", show_spinner=False)
 def load_goods_master() -> pd.DataFrame:
-    """상품 마스터: goods_no → goods_nm(상품명), brand_nm(브랜드명). 메인 소스 = musinsa.bizest.goods.
-    ⚠️ 오프라인에서 주문된 적 있는 goods_no만 적재(전 상품 600만 → 약 11만). sales/inventory/cmptab/
+    """상품 마스터: goods_no → goods_nm(상품명)·brand_nm(브랜드명)·정상가·판매가·style_no·등록일.
+    ⚠️ 오프라인에서 주문된 적 있는 goods_no만 적재(전 상품 600만 → 약 12만). sales/inventory/cmptab/
        prodmeta가 참조하는 건 '오프라인에서 팔린 상품'뿐이라(판매 행의 goods_no는 100% 이 집합에 포함)
        enrichment 결과는 동일하면서 메모리/스토리지를 ~52배 줄인다 → 작은 인스턴스 갱신(scale-to-zero) 가능.
-       (검증 2026-06-28: 최근 30일 판매 goods 29,803개 누락 0, 표본 속성 불일치 0)
-    brand_nm은 brand코드→partnerportal.brand 조인."""
+    다중소스 보강: sold 기준 LEFT JOIN → bizest.goods(메인) → itgg.goods(상품명/브랜드/가격 폴백) →
+       goods_sale_price_changes(온라인 1차세일가). bizest 누락 판매 goods도 통째 빠지지 않고 엔트리 생성.
+       판매가 = 온라인 1차세일가(폴백 bizest→itgg→정상가). brand_nm은 brand코드→partnerportal.brand 조인."""
     q = "WITH " + DIM_STORE + r""",
         sold AS (   -- 오프라인 매장에서 주문된 적 있는 goods (환불 goods 포함 위해 order_status 미필터, dummy 제외)
           SELECT DISTINCT CAST(oo.goods_no AS BIGINT) AS goods_no
@@ -332,25 +333,35 @@ def load_goods_master() -> pd.DataFrame:
           JOIN dim_store st ON st.shop_no = om.shop_no
           WHERE om.dummy_order = 0
         ),
-        px AS (   -- 온라인 1차세일가(현재가) = 상품별 최신 1건 (channel_id=1). goods-master 스킬과 동일 정의.
-          SELECT CAST(goods_id AS BIGINT) AS goods_no, sale_price AS online_sale
+        px AS (   -- 온라인 1차세일가·정상가(현재가) = 상품별 최신 1건 (channel_id=1). goods-master 스킬과 동일 정의.
+          SELECT CAST(goods_id AS BIGINT) AS goods_no, sale_price AS online_sale, basic_price AS online_basic
           FROM musinsa.itgg.goods_sale_price_changes
           WHERE channel_id = 1
           QUALIFY row_number() OVER (PARTITION BY goods_id ORDER BY created_at DESC) = 1
+        ),
+        ig AS (   -- 폴백 소스: bizest.goods에 없는 판매 goods의 상품명/브랜드명/가격 (goods_id별 최신 1건)
+          SELECT CAST(goods_id AS BIGINT) AS goods_no, goods_name AS goods_nm, brand_name AS brand_nm,
+                 basic_price AS ig_basic, sale_price AS ig_sale
+          FROM musinsa.itgg.goods
+          WHERE goods_id IS NOT NULL
+          QUALIFY row_number() OVER (PARTITION BY goods_id ORDER BY updated_at DESC) = 1
         )
-        SELECT g.goods_no,
-               ANY_VALUE(g.goods_nm) AS goods_nm,
-               ANY_VALUE(b.brand_nm) AS brand_nm,
-               MIN(CAST(g.reg_dm AS DATE)) AS reg_date,
+        -- sold 기준 LEFT JOIN + 다중소스 COALESCE → 오프라인 판매 goods는 100% 엔트리(누락 0).
+        SELECT sg.goods_no,
+               COALESCE(ANY_VALUE(g.goods_nm), ANY_VALUE(ig.goods_nm)) AS goods_nm,
+               COALESCE(ANY_VALUE(b.brand_nm), ANY_VALUE(ig.brand_nm)) AS brand_nm,
+               MIN(CAST(g.reg_dm AS DATE)) AS reg_date,          -- 등록일·스타일넘버는 bizest만 보유
                ANY_VALUE(g.style_no) AS style_no,
-               CAST(ANY_VALUE(g.normal_price) AS DOUBLE) AS normal_price,
-               -- 판매가 = 온라인 1차세일가(goods_sale_price_changes), 이력 없으면 bizest price→정상가 폴백
-               CAST(COALESCE(ANY_VALUE(px.online_sale), ANY_VALUE(g.price), ANY_VALUE(g.normal_price)) AS DOUBLE) AS sale_price
-        FROM musinsa.bizest.goods g
-        JOIN sold sg ON CAST(g.goods_no AS BIGINT) = sg.goods_no
+               CAST(COALESCE(ANY_VALUE(g.normal_price), ANY_VALUE(px.online_basic), ANY_VALUE(ig.ig_basic)) AS DOUBLE) AS normal_price,
+               -- 판매가 = 온라인 1차세일가 → bizest price → itgg sale → 정상가/basic 폴백 (모두 없으면 NULL)
+               CAST(COALESCE(ANY_VALUE(px.online_sale), ANY_VALUE(g.price), ANY_VALUE(ig.ig_sale),
+                             ANY_VALUE(g.normal_price), ANY_VALUE(px.online_basic), ANY_VALUE(ig.ig_basic)) AS DOUBLE) AS sale_price
+        FROM sold sg
+        LEFT JOIN musinsa.bizest.goods g ON CAST(g.goods_no AS BIGINT) = sg.goods_no
         LEFT JOIN musinsa.partnerportal.brand b ON b.brand = g.brand
-        LEFT JOIN px ON px.goods_no = CAST(g.goods_no AS BIGINT)
-        GROUP BY g.goods_no
+        LEFT JOIN px ON px.goods_no = sg.goods_no
+        LEFT JOIN ig ON ig.goods_no = sg.goods_no
+        GROUP BY sg.goods_no
     """
     d = run_df(q)
     d["goods_no"] = pd.to_numeric(d["goods_no"]).astype("int64")
