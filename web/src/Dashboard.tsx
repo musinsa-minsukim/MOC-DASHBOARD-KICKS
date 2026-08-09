@@ -65,9 +65,12 @@ const GOODS_COLS = [
   colNum("gmv", "GMV", "compact"),
   colNum("normal_amt", "정상가매출", "compact"),
   colNum("pay", "실결제", "compact"),
+  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = editorial_summary_v.profit · 미커버 상품은 공란" }),
+  colNum("cp", "공헌이익(CP)", "compact", { minWidth: 104, headerTooltip: "공헌이익(CP) = contribution_profit_pre · 매장 고정비 배부값이라 음수 가능·최근 ~2개월은 예측 잠정" }),
   colNum("foreign_gmv", "외국인GMV", "compact"),
   colNum("foreign_ratio", "외국인비중", "num", { valueFormatter: pct0 }),
   colNum("discount_rate", "할인율", "num", { valueFormatter: pct1 }),
+  colNum("op_stores", "운영중매장수", "int", { minWidth: 104, headerTooltip: "점재고 1개 이상 보유 매장 수(운영중) · 매장별 상세는 CSV" }),
   colNum("jaego", "점재고합계", "num"),
   colNum("hub", "허브합계", "num"),
 ];
@@ -82,6 +85,7 @@ type Meta = {
 type Summary = {
   gmv: number; qty: number; normal_amt: number; pay: number; foreign_gmv: number;
   goods_count: number; store_count: number; discount_rate: number; foreign_ratio: number;
+  net_take?: number; cp?: number; cp_rate?: number;   // 순이익(Net Take)·공헌이익(CP)·CP율 (settlement 캐시 있을 때만)
 };
 
 const PIE = ["#4f46e5", "#7c3aed", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#ec4899", "#64748b", "#94a3b8"];
@@ -278,7 +282,6 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   const [brands, setBrands] = useState<any[]>([]);
   const [brandSC, setBrandSC] = useState<string[]>([]);
   const [goods, setGoods] = useState<any[]>([]);
-  const [goodsSC, setGoodsSC] = useState<string[]>([]);
   const [footfall, setFootfall] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -323,7 +326,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       setByStore(val(3) ?? []); setByBiz(val(4) ?? []); setByBrand(val(5) ?? []);
       setCatTop(val(6) ?? []); setCatMed(val(7) ?? []);
       const bd = val(8) ?? {}; setBrands(bd.rows ?? []); setBrandSC(bd.store_cols ?? []);
-      const gd2 = val(9) ?? {}; setGoods(gd2.rows ?? []); setGoodsSC(gd2.store_cols ?? []);
+      const gd2 = val(9) ?? {}; setGoods(gd2.rows ?? []);
       setAov(val(10) ?? null); setAovPrev(val(11) ?? null);
       setHourly(val(12) ?? []);
       setFootfall(val(13) ?? null);
@@ -399,19 +402,19 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
     const base = [...BRAND_COLS];
     const gi = base.findIndex((c: any) => c.field === "gmv");
     if (gi >= 0) base.splice(gi + 1, 0, gmvRatioCol);
-    return [...base, ...brandSC.map((s) => colNum(s, s, "num", { minWidth: 84 }))];
-  }, [brandSC.join(","), gmvRatioCol]); // eslint-disable-line react-hooks/exhaustive-deps
+    return base;   // 점별 재고(피벗)는 화면에서 제외 — CSV에만 포함
+  }, [gmvRatioCol]);
   const goodsCols = useMemo(() => {
-    const storeCols = goodsSC.map((s) => colNum(s, s, "num", { minWidth: 84 }));
-    if (!isNarrow) return [...GOODS_COLS, ...storeCols];
+    // 점별 재고 피벗 열은 화면에서 제외(운영중매장수·점재고합계로 요약, 매장별 상세는 CSV).
+    if (!isNarrow) return GOODS_COLS;
     // 모바일: 좌측고정 해제 + 핵심 열(상품·GMV·순판매·할인율) 우선, 나머지는 뒤로 가로 스크롤
     const unpin = (c: any) => ({ ...c, pinned: null });
     const pick = (f: string) => unpin(GOODS_COLS.find((c: any) => c.field === f));
     const primaryF = ["goods_nm", "gmv", "qty", "discount_rate"];
     const primary = [{ ...pick("goods_nm"), minWidth: 150 }, pick("gmv"), pick("qty"), pick("discount_rate")];
     const rest = GOODS_COLS.filter((c: any) => !primaryF.includes(c.field)).map(unpin);
-    return [...primary, ...rest, ...storeCols];
-  }, [goodsSC.join(","), isNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
+    return [...primary, ...rest];
+  }, [isNarrow]);
 
   return (
     <div className="space-y-5">
@@ -437,6 +440,19 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
         <Kpi icon={<ShoppingBag size={16} />} label="순판매수량" value={cur ? num(cur.qty) : "—"} delta={cur && prev ? pctDelta(cur.qty, prev.qty) : null} />
         <Kpi icon={<Globe size={16} />} label="외국인 매출(면세)" value={cur ? won(cur.foreign_gmv) : "—"} delta={cur && prev ? pctDelta(cur.foreign_gmv, prev.foreign_gmv) : null} />
         <Kpi icon={<Wallet size={16} />} label="실결제액" value={cur ? won(cur.pay) : "—"} delta={cur && prev ? pctDelta(cur.pay, prev.pay) : null} />
+        {cur?.net_take != null && (
+          <Kpi icon={<Wallet size={16} />} label="순이익 (Net Take)" value={won(cur.net_take)}
+               delta={cur && prev && prev.net_take != null ? pctDelta(cur.net_take, prev.net_take) : null}
+               sub="editorial 정산 · 미커버 상품 제외" />
+        )}
+        {cur?.cp != null && (
+          <Kpi icon={<TrendingUp size={16} />} label="공헌이익 (CP)" accent value={won(cur.cp)}
+               delta={cur && prev && prev.cp != null ? pctDelta(cur.cp, prev.cp) : null}
+               sub="매장 고정비 배부 · 최근 ~2개월 잠정" />
+        )}
+        {cur?.cp_rate != null && (
+          <Kpi icon={<Percent size={16} />} label="공헌이익률 (CP÷GMV)" value={cur.cp_rate.toFixed(1) + "%"} sub="CP / (GMV/1.1)" />
+        )}
         <Kpi icon={<Percent size={16} />} label="평균 할인율" value={cur ? cur.discount_rate.toFixed(1) + "%" : "—"} />
         <Kpi icon={<Globe size={16} />} label="외국인 매출 비중" value={cur ? cur.foreign_ratio.toFixed(1) + "%" : "—"} />
         <Kpi icon={<Boxes size={16} />} label="거래 상품 수" value={cur ? num(cur.goods_count) : "—"} />

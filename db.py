@@ -417,6 +417,30 @@ def fetch_global_customer() -> pd.DataFrame:
     return d[d["sales_date"].notna()]
 
 
+def fetch_settlement() -> pd.DataFrame:
+    """오프라인 편집샵 순이익(Net Take)·공헌이익(CP) — team.sales.dsh_d_upt_editorial_summary_v.
+       그레인: 일자×매장×상품(goods_no). Net Take=profit(순이익), CP=contribution_profit_pre(공헌이익).
+       검증 항등식(2026-06-21): CP ≈ profit − offline_cost_fixed + additional_rev.
+       ⚠️ CP는 매장 고정비(offline_cost_fixed) 배부값이라 최근 ~2개월은 예측치(변동)·상품 1건당 음수 가능.
+       대시보드 매장(dim_store)만. GMV(MOSS 기반)와 별개 지표로 추가."""
+    q = ("WITH " + DIM_STORE + r"""
+        SELECT v.ord_state_date AS sales_date, ds.store_name, ds.shop_type,
+               CAST(v.goods_no AS BIGINT) AS goods_no,
+               CAST(SUM(v.profit) AS DOUBLE) AS net_take,
+               CAST(SUM(v.contribution_profit_pre) AS DOUBLE) AS cp
+        FROM team.sales.dsh_d_upt_editorial_summary_v v
+        JOIN dim_store ds ON ds.shop_no = v.shop_no
+        WHERE v.ord_state_date IS NOT NULL AND v.goods_no IS NOT NULL
+        GROUP BY 1, 2, 3, 4
+    """)
+    d = run_df(q)
+    d["sales_date"] = pd.to_datetime(d["sales_date"], errors="coerce")
+    d["goods_no"] = pd.to_numeric(d["goods_no"], errors="coerce").fillna(0).astype("int64")
+    d["net_take"] = pd.to_numeric(d["net_take"], errors="coerce").fillna(0.0)
+    d["cp"] = pd.to_numeric(d["cp"], errors="coerce").fillna(0.0)
+    return d[d["sales_date"].notna()]
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_md_names() -> dict:
     """offline_md_id(예: minsu.kim) → 한글명. 여러 소스의 (md_id→md_nm)를 합쳐 최대 커버리지."""

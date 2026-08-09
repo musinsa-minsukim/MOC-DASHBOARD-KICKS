@@ -166,6 +166,54 @@ def build_where_receipts(f: dict):
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
+# settlement(순이익/CP) 뷰가 지원하는 IN 필터: 매장타입·매장만(브랜드·카테·사업구분·md는 뷰에 없음 → goods_no 조인으로 간접 반영).
+_STL_IN_COLS = {"type": "shop_type", "store": "store_name"}
+
+
+def build_where_settlement(f: dict):
+    """settlement(순이익·CP) 전용 WHERE — 기간·매장타입·매장만. (브랜드/카테/사업구분/md는 뷰에 없어
+       goods_no 조인으로 반영.) settlement 그레인 = 일자×매장×상품."""
+    clauses, params = [], []
+    if f.get("date_from"):
+        clauses.append("sales_date >= CAST(? AS DATE)"); params.append(f["date_from"])
+    if f.get("date_to"):
+        clauses.append("sales_date < CAST(? AS DATE) + INTERVAL 1 DAY"); params.append(f["date_to"])
+    for key, col in _STL_IN_COLS.items():
+        vals = f.get(key)
+        if vals:
+            clauses.append(f"{col} IN ({','.join(['?'] * len(vals))})")
+            params += list(vals)
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def _settlement_by_goods(f: dict) -> dict:
+    """필터(기간·매장·매장타입) 하에서 goods_no별 net_take·cp 합. {goods_no: (net_take, cp)}.
+       settlement 캐시가 아직 없으면 {} → 화면은 '—' 처리."""
+    try:
+        where, params = build_where_settlement(f)
+        df = store.query(f"""SELECT goods_no, CAST(sum(net_take) AS DOUBLE) net_take,
+            CAST(sum(cp) AS DOUBLE) cp FROM settlement{where} GROUP BY goods_no""", params)
+    except Exception:
+        return {}
+    return {int(r.goods_no): (_num(r.net_take), _num(r.cp)) for r in df.itertuples()}
+
+
+def _settlement_totals(f: dict):
+    """전체 필터(브랜드·카테 포함)에 정합한 net_take·cp 합. sales 필터에 걸린 goods로 settlement를 제한.
+       settlement 캐시 없거나 오류면 None."""
+    try:
+        wsales, psales = build_where(f)
+        wstl, pstl = build_where_settlement(f)
+        cond = (wstl + " AND " if wstl else " WHERE ") + "s.goods_no IN (SELECT goods_no FROM g)"
+        r = store.query(f"""
+            WITH g AS (SELECT DISTINCT goods_no FROM sales{wsales})
+            SELECT CAST(sum(s.net_take) AS DOUBLE) nt, CAST(sum(s.cp) AS DOUBLE) cp
+            FROM settlement s{cond}""", psales + pstl).iloc[0]
+    except Exception:
+        return None
+    return _num(r.nt), _num(r.cp)
+
+
 def _aov(f: dict):
     """receipts 뷰에서 객단가 계산(전체/내국인/외국인). receipts 캐시가 아직 없으면 None."""
     try:
@@ -364,12 +412,20 @@ def summary(f: dict = Depends(get_filters), _: str = Depends(require_user), __: 
         FROM sales{where}""", params)
     r = df.iloc[0]
     gmv = _num(r.gmv); normal = _num(r.normal_amt); fgn = _num(r.foreign_gmv)
-    return {
+    tot = _settlement_totals(f)   # (net_take, cp) or None(캐시 미존재)
+    out = {
         "gmv": gmv, "qty": _num(r.qty), "normal_amt": normal, "pay": _num(r.pay),
         "foreign_gmv": fgn, "goods_count": int(_num(r.goods_count)), "store_count": int(_num(r.store_count)),
         "discount_rate": (1 - gmv / normal) * 100 if normal else 0,
         "foreign_ratio": (fgn / gmv * 100) if gmv else 0,
     }
+    if tot is not None:
+        nt, cp = tot
+        out["net_take"] = nt
+        out["cp"] = cp
+        # 공헌이익률 = CP / (GMV/1.1) (부가세 제외 거래액 대비). GMV는 대시보드(MOSS) 기준.
+        out["cp_rate"] = (cp / (gmv / 1.1) * 100) if gmv else 0
+    return out
 
 
 @app.get("/api/aov")
@@ -588,12 +644,17 @@ def _add_catalog(rows: list[dict]):
 
 
 def _add_store_stock_goods(rows: list[dict], store_cols: list[str]):
-    """상품 행에 점별 재고 컬럼 부여(매장명 키)."""
+    """상품 행에 점별 재고 컬럼 부여(매장명 키) + 운영중인 매장수(점재고≥1 매장 수)."""
     stk = prodmeta.stock_by_goods([r["goods_no"] for r in rows])
     for r in rows:
         s = stk.get(r["goods_no"], {})
+        op = 0
         for col in store_cols:
-            r[col] = s.get(col, 0)
+            v = s.get(col, 0)
+            r[col] = v
+            if (v or 0) >= 1:      # 점재고 1개 이상 = 운영중으로 판단
+                op += 1
+        r["op_stores"] = op
     return rows
 
 
@@ -749,10 +810,12 @@ def _goods_detail(f: dict, limit: int | None = None):
     df = df.merge(invs, on="goods_no", how="left")
     df["jaego"] = df["jaego"].fillna(0)
     df["hub"] = df["hub"].fillna(0)
+    stl = _settlement_by_goods(f)   # goods_no별 순이익(Net Take)·CP (settlement 캐시 없으면 {})
     out = []
     for r in df.itertuples():
         gmv, normal, fgn = _num(r.gmv), _num(r.normal_amt), _num(r.foreign_gmv)
         qv, pv = _num(r.qty), _num(r.pay)
+        nt_cp = stl.get(int(r.goods_no))   # (net_take, cp) or None(미커버 → 화면 '—')
         out.append({"business_type": r.business_type, "cat_top": r.cat_top, "cat_large": r.cat_large,
                     "cat_medium": r.cat_medium, "brand_nm": r.brand_nm, "goods_no": int(r.goods_no),
                     "goods_nm": r.goods_nm, "qty": qv, "gmv": gmv, "normal_amt": normal,
@@ -763,6 +826,9 @@ def _goods_detail(f: dict, limit: int | None = None):
                     "pay_unit": (pv / qv) if qv else 0,
                     "discount_rate": (1 - gmv / normal) * 100 if normal else 0,
                     "foreign_ratio": (fgn / gmv * 100) if gmv else 0,
+                    # 순이익(Net Take)·공헌이익(CP) — editorial_summary_v. 미커버 상품은 None(화면 '—').
+                    "net_take": nt_cp[0] if nt_cp else None,
+                    "cp": nt_cp[1] if nt_cp else None,
                     "jaego": _num(r.jaego), "hub": _num(r.hub)})
     return out
 
@@ -795,6 +861,15 @@ def _goods_store_long(f: dict):
     except Exception:
         df["stock"] = 0
     df["stock"] = df["stock"].fillna(0)
+    try:   # (매장 × 상품) 순이익(Net Take)·공헌이익(CP) 조인 — editorial_summary_v
+        ws, ps = build_where_settlement(f)
+        stl = store.query(f"""SELECT store_name, goods_no, CAST(sum(net_take) AS DOUBLE) net_take,
+            CAST(sum(cp) AS DOUBLE) cp FROM settlement{ws} GROUP BY store_name, goods_no""", ps)
+        df = df.merge(stl, on=["store_name", "goods_no"], how="left")
+    except Exception:
+        df["net_take"] = 0.0; df["cp"] = 0.0
+    df["net_take"] = df["net_take"].fillna(0.0)
+    df["cp"] = df["cp"].fillna(0.0)
     return df
 
 
@@ -808,14 +883,16 @@ def sales_goods_csv(f: dict = Depends(get_filters),
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["매장", "사업구분", "최상위", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명",
-                "정상가", "판매가", "순판매수량", "GMV", "정상가매출", "실결제", "외국인GMV", "점재고"])
+                "정상가", "판매가", "순판매수량", "GMV", "정상가매출", "실결제", "외국인GMV",
+                "순이익(NetTake)", "공헌이익(CP)", "점재고"])
     for r in df.itertuples():
         c = cat.get(int(r.goods_no), {})
         w.writerow([r.store_name, r.business_type, r.cat_top, r.cat_large, r.cat_medium, r.brand_nm,
                     int(r.goods_no), c.get("style_no", ""), r.goods_nm,
                     int(c.get("normal_price", 0)), int(c.get("sale_price", 0)),
                     int(_num(r.qty)), int(_num(r.gmv)), int(_num(r.normal_amt)),
-                    int(_num(r.pay)), int(_num(r.foreign_gmv)), int(_num(r.stock))])
+                    int(_num(r.pay)), int(_num(r.foreign_gmv)),
+                    int(_num(r.net_take)), int(_num(r.cp)), int(_num(r.stock))])
     data = ("﻿" + buf.getvalue()).encode("utf-8")
     return Response(content=data, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="offline_sales_by_store_goods.csv"'})
