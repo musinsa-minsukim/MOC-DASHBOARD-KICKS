@@ -333,11 +333,20 @@ def load_goods_master() -> pd.DataFrame:
           JOIN dim_store st ON st.shop_no = om.shop_no
           WHERE om.dummy_order = 0
         ),
-        px AS (   -- 온라인 1차세일가·정상가(현재가) = 상품별 최신 1건 (channel_id=1). goods-master 스킬과 동일 정의.
-          SELECT CAST(goods_id AS BIGINT) AS goods_no, sale_price AS online_sale, basic_price AS online_basic
+        bad_px AS (   -- 손상 방어: 원천에 '한 시각에 판매가가 2개 이상 충돌하는 (goods,시각)' 배치가 존재
+                      -- (예 goods 5943429, 2026-08-08 14:56에 91·155·2385000… 13행). 최신이 이 배치면 엉뚱값 선택 →
+                      -- 해당 (goods,시각)을 통째 제외하고 그 다음 정상 시각의 값을 쓴다.
+          SELECT goods_id, created_at
           FROM musinsa.itgg.goods_sale_price_changes
-          WHERE channel_id = 1
-          QUALIFY row_number() OVER (PARTITION BY goods_id ORDER BY created_at DESC) = 1
+          WHERE channel_id = 1 AND CAST(goods_id AS BIGINT) IN (SELECT goods_no FROM sold)
+          GROUP BY goods_id, created_at HAVING COUNT(DISTINCT sale_price) > 1
+        ),
+        px AS (   -- 온라인 1차세일가·정상가(현재가) = 손상 배치 제외 후 상품별 최신 1건 (channel_id=1).
+          SELECT CAST(p.goods_id AS BIGINT) AS goods_no, p.sale_price AS online_sale, p.basic_price AS online_basic
+          FROM musinsa.itgg.goods_sale_price_changes p
+          LEFT ANTI JOIN bad_px b ON b.goods_id = p.goods_id AND b.created_at = p.created_at
+          WHERE p.channel_id = 1 AND CAST(p.goods_id AS BIGINT) IN (SELECT goods_no FROM sold)
+          QUALIFY row_number() OVER (PARTITION BY p.goods_id ORDER BY p.created_at DESC) = 1
         ),
         ig AS (   -- 폴백 소스: bizest.goods에 없는 판매 goods의 상품명/브랜드명/가격 (goods_id별 최신 1건)
           SELECT CAST(goods_id AS BIGINT) AS goods_no, goods_name AS goods_nm, brand_name AS brand_nm,
