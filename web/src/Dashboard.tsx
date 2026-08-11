@@ -504,9 +504,10 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
         <Kpi icon={<Globe size={16} />} label="외국인 매출(면세)" value={cur ? won(cur.foreign_gmv) : "—"} delta={cur && prev ? pctDelta(cur.foreign_gmv, prev.foreign_gmv) : null} />
         <Kpi icon={<Wallet size={16} />} label="실결제액" value={cur ? won(cur.pay) : "—"} delta={cur && prev ? pctDelta(cur.pay, prev.pay) : null} />
         {cur?.net_take != null && (
-          <Kpi icon={<Wallet size={16} />} label="순이익 (Net Take)" value={won(cur.net_take)}
+          <Kpi icon={<Wallet size={16} />} label="순이익 (Net Take)"
+               value={won(cur.net_take) + ` (${(cur.gmv ? (cur.net_take / cur.gmv) * 100 : 0).toFixed(1)}%)`}
                delta={cur && prev && prev.net_take != null ? pctDelta(cur.net_take, prev.net_take) : null}
-               sub="정산 profit · 오늘자 잠정 추정 포함" />
+               sub="괄호=순이익율(순이익÷GMV) · 오늘자 잠정 추정 포함" />
         )}
         <Kpi icon={<Percent size={16} />} label="평균 할인율" value={cur ? cur.discount_rate.toFixed(1) + "%" : "—"} />
         <Kpi icon={<Globe size={16} />} label="외국인 매출 비중" value={cur ? cur.foreign_ratio.toFixed(1) + "%" : "—"} />

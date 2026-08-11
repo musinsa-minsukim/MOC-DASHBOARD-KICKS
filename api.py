@@ -187,17 +187,24 @@ def build_where_settlement(f: dict):
 
 
 # 오늘자(원천 ~1일 지연으로 settlement 미반영일) 순이익 추정: settlement 없는 (일자×goods)는
-# 상품별 take rate(net_take/gmv, 없으면 전체율) × 그날 GMV로 보정(잠정). CP는 추정 안 하고 실적만 합산.
-# settlement 커버가 전혀 없는 goods(gr.cov=0)는 net_take=NULL(공란) 유지 — 오추정 방지.
+# 상품 take rate(net_take/gmv) × 그날 GMV로 보정(잠정). ⭐ rate는 '필터 구간'이 아니라 '최근 45일'에서
+# 산출 → '오늘 하루'만 조회해도 과거 rate로 추정 가능(구간 내 실적 0이어도 OK). CP는 추정 안 함(실적만).
+# 최근 45일에도 정산 커버가 없는 goods(gr.cov=0/없음)는 net_take=NULL(공란) 유지 — 오추정 방지.
 _STL_CTE = """
+    g AS (SELECT DISTINCT goods_no FROM sales{ws}),
+    rs AS (SELECT sales_date, goods_no, SUM(gmv) gmv FROM sales
+           WHERE sales_date >= current_date - INTERVAL 45 DAY AND goods_no IN (SELECT goods_no FROM g) GROUP BY 1, 2),
+    rst AS (SELECT sales_date, goods_no, SUM(net_take) net_take FROM settlement
+            WHERE sales_date >= current_date - INTERVAL 45 DAY GROUP BY 1, 2),
+    rj AS (SELECT rs.goods_no, rs.gmv, rst.net_take FROM rs LEFT JOIN rst ON rst.sales_date = rs.sales_date AND rst.goods_no = rs.goods_no),
+    gr AS (SELECT goods_no, SUM(net_take) / NULLIF(SUM(CASE WHEN net_take IS NOT NULL THEN gmv END), 0) rate_g,
+                  SUM(CASE WHEN net_take IS NOT NULL THEN 1 ELSE 0 END) cov FROM rj GROUP BY goods_no),
+    ov AS (SELECT SUM(net_take) / NULLIF(SUM(CASE WHEN net_take IS NOT NULL THEN gmv END), 0) r FROM rj),
     s AS (SELECT sales_date, goods_no, SUM(gmv) gmv FROM sales{ws} GROUP BY 1, 2),
     st AS (SELECT sales_date, goods_no, SUM(net_take) net_take, SUM(cp) cp FROM settlement{wstl} GROUP BY 1, 2),
     j AS (SELECT s.goods_no, s.gmv, st.net_take, st.cp
-          FROM s LEFT JOIN st ON st.sales_date = s.sales_date AND st.goods_no = s.goods_no),
-    gr AS (SELECT goods_no, SUM(net_take) / NULLIF(SUM(CASE WHEN net_take IS NOT NULL THEN gmv END), 0) rate_g,
-                  SUM(CASE WHEN net_take IS NOT NULL THEN 1 ELSE 0 END) cov FROM j GROUP BY goods_no),
-    ov AS (SELECT SUM(net_take) / NULLIF(SUM(CASE WHEN net_take IS NOT NULL THEN gmv END), 0) r FROM j)"""
-_STL_NT = "COALESCE(j.net_take, COALESCE(gr.rate_g, ov.r) * j.gmv)"   # 커버분=실적, 미커버(오늘자)=추정
+          FROM s LEFT JOIN st ON st.sales_date = s.sales_date AND st.goods_no = s.goods_no)"""
+_STL_NT = "COALESCE(j.net_take, COALESCE(gr.rate_g, ov.r) * j.gmv)"   # 커버분=실적, 미커버(오늘자)=최근 rate 추정
 
 
 def _stl_none(x):
@@ -215,8 +222,8 @@ def _settlement_by_goods(f: dict) -> dict:
             SELECT j.goods_no,
                    CASE WHEN MAX(gr.cov) > 0 THEN CAST(SUM({_STL_NT}) AS DOUBLE) END net_take,
                    CASE WHEN MAX(gr.cov) > 0 THEN CAST(SUM(j.cp) AS DOUBLE) END cp
-            FROM j JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov
-            GROUP BY j.goods_no""", psales + pstl)
+            FROM j LEFT JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov
+            GROUP BY j.goods_no""", psales + psales + pstl)
     except Exception:
         return {}
     return {int(r.goods_no): (_stl_none(r.net_take), _stl_none(r.cp)) for r in df.itertuples()}
@@ -231,7 +238,7 @@ def _settlement_totals(f: dict):
             WITH {_STL_CTE.format(ws=wsales, wstl=wstl)}
             SELECT CAST(SUM(CASE WHEN gr.cov > 0 THEN {_STL_NT} END) AS DOUBLE) nt,
                    CAST(SUM(CASE WHEN gr.cov > 0 THEN j.cp END) AS DOUBLE) cp
-            FROM j JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov""", psales + pstl).iloc[0]
+            FROM j LEFT JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov""", psales + psales + pstl).iloc[0]
     except Exception:
         return None
     return _num(r.nt), _num(r.cp)
@@ -248,9 +255,9 @@ def _settlement_by_brand(f: dict) -> dict:
             SELECT gb.business_type, gb.brand_nm,
                    CAST(SUM(CASE WHEN gr.cov > 0 THEN {_STL_NT} END) AS DOUBLE) net_take,
                    CAST(SUM(CASE WHEN gr.cov > 0 THEN j.cp END) AS DOUBLE) cp
-            FROM j JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov
+            FROM j LEFT JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov
                  JOIN gb ON gb.goods_no = j.goods_no
-            GROUP BY 1, 2""", psales + pstl + psales)
+            GROUP BY 1, 2""", psales + psales + pstl + psales)
     except Exception:
         return {}
     return {(r.business_type, r.brand_nm): (_stl_none(r.net_take), _stl_none(r.cp)) for r in df.itertuples()}
