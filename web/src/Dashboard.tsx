@@ -76,6 +76,55 @@ const GOODS_COLS = [
   colNum("hub", "허브합계", "num"),
 ];
 
+// ── 합계행(__muTotal)·순이익률 색상 헬퍼 ──
+const _sum = (rows: any[], k: string) => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0);
+// 커버된 순이익률 = Σ순이익(있는 행)/ΣGMV(있는 행). 색상 기준(평균)·합계행 값 공용.
+function coveredNtRate(rows: any[]): number {
+  let nt = 0, g = 0;
+  for (const r of rows) if (!r.__muTotal && r.net_take != null) { nt += Number(r.net_take) || 0; g += Number(r.gmv) || 0; }
+  return g ? (nt / g) * 100 : 0;
+}
+// 순이익률 색상열: 평균 대비 발산(높으면 초록 → 낮으면 노랑·주황·빨강)
+function ntRateCol(rows: any[], dark: boolean) {
+  const avg = coveredNtRate(rows);
+  const vals = rows.filter((r) => !r.__muTotal && r.net_take_rate != null).map((r) => r.net_take_rate as number);
+  const up = Math.max(1e-6, (vals.length ? Math.max(...vals) : avg + 1) - avg);
+  const dn = Math.max(1e-6, avg - (vals.length ? Math.min(...vals) : avg - 1));
+  return colNum("net_take_rate", "순이익률", "num", {
+    minWidth: 92,
+    headerTooltip: "순이익률 = 순이익 ÷ GMV · 평균 대비 색상(높을수록 초록, 낮을수록 빨강)",
+    valueFormatter: (p: any) => (p.value == null ? "" : (p.value as number).toFixed(1) + "%"),
+    cellStyle: (p: any) => {
+      const v = p.value as number | null;
+      if (v == null) return { textAlign: "right", color: "var(--ratio-neutral)" };
+      let hue: number, t: number;
+      if (v >= avg) { t = Math.min(1, (v - avg) / up); hue = 95 + 40 * t; }   // 연두→초록
+      else { t = Math.min(1, (avg - v) / dn); hue = 55 - 55 * t; }            // 노랑→빨강
+      const [base, scale] = dark ? [0.18, 0.42] : [0.12, 0.4];
+      return { textAlign: "right", backgroundColor: `hsla(${hue.toFixed(0)},78%,50%,${(base + scale * t).toFixed(3)})`, fontWeight: 600, ...(dark ? { color: "#e2e8f0" } : {}) };
+    },
+  });
+}
+const _ntTotal = (rows: any[]) => (rows.some((r) => r.net_take != null) ? _sum(rows, "net_take") : null);
+function brandTotalRow(rows: any[]) {
+  const gmv = _sum(rows, "gmv"), normal = _sum(rows, "normal_amt"), fgn = _sum(rows, "foreign_gmv");
+  return {
+    __muTotal: true, business_type: "", brand_nm: "합계", goods: _sum(rows, "goods"),
+    qty: _sum(rows, "qty"), gmv, gmv_ratio: 100, normal_amt: normal, pay: _sum(rows, "pay"),
+    foreign_gmv: fgn, net_take: _ntTotal(rows), net_take_rate: coveredNtRate(rows),
+    discount_rate: normal ? (1 - gmv / normal) * 100 : 0, foreign_ratio: gmv ? (fgn / gmv) * 100 : 0,
+  };
+}
+function goodsTotalRow(rows: any[]) {
+  const gmv = _sum(rows, "gmv"), normal = _sum(rows, "normal_amt"), fgn = _sum(rows, "foreign_gmv"), qty = _sum(rows, "qty");
+  return {
+    __muTotal: true, brand_nm: "합계", goods_nm: "", qty, gmv, normal_amt: normal, pay: _sum(rows, "pay"),
+    foreign_gmv: fgn, net_take: _ntTotal(rows), net_take_rate: coveredNtRate(rows),
+    sale_unit: qty ? gmv / qty : 0, discount_rate: normal ? (1 - gmv / normal) * 100 : 0,
+    foreign_ratio: gmv ? (fgn / gmv) * 100 : 0, jaego: _sum(rows, "jaego"), hub: _sum(rows, "hub"),
+  };
+}
+
 type Meta = {
   date_min: string;
   date_max: string;
@@ -385,7 +434,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   // 점별(매장) 재고 컬럼을 동적으로 덧붙임 (#2)
   // #3 GMV 비중 열 + 값에 따른 스펙트럼(히트맵) 배경색
   const brandTot = useMemo(() => brands.reduce((s: number, r: any) => s + (r.gmv || 0), 0), [brands]);
-  const brandRows = useMemo(() => brands.map((r: any) => ({ ...r, gmv_ratio: brandTot ? (r.gmv / brandTot) * 100 : 0 })), [brands, brandTot]);
+  const brandRows = useMemo(() => brands.map((r: any) => ({ ...r, gmv_ratio: brandTot ? (r.gmv / brandTot) * 100 : 0, net_take_rate: (r.net_take != null && r.gmv) ? (r.net_take / r.gmv) * 100 : null })), [brands, brandTot]);
   const brandMaxRatio = useMemo(() => brandRows.reduce((mx: number, r: any) => Math.max(mx, r.gmv_ratio || 0), 0) || 1, [brandRows]);
   const gmvRatioCol = useMemo(
     () => colNum("gmv_ratio", "GMV비중", "num", {
@@ -400,23 +449,35 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
     }),
     [brandMaxRatio, dark]
   );
+  const brandNtCol = useMemo(() => ntRateCol(brandRows, dark), [brandRows, dark]);
   const brandCols = useMemo(() => {
     const base = [...BRAND_COLS];
     const gi = base.findIndex((c: any) => c.field === "gmv");
     if (gi >= 0) base.splice(gi + 1, 0, gmvRatioCol);
+    const ni = base.findIndex((c: any) => c.field === "net_take");
+    if (ni >= 0) base.splice(ni + 1, 0, brandNtCol);
     return base;   // 점별 재고(피벗)는 화면에서 제외 — CSV에만 포함
-  }, [gmvRatioCol]);
+  }, [gmvRatioCol, brandNtCol]);
+  const brandGridRows = useMemo(() => (brandRows.length ? [brandTotalRow(brandRows), ...brandRows] : []), [brandRows]);
+  const goodsRows = useMemo(() => goods.map((r: any) => ({ ...r, net_take_rate: (r.net_take != null && r.gmv) ? (r.net_take / r.gmv) * 100 : null })), [goods]);
+  const goodsNtCol = useMemo(() => ntRateCol(goodsRows, dark), [goodsRows, dark]);
   const goodsCols = useMemo(() => {
-    // 점별 재고 피벗 열은 화면에서 제외(운영중매장수·점재고합계로 요약, 매장별 상세는 CSV).
-    if (!isNarrow) return GOODS_COLS;
+    // 순이익 뒤에 순이익률(색상) 열 삽입. 점별 재고 피벗 열은 화면 제외(운영중매장수·점재고합계로 요약, 상세는 CSV).
+    const withRate = (cols: any[]) => {
+      const i = cols.findIndex((c: any) => c.field === "net_take");
+      if (i < 0) return cols;
+      const c = [...cols]; c.splice(i + 1, 0, goodsNtCol); return c;
+    };
+    if (!isNarrow) return withRate(GOODS_COLS);
     // 모바일: 좌측고정 해제 + 핵심 열(상품·GMV·순판매·할인율) 우선, 나머지는 뒤로 가로 스크롤
     const unpin = (c: any) => ({ ...c, pinned: null });
     const pick = (f: string) => unpin(GOODS_COLS.find((c: any) => c.field === f));
     const primaryF = ["goods_nm", "gmv", "qty", "discount_rate"];
     const primary = [{ ...pick("goods_nm"), minWidth: 150 }, pick("gmv"), pick("qty"), pick("discount_rate")];
     const rest = GOODS_COLS.filter((c: any) => !primaryF.includes(c.field)).map(unpin);
-    return [...primary, ...rest];
-  }, [isNarrow]);
+    return withRate([...primary, ...rest]);
+  }, [isNarrow, goodsNtCol]);
+  const goodsGridRows = useMemo(() => (goodsRows.length ? [goodsTotalRow(goodsRows), ...goodsRows] : []), [goodsRows]);
 
   return (
     <div className="space-y-5">
@@ -477,7 +538,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
               </button>
             </div>
           </div>
-          <DataGrid rows={brandRows} columns={brandCols} dark={dark} height={440} />
+          <DataGrid rows={brandGridRows} columns={brandCols} dark={dark} height={440} getRowClass={(p: any) => (p.data?.__muTotal ? "mu-total" : "")} />
         </CardBody>
       </Card>
 
@@ -583,7 +644,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
               </button>
             </div>
           </div>
-          <DataGrid rows={goods} columns={goodsCols} dark={dark} height={460} />
+          <DataGrid rows={goodsGridRows} columns={goodsCols} dark={dark} height={460} getRowClass={(p: any) => (p.data?.__muTotal ? "mu-total" : "")} />
         </CardBody>
       </Card>
     </div>
