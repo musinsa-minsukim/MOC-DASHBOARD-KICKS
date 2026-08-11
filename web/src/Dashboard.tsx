@@ -458,7 +458,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
     if (ni >= 0) base.splice(ni + 1, 0, brandNtCol);
     return base;   // 점별 재고(피벗)는 화면에서 제외 — CSV에만 포함
   }, [gmvRatioCol, brandNtCol]);
-  const brandGridRows = useMemo(() => (brandRows.length ? [brandTotalRow(brandRows), ...brandRows] : []), [brandRows]);
+  const brandTotal = useMemo(() => (brandRows.length ? [brandTotalRow(brandRows)] : []), [brandRows]);
   const goodsRows = useMemo(() => goods.map((r: any) => ({ ...r, net_take_rate: (r.net_take != null && r.gmv) ? (r.net_take / r.gmv) * 100 : null })), [goods]);
   const goodsNtCol = useMemo(() => ntRateCol(goodsRows, dark), [goodsRows, dark]);
   const goodsCols = useMemo(() => {
@@ -477,7 +477,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
     const rest = GOODS_COLS.filter((c: any) => !primaryF.includes(c.field)).map(unpin);
     return withRate([...primary, ...rest]);
   }, [isNarrow, goodsNtCol]);
-  const goodsGridRows = useMemo(() => (goodsRows.length ? [goodsTotalRow(goodsRows), ...goodsRows] : []), [goodsRows]);
+  const goodsTotal = useMemo(() => (goodsRows.length ? [goodsTotalRow(goodsRows)] : []), [goodsRows]);
 
   return (
     <div className="space-y-5">
@@ -538,7 +538,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
               </button>
             </div>
           </div>
-          <DataGrid rows={brandGridRows} columns={brandCols} dark={dark} height={440} getRowClass={(p: any) => (p.data?.__muTotal ? "mu-total" : "")} />
+          <DataGrid rows={brandRows} columns={brandCols} dark={dark} height={440} pinnedTop={brandTotal} />
         </CardBody>
       </Card>
 
@@ -644,7 +644,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
               </button>
             </div>
           </div>
-          <DataGrid rows={goodsGridRows} columns={goodsCols} dark={dark} height={460} getRowClass={(p: any) => (p.data?.__muTotal ? "mu-total" : "")} />
+          <DataGrid rows={goodsRows} columns={goodsCols} dark={dark} height={460} pinnedTop={goodsTotal} />
         </CardBody>
       </Card>
     </div>

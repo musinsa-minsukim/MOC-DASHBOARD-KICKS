@@ -116,6 +116,11 @@ html.dark .ag-row.mu-total {
   border-bottom: 1px solid var(--tt-border);
 }
 
+/* 합계(총계) 행 — pinnedTop(상단 고정): 스크롤해도 항상 최상단에 붙어있음 */
+.ag-floating-top .ag-row { font-weight: 700; background-color: #f8fafc; }
+html.dark .ag-floating-top .ag-row { background-color: #111c31; }
+.ag-floating-top .ag-cell { border-bottom: 2px solid var(--tt-border); }
+
 /* 드래그 범위 선택 하이라이트 (엑셀식 직사각형 복사) */
 .ag-cell.mu-range {
   background-color: rgb(var(--ring) / 0.16) !important;
