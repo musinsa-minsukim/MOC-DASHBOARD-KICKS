@@ -907,16 +907,18 @@ def sales_goods_csv(f: dict = Depends(get_filters),
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["매장", "사업구분", "최상위", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명",
-                "정상가", "판매가", "순판매수량", "GMV", "정상가매출", "실결제", "외국인GMV",
-                "순이익(NetTake)", "공헌이익(CP)", "점재고"])
+                "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV", "정상가매출", "실결제", "외국인GMV",
+                "순이익(NetTake)", "점재고"])
     for r in df.itertuples():
         c = cat.get(int(r.goods_no), {})
+        q = int(_num(r.qty))
         w.writerow([r.store_name, r.business_type, r.cat_top, r.cat_large, r.cat_medium, r.brand_nm,
                     int(r.goods_no), c.get("style_no", ""), r.goods_nm,
                     int(c.get("normal_price", 0)), int(c.get("sale_price", 0)),
-                    int(_num(r.qty)), int(_num(r.gmv)), int(_num(r.normal_amt)),
+                    int(_num(r.gmv) / q) if q else 0,
+                    q, int(_num(r.gmv)), int(_num(r.normal_amt)),
                     int(_num(r.pay)), int(_num(r.foreign_gmv)),
-                    int(_num(r.net_take)), int(_num(r.cp)), int(_num(r.stock))])
+                    int(_num(r.net_take)), int(_num(r.stock))])
     data = ("﻿" + buf.getvalue()).encode("utf-8")
     return Response(content=data, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="offline_sales_by_store_goods.csv"'})

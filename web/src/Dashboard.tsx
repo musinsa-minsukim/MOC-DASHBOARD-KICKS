@@ -46,8 +46,7 @@ const BRAND_COLS = [
   colNum("gmv", "GMV", "compact"),
   colNum("normal_amt", "정상가매출", "compact"),
   colNum("pay", "실결제", "compact"),
-  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = editorial_summary_v.profit · 미커버 브랜드는 공란 · 원천 ~1일 지연" }),
-  colNum("cp", "공헌이익(CP)", "compact", { minWidth: 104, headerTooltip: "공헌이익(CP) = contribution_profit_pre · 매장 고정비 배부값이라 음수 가능·최근 ~2개월 잠정" }),
+  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = editorial_summary_v.profit · 미커버 브랜드는 공란 · 원천 ~1일 지연 · CP(공헌이익)는 손익 탭 참조" }),
   colNum("foreign_gmv", "외국인GMV", "compact"),
   colNum("foreign_ratio", "외국인비중", "num", { valueFormatter: pct0 }),
   colNum("discount_rate", "할인율", "num", { valueFormatter: pct1 }),
@@ -68,8 +67,7 @@ const GOODS_COLS = [
   colNum("gmv", "GMV", "compact"),
   colNum("normal_amt", "정상가매출", "compact"),
   colNum("pay", "실결제", "compact"),
-  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = editorial_summary_v.profit · 미커버 상품은 공란" }),
-  colNum("cp", "공헌이익(CP)", "compact", { minWidth: 104, headerTooltip: "공헌이익(CP) = contribution_profit_pre · 매장 고정비 배부값이라 음수 가능·최근 ~2개월은 예측 잠정" }),
+  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = editorial_summary_v.profit · 미커버 상품은 공란 · CP(공헌이익)는 손익 탭 참조" }),
   colNum("foreign_gmv", "외국인GMV", "compact"),
   colNum("foreign_ratio", "외국인비중", "num", { valueFormatter: pct0 }),
   colNum("discount_rate", "할인율", "num", { valueFormatter: pct1 }),
@@ -248,11 +246,11 @@ function SectionStat({ cur, byBiz }: { cur: Summary | null; byBiz: any[] }) {
 }
 
 function brandCsv(rows: any[], storeCols: string[] = []) {
-  const head = ["사업구분", "브랜드", "상품수", "순판매수량", "GMV", "정상가매출", "실결제", "순이익(NetTake)", "공헌이익(CP)", "외국인GMV", "외국인비중%", "할인율%", ...storeCols];
+  const head = ["사업구분", "브랜드", "상품수", "순판매수량", "GMV", "정상가매출", "실결제", "순이익(NetTake)", "외국인GMV", "외국인비중%", "할인율%", ...storeCols];
   const esc = (v: any) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const won0 = (v: any) => (v == null ? "" : Math.round(v));
   const lines = [head.join(",")];
-  for (const r of rows) lines.push([r.business_type, r.brand_nm, r.goods, Math.round(r.qty), Math.round(r.gmv), Math.round(r.normal_amt), Math.round(r.pay), won0(r.net_take), won0(r.cp), Math.round(r.foreign_gmv), r.foreign_ratio.toFixed(1), r.discount_rate.toFixed(1), ...storeCols.map((s) => Math.round(r[s] || 0))].map(esc).join(","));
+  for (const r of rows) lines.push([r.business_type, r.brand_nm, r.goods, Math.round(r.qty), Math.round(r.gmv), Math.round(r.normal_amt), Math.round(r.pay), won0(r.net_take), Math.round(r.foreign_gmv), r.foreign_ratio.toFixed(1), r.discount_rate.toFixed(1), ...storeCols.map((s) => Math.round(r[s] || 0))].map(esc).join(","));
   const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "offline_sales_by_brand.csv"; a.click(); URL.revokeObjectURL(a.href);
 }
@@ -448,14 +446,6 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
           <Kpi icon={<Wallet size={16} />} label="순이익 (Net Take)" value={won(cur.net_take)}
                delta={cur && prev && prev.net_take != null ? pctDelta(cur.net_take, prev.net_take) : null}
                sub="editorial 정산 · 미커버 상품 제외" />
-        )}
-        {cur?.cp != null && (
-          <Kpi icon={<TrendingUp size={16} />} label="공헌이익 (CP)" accent value={won(cur.cp)}
-               delta={cur && prev && prev.cp != null ? pctDelta(cur.cp, prev.cp) : null}
-               sub="매장 고정비 배부 · 최근 ~2개월 잠정" />
-        )}
-        {cur?.cp_rate != null && (
-          <Kpi icon={<Percent size={16} />} label="공헌이익률 (CP÷GMV)" value={cur.cp_rate.toFixed(1) + "%"} sub="CP / (GMV/1.1)" />
         )}
         <Kpi icon={<Percent size={16} />} label="평균 할인율" value={cur ? cur.discount_rate.toFixed(1) + "%" : "—"} />
         <Kpi icon={<Globe size={16} />} label="외국인 매출 비중" value={cur ? cur.foreign_ratio.toFixed(1) + "%" : "—"} />
