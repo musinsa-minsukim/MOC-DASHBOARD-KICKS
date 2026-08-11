@@ -186,50 +186,74 @@ def build_where_settlement(f: dict):
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
+# 오늘자(원천 ~1일 지연으로 settlement 미반영일) 순이익 추정: settlement 없는 (일자×goods)는
+# 상품별 take rate(net_take/gmv, 없으면 전체율) × 그날 GMV로 보정(잠정). CP는 추정 안 하고 실적만 합산.
+# settlement 커버가 전혀 없는 goods(gr.cov=0)는 net_take=NULL(공란) 유지 — 오추정 방지.
+_STL_CTE = """
+    s AS (SELECT sales_date, goods_no, SUM(gmv) gmv FROM sales{ws} GROUP BY 1, 2),
+    st AS (SELECT sales_date, goods_no, SUM(net_take) net_take, SUM(cp) cp FROM settlement{wstl} GROUP BY 1, 2),
+    j AS (SELECT s.goods_no, s.gmv, st.net_take, st.cp
+          FROM s LEFT JOIN st ON st.sales_date = s.sales_date AND st.goods_no = s.goods_no),
+    gr AS (SELECT goods_no, SUM(net_take) / NULLIF(SUM(CASE WHEN net_take IS NOT NULL THEN gmv END), 0) rate_g,
+                  SUM(CASE WHEN net_take IS NOT NULL THEN 1 ELSE 0 END) cov FROM j GROUP BY goods_no),
+    ov AS (SELECT SUM(net_take) / NULLIF(SUM(CASE WHEN net_take IS NOT NULL THEN gmv END), 0) r FROM j)"""
+_STL_NT = "COALESCE(j.net_take, COALESCE(gr.rate_g, ov.r) * j.gmv)"   # 커버분=실적, 미커버(오늘자)=추정
+
+
+def _stl_none(x):
+    return None if (x is None or x != x) else _num(x)   # NaN/NULL → None(공란), 아니면 숫자
+
+
 def _settlement_by_goods(f: dict) -> dict:
-    """필터(기간·매장·매장타입) 하에서 goods_no별 net_take·cp 합. {goods_no: (net_take, cp)}.
-       settlement 캐시가 아직 없으면 {} → 화면은 '—' 처리."""
-    try:
-        where, params = build_where_settlement(f)
-        df = store.query(f"""SELECT goods_no, CAST(sum(net_take) AS DOUBLE) net_take,
-            CAST(sum(cp) AS DOUBLE) cp FROM settlement{where} GROUP BY goods_no""", params)
-    except Exception:
-        return {}
-    return {int(r.goods_no): (_num(r.net_take), _num(r.cp)) for r in df.itertuples()}
-
-
-def _settlement_totals(f: dict):
-    """전체 필터(브랜드·카테 포함)에 정합한 net_take·cp 합. sales 필터에 걸린 goods로 settlement를 제한.
-       settlement 캐시 없거나 오류면 None."""
+    """goods별 순이익(net_take, 오늘자 추정 포함)·CP(실적). {goods_no: (net_take, cp)}.
+       settlement 커버 없는 goods → (None, None), 캐시 없으면 {}."""
     try:
         wsales, psales = build_where(f)
         wstl, pstl = build_where_settlement(f)
-        cond = (wstl + " AND " if wstl else " WHERE ") + "s.goods_no IN (SELECT goods_no FROM g)"
+        df = store.query(f"""
+            WITH {_STL_CTE.format(ws=wsales, wstl=wstl)}
+            SELECT j.goods_no,
+                   CASE WHEN MAX(gr.cov) > 0 THEN CAST(SUM({_STL_NT}) AS DOUBLE) END net_take,
+                   CASE WHEN MAX(gr.cov) > 0 THEN CAST(SUM(j.cp) AS DOUBLE) END cp
+            FROM j JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov
+            GROUP BY j.goods_no""", psales + pstl)
+    except Exception:
+        return {}
+    return {int(r.goods_no): (_stl_none(r.net_take), _stl_none(r.cp)) for r in df.itertuples()}
+
+
+def _settlement_totals(f: dict):
+    """필터 정합 순이익(오늘자 추정 포함)·CP(실적) 합. settlement 캐시 없거나 오류면 None."""
+    try:
+        wsales, psales = build_where(f)
+        wstl, pstl = build_where_settlement(f)
         r = store.query(f"""
-            WITH g AS (SELECT DISTINCT goods_no FROM sales{wsales})
-            SELECT CAST(sum(s.net_take) AS DOUBLE) nt, CAST(sum(s.cp) AS DOUBLE) cp
-            FROM settlement s{cond}""", psales + pstl).iloc[0]
+            WITH {_STL_CTE.format(ws=wsales, wstl=wstl)}
+            SELECT CAST(SUM(CASE WHEN gr.cov > 0 THEN {_STL_NT} END) AS DOUBLE) nt,
+                   CAST(SUM(CASE WHEN gr.cov > 0 THEN j.cp END) AS DOUBLE) cp
+            FROM j JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov""", psales + pstl).iloc[0]
     except Exception:
         return None
     return _num(r.nt), _num(r.cp)
 
 
 def _settlement_by_brand(f: dict) -> dict:
-    """필터 하에서 (사업구분, 브랜드)별 net_take·cp 합. settlement는 goods 단위라
-       sales의 goods→(사업구분,브랜드) 매핑으로 집계. {(business_type, brand_nm): (net_take, cp)}."""
+    """(사업구분, 브랜드)별 순이익(오늘자 추정 포함)·CP(실적). sales의 goods→브랜드 매핑으로 집계."""
     try:
         wsales, psales = build_where(f)
         wstl, pstl = build_where_settlement(f)
         df = store.query(f"""
-            WITH gb AS (SELECT DISTINCT goods_no, business_type, brand_nm FROM sales{wsales}),
-                 st AS (SELECT goods_no, sum(net_take) nt, sum(cp) cp FROM settlement{wstl} GROUP BY goods_no)
+            WITH {_STL_CTE.format(ws=wsales, wstl=wstl)},
+                 gb AS (SELECT DISTINCT goods_no, business_type, brand_nm FROM sales{wsales})
             SELECT gb.business_type, gb.brand_nm,
-                   CAST(sum(st.nt) AS DOUBLE) net_take, CAST(sum(st.cp) AS DOUBLE) cp
-            FROM gb JOIN st ON st.goods_no = gb.goods_no
-            GROUP BY 1, 2""", psales + pstl)
+                   CAST(SUM(CASE WHEN gr.cov > 0 THEN {_STL_NT} END) AS DOUBLE) net_take,
+                   CAST(SUM(CASE WHEN gr.cov > 0 THEN j.cp END) AS DOUBLE) cp
+            FROM j JOIN gr ON gr.goods_no = j.goods_no CROSS JOIN ov
+                 JOIN gb ON gb.goods_no = j.goods_no
+            GROUP BY 1, 2""", psales + pstl + psales)
     except Exception:
         return {}
-    return {(r.business_type, r.brand_nm): (_num(r.net_take), _num(r.cp)) for r in df.itertuples()}
+    return {(r.business_type, r.brand_nm): (_stl_none(r.net_take), _stl_none(r.cp)) for r in df.itertuples()}
 
 
 def _aov(f: dict):

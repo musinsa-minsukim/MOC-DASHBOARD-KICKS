@@ -46,7 +46,7 @@ const BRAND_COLS = [
   colNum("gmv", "GMV", "compact"),
   colNum("normal_amt", "정상가매출", "compact"),
   colNum("pay", "실결제", "compact"),
-  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = editorial_summary_v.profit · 미커버 브랜드는 공란 · 원천 ~1일 지연 · CP(공헌이익)는 손익 탭 참조" }),
+  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = 정산 profit · 오늘자는 take rate로 잠정 추정 · 미커버 브랜드 공란 · CP는 손익 탭" }),
   colNum("foreign_gmv", "외국인GMV", "compact"),
   colNum("foreign_ratio", "외국인비중", "num", { valueFormatter: pct0 }),
   colNum("discount_rate", "할인율", "num", { valueFormatter: pct1 }),
@@ -67,7 +67,7 @@ const GOODS_COLS = [
   colNum("gmv", "GMV", "compact"),
   colNum("normal_amt", "정상가매출", "compact"),
   colNum("pay", "실결제", "compact"),
-  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = editorial_summary_v.profit · 미커버 상품은 공란 · CP(공헌이익)는 손익 탭 참조" }),
+  colNum("net_take", "순이익(NetTake)", "compact", { minWidth: 108, headerTooltip: "순이익 = 정산 profit · 오늘자는 상품 take rate로 잠정 추정 · 미커버 상품 공란 · CP는 손익 탭" }),
   colNum("foreign_gmv", "외국인GMV", "compact"),
   colNum("foreign_ratio", "외국인비중", "num", { valueFormatter: pct0 }),
   colNum("discount_rate", "할인율", "num", { valueFormatter: pct1 }),
@@ -506,7 +506,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
         {cur?.net_take != null && (
           <Kpi icon={<Wallet size={16} />} label="순이익 (Net Take)" value={won(cur.net_take)}
                delta={cur && prev && prev.net_take != null ? pctDelta(cur.net_take, prev.net_take) : null}
-               sub="editorial 정산 · 미커버 상품 제외" />
+               sub="정산 profit · 오늘자 잠정 추정 포함" />
         )}
         <Kpi icon={<Percent size={16} />} label="평균 할인율" value={cur ? cur.discount_rate.toFixed(1) + "%" : "—"} />
         <Kpi icon={<Globe size={16} />} label="외국인 매출 비중" value={cur ? cur.foreign_ratio.toFixed(1) + "%" : "—"} />

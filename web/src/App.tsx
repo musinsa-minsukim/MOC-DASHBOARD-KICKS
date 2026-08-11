@@ -117,7 +117,7 @@ function Topbar({ title, dark, onTheme, status }: {
         <div className="hidden flex-col text-[11px] leading-tight text-slate-400 lg:flex dark:text-slate-500" title="판매=MOSS 증분(준실시간) · 재고=일별 스냅샷">
           <span>판매 데이터 <b className="font-semibold text-slate-600 dark:text-slate-300">{status?.sales_max_date ?? "—"}</b> · 최근거래 {fmtTs(status?.sales_max_ts)} · 갱신 {fmtDT(status?.sales_refreshed_at)}</span>
           <span>재고 데이터 <b className="font-semibold text-slate-600 dark:text-slate-300">{status?.inventory_pivot_data_date ?? "—"}</b> · 갱신 {fmtDT(status?.inventory_pivot_refreshed_at)}</span>
-          <span className="text-amber-500 dark:text-amber-400/90">CP·순이익(Net Take)·입객은 익일 반영 (원천 1일 지연)</span>
+          <span className="text-amber-500 dark:text-amber-400/90">CP·입객은 익일 반영 · 순이익 오늘자는 잠정 추정 (원천 1일 지연)</span>
         </div>
         <button
           onClick={onTheme}
