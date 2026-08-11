@@ -921,31 +921,90 @@ def _goods_store_long(f: dict):
     return df
 
 
+def _settlement_option_df(f: dict):
+    """CSV용 (매출일자 × 매장 × 상품 × 옵션) 정산 상세 + 점재고(goods×매장). sales 필터 goods 세트로 스코프.
+       settlement_option 캐시 없으면 None → 상위에서 goods 단위 폴백."""
+    wsales, psales = build_where(f)
+    wso, pso = [], []
+    if f.get("date_from"):
+        wso.append("so.sales_date >= CAST(? AS DATE)"); pso.append(f["date_from"])
+    if f.get("date_to"):
+        wso.append("so.sales_date < CAST(? AS DATE) + INTERVAL 1 DAY"); pso.append(f["date_to"])
+    for key, col in (("type", "shop_type"), ("store", "store_name"), ("brand", "brand_nm"),
+                     ("cat_large", "cat_large"), ("cat_medium", "cat_medium")):
+        vals = f.get(key)
+        if vals:
+            wso.append(f"so.{col} IN ({','.join(['?'] * len(vals))})"); pso += list(vals)
+    inner = " AND ".join(wso)
+    cond = " WHERE " + ((inner + " AND ") if inner else "") + "so.goods_no IN (SELECT goods_no FROM g)"
+    try:
+        df = store.query(f"""
+            WITH g AS (SELECT DISTINCT goods_no FROM sales{wsales})
+            SELECT so.sales_date, so.store_name, so.brand_nm, so.cat_large, so.cat_medium,
+                   so.goods_no, any_value(so.goods_nm) goods_nm, so.option_nm,
+                   CAST(sum(so.qty) AS DOUBLE) qty, CAST(sum(so.gmv) AS DOUBLE) gmv,
+                   CAST(sum(so.normal_amt) AS DOUBLE) normal_amt, CAST(sum(so.pay) AS DOUBLE) pay,
+                   CAST(sum(so.net_take) AS DOUBLE) net_take, CAST(sum(so.cp) AS DOUBLE) cp
+            FROM settlement_option so{cond}
+            GROUP BY so.sales_date, so.store_name, so.brand_nm, so.cat_large, so.cat_medium, so.goods_no, so.option_nm
+            HAVING sum(so.qty) <> 0 OR sum(so.gmv) <> 0
+            ORDER BY so.sales_date, so.store_name, gmv DESC""", psales + pso)
+    except Exception:
+        return None
+    try:   # (goods_no × 매장) 점재고(goods 단위) 조인 — 옵션별로 반복 표기
+        stk = store.query('SELECT goods_no, store_name, CAST(sum("점재고") AS DOUBLE) stock '
+                          "FROM inventory_store_long GROUP BY 1, 2")
+        df = df.merge(stk, on=["goods_no", "store_name"], how="left")
+    except Exception:
+        df["stock"] = 0
+    df["stock"] = df["stock"].fillna(0)
+    return df
+
+
 @app.get("/api/sales/goods.csv")
 def sales_goods_csv(f: dict = Depends(get_filters),
                     _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """판매 CSV — **tidy/long**: (매장 × 상품)당 1행(열=매장·상품속성·판매·재고). 화면 피벗을 행으로 풂."""
+    """판매 CSV — tidy/long. settlement_option 있으면 (매출일자 × 매장 × 상품 × 옵션)당 1행
+       (순이익·CP·정산GMV 포함), 없으면 (매장 × 상품) goods 단위로 폴백. 화면 기본은 TOTAL."""
     import io, csv
-    df = _goods_store_long(f)
-    cat = prodmeta.goods_catalog([int(x) for x in df["goods_no"].tolist()]) if not df.empty else {}
+    df = _settlement_option_df(f)
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["매장", "사업구분", "최상위", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명",
-                "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV", "정상가매출", "실결제", "외국인GMV",
-                "순이익(NetTake)", "점재고"])
-    for r in df.itertuples():
-        c = cat.get(int(r.goods_no), {})
-        q = int(_num(r.qty))
-        w.writerow([r.store_name, r.business_type, r.cat_top, r.cat_large, r.cat_medium, r.brand_nm,
-                    int(r.goods_no), c.get("style_no", ""), r.goods_nm,
-                    int(c.get("normal_price", 0)), int(c.get("sale_price", 0)),
-                    int(_num(r.gmv) / q) if q else 0,
-                    q, int(_num(r.gmv)), int(_num(r.normal_amt)),
-                    int(_num(r.pay)), int(_num(r.foreign_gmv)),
-                    int(_num(r.net_take)), int(_num(r.stock))])
+    if df is not None and not df.empty:
+        cat = prodmeta.goods_catalog([int(x) for x in df["goods_no"].unique().tolist()])
+        w.writerow(["매출일자", "매장", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명", "옵션",
+                    "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV(정산)", "정상가매출", "실결제",
+                    "순이익(NetTake)", "공헌이익(CP)", "점재고"])
+        for r in df.itertuples():
+            c = cat.get(int(r.goods_no), {})
+            q = int(_num(r.qty))
+            w.writerow([str(r.sales_date)[:10], r.store_name, r.cat_large, r.cat_medium, r.brand_nm,
+                        int(r.goods_no), c.get("style_no", ""), r.goods_nm, r.option_nm,
+                        int(c.get("normal_price", 0)), int(c.get("sale_price", 0)),
+                        int(_num(r.gmv) / q) if q else 0,
+                        q, int(_num(r.gmv)), int(_num(r.normal_amt)), int(_num(r.pay)),
+                        int(_num(r.net_take)), int(_num(r.cp)), int(_num(r.stock))])
+        fname = "offline_sales_by_date_option.csv"
+    else:
+        df = _goods_store_long(f)
+        cat = prodmeta.goods_catalog([int(x) for x in df["goods_no"].tolist()]) if not df.empty else {}
+        w.writerow(["매장", "사업구분", "최상위", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명",
+                    "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV", "정상가매출", "실결제", "외국인GMV",
+                    "순이익(NetTake)", "공헌이익(CP)", "점재고"])
+        for r in df.itertuples():
+            c = cat.get(int(r.goods_no), {})
+            q = int(_num(r.qty))
+            w.writerow([r.store_name, r.business_type, r.cat_top, r.cat_large, r.cat_medium, r.brand_nm,
+                        int(r.goods_no), c.get("style_no", ""), r.goods_nm,
+                        int(c.get("normal_price", 0)), int(c.get("sale_price", 0)),
+                        int(_num(r.gmv) / q) if q else 0,
+                        q, int(_num(r.gmv)), int(_num(r.normal_amt)),
+                        int(_num(r.pay)), int(_num(r.foreign_gmv)),
+                        int(_num(r.net_take)), int(_num(r.cp)), int(_num(r.stock))])
+        fname = "offline_sales_by_store_goods.csv"
     data = ("﻿" + buf.getvalue()).encode("utf-8")
     return Response(content=data, media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": 'attachment; filename="offline_sales_by_store_goods.csv"'})
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @app.get("/api/daily")

@@ -469,6 +469,36 @@ def fetch_settlement() -> pd.DataFrame:
     return d[d["sales_date"].notna()]
 
 
+def fetch_settlement_option() -> pd.DataFrame:
+    """오프라인 편집샵 정산 상세(옵션/사이즈 단위) — team.sales.dsh_d_upt_editorial_summary_v.
+       그레인: 일자×매장×상품×옵션(option_nm). CSV(일자·옵션별 순이익·CP·정산GMV) 전용.
+       ⚠️ gmv=ord_amt(정산기준, MOSS 화면 GMV와 다를 수 있음). Net Take=profit, CP=contribution_profit_pre.
+       대시보드 매장(dim_store)만. net_take 요약은 goods 단위 settlement 캐시가 담당(여긴 CSV 상세용)."""
+    q = ("WITH " + DIM_STORE + r"""
+        SELECT v.ord_state_date AS sales_date, ds.store_name, ds.shop_type,
+               v.brand_nm, v.large_nm AS cat_large, v.medium_nm AS cat_medium,
+               CAST(v.goods_no AS BIGINT) AS goods_no, ANY_VALUE(v.goods_nm) AS goods_nm, v.option_nm,
+               CAST(SUM(v.qty) AS DOUBLE)          AS qty,
+               CAST(SUM(v.ord_amt) AS DOUBLE)      AS gmv,
+               CAST(SUM(v.normal_amt) AS DOUBLE)   AS normal_amt,
+               CAST(SUM(v.pay_amt) AS DOUBLE)      AS pay,
+               CAST(SUM(v.profit) AS DOUBLE)       AS net_take,
+               CAST(SUM(v.contribution_profit_pre) AS DOUBLE) AS cp
+        FROM team.sales.dsh_d_upt_editorial_summary_v v
+        JOIN dim_store ds ON ds.shop_no = v.shop_no
+        WHERE v.ord_state_date IS NOT NULL AND v.goods_no IS NOT NULL
+        GROUP BY 1, 2, 3, 4, 5, 6, 7, 9
+    """)
+    d = run_df(q)
+    d["sales_date"] = pd.to_datetime(d["sales_date"], errors="coerce")
+    d["goods_no"] = pd.to_numeric(d["goods_no"], errors="coerce").fillna(0).astype("int64")
+    for c in ("qty", "gmv", "normal_amt", "pay", "net_take", "cp"):
+        d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0)
+    for c in ("brand_nm", "cat_large", "cat_medium", "goods_nm", "option_nm", "store_name", "shop_type"):
+        d[c] = d[c].fillna("")
+    return d[d["sales_date"].notna()]
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_md_names() -> dict:
     """offline_md_id(예: minsu.kim) → 한글명. 여러 소스의 (md_id→md_nm)를 합쳐 최대 커버리지."""
