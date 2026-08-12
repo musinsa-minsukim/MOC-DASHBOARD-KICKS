@@ -95,9 +95,10 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
     return c;
   }, [d, level, mode, dark]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 합계행 — rowData 최상단 __muTotal 행으로 (pinnedTop은 이 그리드에서 값 변경 시 리렌더 안 되는
-  // 한계가 있어, 필터/월 변경에 '즉시 갱신'되도록 rowData에 넣는다. postSortRows가 항상 최상단 고정).
-  const gridRows = useMemo(() => (d?.totals ? [{ __muTotal: true, ...d.totals }, ...(d.rows || [])] : (d?.rows || [])), [d]);
+  // 합계행 — pinnedTop(상단 고정). pinnedTop은 값 변경 시 셀 리렌더가 안 되는 한계가 있어,
+  // 데이터가 바뀌면(gridKey 변경) 그리드를 리마운트해 '고정 + 필터 반영'을 동시에 만족시킨다.
+  const total = useMemo(() => (d?.totals ? [d.totals] : []), [d]);
+  const gridKey = useMemo(() => `${d?.period}|${level}|${(d?.rows?.length) || 0}|${Math.round((d?.totals?.gmv) || 0)}|${Math.round((d?.totals?.cp) || 0)}`, [d, level]);
 
   const onCellClicked = (e: any) => {
     if (level !== "store" || e?.node?.rowPinned) return;
@@ -166,8 +167,7 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
             <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{drill ? `${drill} · 브랜드별` : "매장별"} 손익 · {d.period} {mode === "day" ? "(일마감)" : "(월마감)"}</h3>
             <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">CP 내림차순 · 합계 고정 · {pmLabel}·{pyLabel} CP 대비 · 순매출율/CP율 = 전체 대비 색상</p>
           </div>
-          <DataGrid rows={gridRows} columns={cols} dark={dark} onCellClicked={onCellClicked}
-            getRowClass={(p: any) => (p.data?.__muTotal ? "mu-total" : "")}
+          <DataGrid key={gridKey} rows={d.rows} columns={cols} dark={dark} pinnedTop={total} onCellClicked={onCellClicked}
             height={Math.min(860, 96 + ((d.rows?.length || 0) + 1) * 34)} />
         </CardBody></Card>
       )}

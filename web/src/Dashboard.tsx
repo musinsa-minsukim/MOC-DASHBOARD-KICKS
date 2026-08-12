@@ -539,7 +539,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
               </button>
             </div>
           </div>
-          <DataGrid rows={brandRows} columns={brandCols} dark={dark} height={440} pinnedTop={brandTotal} />
+          <DataGrid key={`b${brandRows.length}-${Math.round((brandTotal[0] as any)?.gmv || 0)}`} rows={brandRows} columns={brandCols} dark={dark} height={440} pinnedTop={brandTotal} />
         </CardBody>
       </Card>
 
@@ -645,7 +645,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
               </button>
             </div>
           </div>
-          <DataGrid rows={goodsRows} columns={goodsCols} dark={dark} height={460} pinnedTop={goodsTotal} />
+          <DataGrid key={`g${goodsRows.length}-${Math.round((goodsTotal[0] as any)?.gmv || 0)}`} rows={goodsRows} columns={goodsCols} dark={dark} height={460} pinnedTop={goodsTotal} />
         </CardBody>
       </Card>
     </div>

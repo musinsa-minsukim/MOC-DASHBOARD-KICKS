@@ -197,9 +197,10 @@ export default function DataGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, columns, isMobile]);
 
-  // pinnedTop(합계) 행 갱신 시도. ⚠️ 이 그리드 설정에선 pinnedTopRowData의 셀 DOM이 값 변경 시
-  // 리렌더되지 않는 알려진 한계가 있어(데이터모델만 갱신), 필터로 값이 바뀌어야 하는 합계는
-  // pinnedTop 대신 rowData 최상단 __muTotal 행을 쓰는 것을 권장(반응성 O). 여기선 초기 표시만 담당.
+  // pinnedTop(합계) 행 초기 반영. ⚠️ 이 그리드 설정에선 pinnedTopRowData의 셀 DOM이 값 변경 시
+  // 리렌더되지 않는 한계가 있음(데이터모델만 갱신됨 — setGridOption/redrawRows/refreshCells 모두 무효).
+  // → 합계가 '필터에 반영'돼야 하는 표는 호출부에서 데이터 바뀔 때 <DataGrid key=...>로 리마운트할 것
+  //   (리마운트 시 초기 렌더로 pinned가 정확히 그려짐 = 고정 + 반영 동시 만족). 여기선 초기 세팅만.
   const pinnedKey = useMemo(() => JSON.stringify(pinnedTop ?? []), [pinnedTop]);
   useEffect(() => {
     const api = apiRef.current;
