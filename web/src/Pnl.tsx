@@ -75,7 +75,7 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
     const c: any[] = [
       colText("name", level === "brand" ? "브랜드" : "매장", {
         pinned: "left", minWidth: 180,
-        cellStyle: (p: any) => (level === "store" && p.data?.name && p.data?.name !== "합계" ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : {}),
+        cellStyle: (p: any): any => (level === "store" && p.data?.name && p.data?.name !== "합계" ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : {}),
       }),
     ];
     if (level === "store")
