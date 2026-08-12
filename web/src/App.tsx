@@ -7,6 +7,7 @@ import {
   Package,
   Target as TargetIcon,
   ListTree,
+  Coins,
   LogOut,
   RefreshCw,
   BarChart4,
@@ -24,10 +25,12 @@ const Inventory = lazy(() => import("./Inventory"));
 const Compare = lazy(() => import("./Compare"));
 const Target = lazy(() => import("./Target"));
 const Drill = lazy(() => import("./Drill"));
+const Pnl = lazy(() => import("./Pnl"));
 
 const NAV = [
   { key: "summary", label: "요약", icon: LayoutDashboard, ready: true },
   { key: "sales", label: "판매", icon: ShoppingCart, ready: true },
+  { key: "pnl", label: "손익", icon: Coins, ready: true },
   { key: "drill", label: "드릴다운", icon: ListTree, ready: true },
   { key: "target", label: "목표 대비 실적", icon: TargetIcon, ready: true },
   { key: "customer", label: "고객·외국인", icon: Users, ready: true },
@@ -271,6 +274,7 @@ export default function App() {
             {view === "inventory" && <Inventory key={dataVersion} meta={meta} dark={dark} filters={filters} onPick={crossFilter} />}
             {view === "compare" && <Compare key={dataVersion} meta={meta} filters={filters} dark={dark} onPick={crossFilter} />}
             {view === "target" && <Target key={dataVersion} meta={meta} dark={dark} />}
+            {view === "pnl" && <Pnl key={dataVersion} meta={meta} dark={dark} />}
           </Suspense>
         </main>
       </div>

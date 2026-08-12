@@ -499,6 +499,34 @@ def fetch_settlement_option() -> pd.DataFrame:
     return d[d["sales_date"].notna()]
 
 
+def fetch_settlement_daily() -> pd.DataFrame:
+    """오프라인 손익(P&L) 일자×매장×브랜드 집계 — team.sales.dsh_d_upt_editorial_summary_v. 손익 탭 전용.
+       Net Take=profit, CP=contribution_profit_pre, GMV=ord_amt(정산), 매장고정비=offline_cost_fixed.
+       전월·전년동월 비교 위해 전체 이력(2023-10~) 보관. 대시보드 매장(dim_store)만.
+       ⚠️ 최근 ~2개월 CP·매장고정비는 예측(잠정) — SAP 실적 확정 전."""
+    q = ("WITH " + DIM_STORE + r"""
+        SELECT v.ord_state_date AS sales_date, ds.store_name, ds.shop_type, v.brand_nm,
+               CAST(SUM(v.qty) AS DOUBLE)          AS qty,
+               CAST(SUM(v.ord_amt) AS DOUBLE)      AS gmv,
+               CAST(SUM(v.normal_amt) AS DOUBLE)   AS normal_amt,
+               CAST(SUM(v.profit) AS DOUBLE)       AS net_take,
+               CAST(SUM(v.contribution_profit_pre) AS DOUBLE) AS cp,
+               CAST(SUM(v.offline_cost_fixed) AS DOUBLE)      AS offline_cost,
+               CAST(SUM(v.additional_rev) AS DOUBLE)          AS add_rev
+        FROM team.sales.dsh_d_upt_editorial_summary_v v
+        JOIN dim_store ds ON ds.shop_no = v.shop_no
+        WHERE v.ord_state_date IS NOT NULL
+        GROUP BY 1, 2, 3, 4
+    """)
+    d = run_df(q)
+    d["sales_date"] = pd.to_datetime(d["sales_date"], errors="coerce")
+    for c in ("qty", "gmv", "normal_amt", "net_take", "cp", "offline_cost", "add_rev"):
+        d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0)
+    for c in ("store_name", "shop_type", "brand_nm"):
+        d[c] = d[c].fillna("")
+    return d[d["sales_date"].notna()]
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_md_names() -> dict:
     """offline_md_id(예: minsu.kim) → 한글명. 여러 소스의 (md_id→md_nm)를 합쳐 최대 커버리지."""

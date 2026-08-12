@@ -106,6 +106,7 @@ export const api = {
   inventory: (qs: string) => req("/inventory" + qs),
   compare: (qs: string) => req("/compare" + qs),
   target: (qs = "") => req("/target" + qs),
+  pnl: (qs = "") => req("/pnl" + qs),
   salesBrands: (qs: string) => req("/sales/brands" + qs),
   salesGoods: (qs: string, limit = 1500) =>
     req("/sales/goods" + qs + (qs ? "&" : "?") + `limit=${limit}`),

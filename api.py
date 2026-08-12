@@ -1014,6 +1014,91 @@ def sales_goods_csv(f: dict = Depends(get_filters),
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
+@app.get("/api/pnl")
+def pnl(mode: str = "month", period: str | None = None, level: str = "store",
+        store_f: list[str] = Query(default=[], alias="store"),
+        types_f: list[str] = Query(default=[], alias="type"),
+        brand_f: list[str] = Query(default=[], alias="brand"),
+        _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """손익(P&L) — 매장별(level=store) 또는 브랜드별(level=brand, 매장 필터) × 월마감/일마감.
+       공식 정산값(editorial): Net Take=profit, CP=contribution_profit_pre, GMV=정산(ord_amt),
+       매장고정비=offline_cost. 당기 + 전월(전일)·전년동월(전년동일) CP 대비. settlement_daily 캐시 필요."""
+    import datetime as _dt, calendar as _cal
+    try:
+        mrow = store.query("SELECT CAST(max(sales_date) AS DATE) mx, CAST(min(sales_date) AS DATE) mn FROM settlement_daily").iloc[0]
+        max_d, min_d = mrow["mx"], mrow["mn"]
+    except Exception:
+        return {"available": False, "rows": [], "months": [], "mode": mode}
+    if max_d is None:
+        return {"available": False, "rows": [], "months": [], "mode": mode}
+    max_d = _dt.date.fromisoformat(str(max_d)[:10]); min_d = _dt.date.fromisoformat(str(min_d)[:10])
+
+    def mrange(y, m):
+        return _dt.date(y, m, 1), _dt.date(y, m, _cal.monthrange(y, m)[1])
+    if mode == "day":
+        cd = _dt.date.fromisoformat(period) if period else max_d
+        cur, pm, py = (cd, cd), (cd - _dt.timedelta(days=1),) * 2, (cd.replace(year=cd.year - 1),) * 2
+        label = cd.isoformat()
+    else:
+        y, m = (int(period[:4]), int(period[5:7])) if period else (max_d.year, max_d.month)
+        cur = mrange(y, m)
+        pm = mrange(y - 1, 12) if m == 1 else mrange(y, m - 1)
+        py = mrange(y - 1, m)
+        label = f"{y:04d}-{m:02d}"
+
+    gcol = "brand_nm" if level == "brand" else "store_name"
+    wc, wp = [], []
+    for vals, col in ((types_f, "shop_type"), (store_f, "store_name"), (brand_f, "brand_nm")):
+        if vals:
+            wc.append(f"{col} IN ({','.join(['?'] * len(vals))})"); wp += list(vals)
+    wextra = (" AND " + " AND ".join(wc)) if wc else ""
+
+    def agg(rng, cols):
+        return store.query(f"""
+            SELECT {gcol} k, {cols} FROM settlement_daily
+            WHERE sales_date >= CAST(? AS DATE) AND sales_date < CAST(? AS DATE) + INTERVAL 1 DAY{wextra}
+            GROUP BY {gcol}""", [rng[0].isoformat(), rng[1].isoformat()] + wp)
+    cur_df = agg(cur, "CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(net_take) AS DOUBLE) net_take, "
+                      "CAST(sum(cp) AS DOUBLE) cp, CAST(sum(offline_cost) AS DOUBLE) offline_cost, "
+                      "CAST(sum(normal_amt) AS DOUBLE) normal_amt, CAST(sum(qty) AS DOUBLE) qty, "
+                      "any_value(shop_type) shop_type")
+    pmm = {r.k: _num(r.cp) for r in agg(pm, "CAST(sum(cp) AS DOUBLE) cp").itertuples()}
+    pym = {r.k: _num(r.cp) for r in agg(py, "CAST(sum(cp) AS DOUBLE) cp").itertuples()}
+    _d = lambda a, b: ((a - b) / abs(b) * 100) if b else None
+
+    rows = []
+    for r in cur_df.itertuples():
+        gmv, cp, nt = _num(r.gmv), _num(r.cp), _num(r.net_take)
+        pmc, pyc = pmm.get(r.k, 0.0), pym.get(r.k, 0.0)
+        rows.append({"name": r.k, "shop_type": getattr(r, "shop_type", ""),
+                     "gmv": gmv, "net_take": nt, "cp": cp, "offline_cost": _num(r.offline_cost),
+                     "qty": _num(r.qty), "normal_amt": _num(r.normal_amt),
+                     "cp_rate": (cp / (gmv / 1.1) * 100) if gmv else 0,
+                     "nt_rate": (nt / gmv * 100) if gmv else 0,
+                     "pm_cp": pmc, "pm_delta": _d(cp, pmc), "py_cp": pyc, "py_delta": _d(cp, pyc)})
+    rows.sort(key=lambda x: -x["cp"])
+
+    def T(k): return sum(x[k] for x in rows)
+    tg, tcp, tnt, tpm, tpy = T("gmv"), T("cp"), T("net_take"), T("pm_cp"), T("py_cp")
+    totals = {"name": "합계", "shop_type": "", "gmv": tg, "net_take": tnt, "cp": tcp,
+              "offline_cost": T("offline_cost"), "qty": T("qty"), "normal_amt": T("normal_amt"),
+              "cp_rate": (tcp / (tg / 1.1) * 100) if tg else 0, "nt_rate": (tnt / tg * 100) if tg else 0,
+              "pm_cp": tpm, "pm_delta": _d(tcp, tpm), "py_cp": tpy, "py_delta": _d(tcp, tpy)}
+
+    # 월 목록(월마감 셀렉트용)
+    months = []
+    yy, mm = min_d.year, min_d.month
+    while (yy, mm) <= (max_d.year, max_d.month):
+        months.append(f"{yy:04d}-{mm:02d}")
+        mm = 1 if mm == 12 else mm + 1
+        yy = yy + 1 if mm == 1 else yy
+    # 잠정: 당기 종료일이 최근 ~2개월 이내면 CP·고정비 예측(미확정)
+    provisional = cur[1] >= (max_d.replace(day=1) - _dt.timedelta(days=62))
+    return {"available": True, "mode": mode, "level": level, "period": label,
+            "rows": rows, "totals": totals, "provisional": provisional,
+            "months": months[::-1], "max_date": max_d.isoformat()}
+
+
 @app.get("/api/daily")
 def daily_report(basis: str | None = None, seg: str | None = None,
                  _: str = Depends(require_user), __: None = Depends(require_ready)):

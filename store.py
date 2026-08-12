@@ -33,10 +33,11 @@ _SNAPSHOTS = {
     "global_customer": db.fetch_global_customer,  # 국가별 GMV(일자×매장×국적) — 고객 탭
     "settlement": db.fetch_settlement,         # 순이익(Net Take)·공헌이익(CP) 일자×매장×상품 — 판매 탭
     "settlement_option": db.fetch_settlement_option,  # 정산 상세 일자×매장×상품×옵션 — CSV 전용
+    "settlement_daily": db.fetch_settlement_daily,    # 손익(P&L) 일자×매장×브랜드 — 손익 탭 전용
 }
 # readiness(=앱 구동 가능)에서 제외하는 선택 스냅샷: 아직 캐시에 없어도 앱은 정상 동작하고,
 # 다음 full 갱신(mode=full/rebuild) 때 생성되면 자동으로 뷰가 잡힌다(receipts와 동일 취급).
-_OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option"}
+_OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option", "settlement_daily"}
 _ALL = ["sales", *_SNAPSHOTS]
 # DuckDB 뷰 생성 대상(=_ALL + 객단가용 영수증). receipts는 readiness(missing) 게이트에는 넣지 않아
 # 기존 캐시만 있어도 앱이 동작하고, 판매 갱신/빌드 시 생성되면 자동으로 뷰가 잡힌다.
