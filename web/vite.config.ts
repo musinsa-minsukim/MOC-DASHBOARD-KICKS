@@ -28,6 +28,11 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // 배포 즉시 새 SW 활성화 → 열려있는 탭이 옛 번들을 계속 쓰던 stale 캐시 문제 방지
+        // (증상: 배포 후 화면/합계행/계산이 옛 코드로 보임). autoUpdate + skipWaiting/clientsClaim.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         // 폰트(woff2)는 프리캐시 제외 → Pretendard 다이내믹 서브셋 수백 개가 설치 시 한꺼번에
         // 받아지지 않도록. 대신 아래 runtimeCaching으로 사용된 글리프만 CacheFirst 캐시.
         globPatterns: ["**/*.{js,css,html,png,svg}"],
