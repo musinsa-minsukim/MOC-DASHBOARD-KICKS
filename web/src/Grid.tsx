@@ -197,14 +197,15 @@ export default function DataGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, columns, isMobile]);
 
-  // pinned(합계) 행 프롭 변경을 그리드에 명시 반영. ag-grid-react가 pinnedTopRowData 프롭 변경을
-  // 항상 리렌더하지 않아, 필터로 합계가 바뀌어도 합계행만 이전 값으로 남던 문제 방지.
+  // pinnedTop(합계) 행 갱신 시도. ⚠️ 이 그리드 설정에선 pinnedTopRowData의 셀 DOM이 값 변경 시
+  // 리렌더되지 않는 알려진 한계가 있어(데이터모델만 갱신), 필터로 값이 바뀌어야 하는 합계는
+  // pinnedTop 대신 rowData 최상단 __muTotal 행을 쓰는 것을 권장(반응성 O). 여기선 초기 표시만 담당.
+  const pinnedKey = useMemo(() => JSON.stringify(pinnedTop ?? []), [pinnedTop]);
   useEffect(() => {
     const api = apiRef.current;
-    if (api) {
-      try { api.setGridOption("pinnedTopRowData", pinnedTop ?? []); api.refreshCells({ force: true }); } catch { /* noop */ }
-    }
-  }, [pinnedTop]);
+    if (!api) return;
+    try { api.setGridOption("pinnedTopRowData", pinnedTop ?? []); api.refreshCells({ force: true }); } catch { /* noop */ }
+  }, [pinnedKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const flash = (msg: string) => {
     setCopiedMsg(msg);

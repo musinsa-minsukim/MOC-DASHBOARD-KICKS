@@ -30,7 +30,7 @@ const Pnl = lazy(() => import("./Pnl"));
 const NAV = [
   { key: "summary", label: "요약", icon: LayoutDashboard, ready: true },
   { key: "sales", label: "판매", icon: ShoppingCart, ready: true },
-  { key: "pnl", label: "손익", icon: Coins, ready: true },
+  { key: "pnl", label: "NET TAKE/CP", icon: Coins, ready: true },
   { key: "drill", label: "드릴다운", icon: ListTree, ready: true },
   { key: "target", label: "목표 대비 실적", icon: TargetIcon, ready: true },
   { key: "customer", label: "고객·외국인", icon: Users, ready: true },
