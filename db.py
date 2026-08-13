@@ -26,11 +26,14 @@ def _new_connection():
     if not (host and http_path and token):
         c = st.secrets["databricks"]
         host, http_path, token = c["host"], c["http_path"], c["token"]
-    # use_cloud_fetch=False: 대용량 결과를 CDN(urllib3)에서 받지 않고 SQL 엔드포인트로 직접 수신.
-    # 회사 프록시 truststore가 CloudFetch 다운로드 TLS(verify_mode/check_hostname)와 충돌해
-    # 간헐적 'Cannot set verify_mode to CERT_NONE' 오류가 나던 것을 방지 (집계 쿼리라 성능 영향 미미).
+    # use_cloud_fetch: 대용량 결과 수신 방식. True=CDN(Arrow 벌크 다운로드, 훨씬 빠름) / False=SQL 엔드포인트 직수신(느림).
+    #   ⚠️ 회사 프록시(SASE) truststore가 CloudFetch 다운로드 TLS(verify_mode/check_hostname)와 충돌해
+    #      로컬에선 간헐 'Cannot set verify_mode to CERT_NONE' 오류 → 기본 False(안전, 로컬/Cloud Run 불변).
+    #   ✅ 프록시 없는 환경(GitHub Actions 러너)에선 DBX_CLOUD_FETCH=1 로 켜서 대용량 페치 가속
+    #      (sales 45일·ips_goods 11만행 등이 Thrift 행단위 수신으로 15분 timeout 걸리던 문제 해소).
+    cloud_fetch = os.environ.get("DBX_CLOUD_FETCH", "0") == "1"
     return sql.connect(server_hostname=host, http_path=http_path, access_token=token,
-                       use_cloud_fetch=False)
+                       use_cloud_fetch=cloud_fetch)
 
 
 @st.cache_resource(show_spinner=False)

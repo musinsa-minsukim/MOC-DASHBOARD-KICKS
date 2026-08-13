@@ -22,7 +22,7 @@ concurrency:
 jobs:
   refresh-ips:
     runs-on: ubuntu-latest
-    timeout-minutes: 30        # 웜 ~10분 + 콜드 여유
+    timeout-minutes: 40        # CloudFetch로 페치 가속 후엔 여유. 상한일 뿐(실제 시간 아님) — 콜드 스캔 대비
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,6 +56,7 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DBX_CLOUD_FETCH: "1"          # 프록시 없는 러너 → CloudFetch로 대용량 페치 가속(ips_goods 11만행)
         run: python refresh.py --ips
 
       - name: Upload IPS cache to GCS
