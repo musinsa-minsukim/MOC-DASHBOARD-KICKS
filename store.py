@@ -34,10 +34,12 @@ _SNAPSHOTS = {
     "settlement": db.fetch_settlement,         # 순이익(Net Take)·공헌이익(CP) 일자×매장×상품 — 판매 탭
     "settlement_option": db.fetch_settlement_option,  # 정산 상세 일자×매장×상품×옵션 — CSV 전용
     "settlement_daily": db.fetch_settlement_daily,    # 손익(P&L) 일자×매장×브랜드 — 손익 탭 전용
+    "ips": db.fetch_ips,                                # 통합 IPS 브랜드×구분(매입/위탁) — IPS 탭 전용
+    "ips_goods": db.fetch_ips_goods,                    # 통합 IPS 상품단위(드릴다운) — IPS 탭 상품 드릴
 }
 # readiness(=앱 구동 가능)에서 제외하는 선택 스냅샷: 아직 캐시에 없어도 앱은 정상 동작하고,
 # 다음 full 갱신(mode=full/rebuild) 때 생성되면 자동으로 뷰가 잡힌다(receipts와 동일 취급).
-_OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option", "settlement_daily"}
+_OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option", "settlement_daily", "ips", "ips_goods"}
 _ALL = ["sales", *_SNAPSHOTS]
 # DuckDB 뷰 생성 대상(=_ALL + 객단가용 영수증). receipts는 readiness(missing) 게이트에는 넣지 않아
 # 기존 캐시만 있어도 앱이 동작하고, 판매 갱신/빌드 시 생성되면 자동으로 뷰가 잡힌다.
@@ -146,8 +148,19 @@ def refresh_snapshot(name: str) -> int:
     return len(df)
 
 
+# 야간 full(refresh_all)에서 제외하는 무거운 스냅샷 — 별도 스케줄러 잡이 mode=snap 으로 갱신.
+# (IPS는 웜 ~10분이라 동기 full HTTP의 Cloud Run 요청 타임아웃을 압박 → core 리프레시와 분리)
+_DECOUPLED = {"ips", "ips_goods"}
+
+
 def refresh_snapshots() -> dict:
-    return {n: refresh_snapshot(n) for n in _SNAPSHOTS}
+    return {n: refresh_snapshot(n) for n in _SNAPSHOTS if n not in _DECOUPLED}
+
+
+def refresh_named(names: list[str]) -> dict:
+    """지정 스냅샷만 교체(전체 full 없이). 무거운 신규 스냅샷(예: ips)을 야간 full과
+       분리해 독립적으로 채우거나 갱신할 때 사용. 알 수 없는 이름은 무시."""
+    return {n: refresh_snapshot(n) for n in names if n in _SNAPSHOTS}
 
 
 def refresh_all(full: bool = False) -> dict:

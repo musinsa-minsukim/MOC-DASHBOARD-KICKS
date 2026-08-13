@@ -107,6 +107,9 @@ export const api = {
   compare: (qs: string) => req("/compare" + qs),
   target: (qs = "") => req("/target" + qs),
   pnl: (qs = "") => req("/pnl" + qs),
+  ips: (qs = "") => req("/ips" + qs),
+  ipsGoods: (brandCode: string, gubun: string) =>
+    req(`/ips/goods?brand_code=${encodeURIComponent(brandCode)}&gubun=${encodeURIComponent(gubun)}`),
   salesBrands: (qs: string) => req("/sales/brands" + qs),
   salesGoods: (qs: string, limit = 1500) =>
     req("/sales/goods" + qs + (qs ? "&" : "?") + `limit=${limit}`),

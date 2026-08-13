@@ -527,6 +527,490 @@ def fetch_settlement_daily() -> pd.DataFrame:
     return d[d["sales_date"].notna()]
 
 
+# ---------------------------------------------------------------------------
+# 통합 IPS (브랜드 × 구분[매입/위탁] × 실) — Apps Script "통합IPS" 이식.
+#   원천: 온라인 orders_merged_yoy_new + 오프라인 editorial_summary_v
+#         + 재고 dsh_sku_stock_history_by_storage(1P/3P/MFS 일별) + goods/editorial_stock 정상가.
+#   주차: W0=직전 완료주(월~일). 재고 스냅샷 w0~w3/base_mon. current_date 기준 시간상대(=매일 갱신).
+#   ⚠️ 킥스 범위(대상 브랜드·매장)는 원천 데이터로 도출 불가 → 아래 상수 리스트로 고정(스크립트와 동일).
+#      매장코드는 werks별 재사용 위험 있어 (코드+매장명) 쌍으로 필터(STORE_PAIRS).
+# ---------------------------------------------------------------------------
+# 풋웨어/플레이어실 외에도 반드시 포함할 업체코드(타 실 소속 킥스 취급 브랜드)
+IPS_EXTRA_COM_LIST = [
+    'rockfish', 'ept', 'yase', 'pemont', 'tretorn', 'kinchi', 'amersports_salomon', 'brusher', 'iyso',
+    'joycompany', 'khiho', 'samwoo', 'customade', 'freeduck', 'jillbyjillstuart', 'komorebimuseum',
+    'kswisskorea', 'macmoc', 'nuus', 'snc2012', 'vatoz', 'ihcnik', 'eland', 'hilightbrands_2',
+    'coreofalchemy', 'foggymoody', 'jaclar', 'bearpaw', 'kristin', 'samwoohc1', 'brandworkskorea', 'menat',
+]
+# [매입] ERP lgort 4자리 + 재고이력 storage_loc_nm (werks1000 킥스/에디토리얼 플랜트 기준)
+IPS_STORE_1P = [
+    ('3040', 'MSS_대구'), ('3050', 'MSS_홍대'), ('3055', '무신사킥스_홍대'), ('3057', '무신사킥스_성수'),
+    ('3058', '무신사킥스_스타필드 고양점'), ('3150', '무신사 런_서울숲'), ('3160', 'MSS_무신사 스토어 강남'),
+    ('3170', 'MSS_AK플라자 수원점'), ('3360', 'MSS 무신사 스토어 성수'), ('3520', 'MSS_걸즈 타임스퀘어'),
+    ('3530', '메가스토어_아이파크몰_용산'), ('3532', '메가스토어_성수'), ('3580', 'MSS_명동'),
+    ('3590', 'MSS_롯데백화점 잠실'), ('3600', '아울렛&유즈드_롯데몰_은평'), ('3650', 'MSS_백앤캡클럽_서울숲점'),
+    ('3660', 'MSS_트리플스트리트_송도점'),
+]
+# [위탁·MFS] SS03 코드 — 위 매장의 대응 코드
+IPS_STORE_3P = [
+    ('SS030025', '무신사 스토어 대구'), ('SS030026', '무신사 스토어 홍대'), ('SS030027', '무신사 스토어 성수@대림창고'),
+    ('SS030042', '무신사 스토어 강남'), ('SS030054', '무신사 걸즈 타임스퀘어 영등포점'),
+    ('SS030055', '무신사 메가스토어 아이파크몰 용산점'), ('SS030059', '무신사킥스 홍대'),
+    ('SS030060', '무신사 스토어 롯데백화점 잠실점'), ('SS030061', '무신사 스토어 명동'),
+    ('SS030068', '무신사 아울렛&유즈드 롯데몰은평'), ('SS030069', '무신사 메가스토어 성수'),
+    ('SS030070', '무신사 킥스 성수'), ('SS030071', '무신사 백앤캡클럽 서울숲'), ('SS030076', '무신사 런 서울숲'),
+    ('SS030077', '무신사 스토어 AK플라자 수원점'), ('SS030080', '무신사 스토어 트리플스트리트 송도점'),
+    ('SS030107', '무신사 킥스 스타필드 고양점'),
+]
+# 매입(1P) 벤더 업체코드 — 재고 기준. (실적 com_id는 판매주체라 재고 벤더코드와 다름)
+IPS_PUR_COM_LIST = [
+    'adidas', 'nikekorea2', 'puma_1', 'crocs', 'oakely_ftw', 'siv', 'vans', 'underarmourkorea', 'hoka',
+    'merrell_1', 'saucony_ftw', 'keen_1p', 'mizunokorea2', 'converse', 'reebok', 'asics', 'etc', 'drmartens',
+    'amersports', 'sorel_ftw', 'scarpa_1', 'clarks_ftw', 'oofos', 'bnftrading', 'astorflex', 'timberland',
+    'runcollection', 'redwing', 'posteam_1p', 'newbalance_1', 'paes_1', 'thehcorporation', 'districtvision_1',
+    'puma_p', 'birkenstock_1p', 'garminkorea', 'moonstar_ftw', 'islandslipper', 'theartfulstore',
+]
+IPS_EXCLUDE_COM_LIST = ['musinsa_used']
+
+
+def _ips_qlist(items) -> str:
+    """SQL IN 리터럴 목록. 빈 목록은 '' (매칭 없음)."""
+    return ",".join("'" + str(x).replace("'", "''") + "'" for x in items) if items else "''"
+
+
+def _ips_store_pairs() -> str:
+    pairs = IPS_STORE_1P + IPS_STORE_3P
+    return " OR ".join(
+        f"(h.storage_loc_cd='{c}' AND h.storage_loc_nm='{n.replace(chr(39), chr(39) * 2)}')"
+        for c, n in pairs
+    )
+
+
+def _ips_p1700_locs() -> list[str]:
+    """플랜트1700 매장성 lgort 선행 조회 → 메인 쿼리에 리터럴 주입(대용량 ERP 스캔 회피)."""
+    q = r"""
+        SELECT DISTINCT lgort
+        FROM datamart.erp.inventory_closing_latest
+        WHERE buper IN (date_format(current_date(),'yyyyMM'), date_format(add_months(current_date(),-1),'yyyyMM'))
+          AND werks='1700' AND lgort LIKE '3%'
+          AND lgobe NOT LIKE '%온라인몰%' AND lgobe NOT LIKE '%홀세일%'
+    """
+    return [str(x) for x in run_df(q)["lgort"].tolist()]
+
+
+def _ips_pur_brands(p1700: list[str]) -> list[str]:
+    """매입 행을 반드시 생성해야 하는 브랜드(매입벤더·플랜트1700 재고 보유)를 선행 조회."""
+    p1700_lit = _ips_qlist(p1700)
+    q = f"""
+        SELECT DISTINCT g.brand
+        FROM team.sales.dsh_sku_stock_history_by_storage h
+        JOIN datamart.datamart.goods g ON h.product_no=CAST(g.goods_no AS STRING)
+        WHERE h.base_date=LEAST(DATE_TRUNC('WEEK', CURRENT_DATE()),
+                                (SELECT MAX(base_date) FROM team.sales.dsh_sku_stock_history_by_storage))
+          AND h.platform='MUSINSA' AND h.biz_type='1P'
+          AND COALESCE(h.com_id,'') NOT IN ({_ips_qlist(IPS_EXCLUDE_COM_LIST)})
+          AND (h.com_id IN ({_ips_qlist(IPS_PUR_COM_LIST)}) OR h.storage_loc_cd IN ({p1700_lit}))
+          AND g.brand IS NOT NULL
+    """
+    return [str(x) for x in run_df(q)["brand"].tolist()]
+
+
+def _ips_wk(tbl: str, expr: str, alias: str) -> str:
+    """주차별(W0~W3) SUM(CASE ...) 4개 컬럼 생성. tbl=실적테이블 별칭(o/ev)."""
+    return ",\n    ".join(
+        f"SUM(CASE WHEN {tbl}.ord_state_date BETWEEN wk.w{i}s AND wk.w{i}e THEN {expr} ELSE 0 END) AS {alias}_w{i}"
+        for i in range(4)
+    )
+
+
+def _ips_build_sql(p1700: list[str], purb: list[str]) -> str:
+    P1700 = _ips_qlist(p1700)
+    PURB = _ips_qlist(purb)
+    EXTRA = _ips_qlist(IPS_EXTRA_COM_LIST)
+    EXCLUDE = _ips_qlist(IPS_EXCLUDE_COM_LIST)
+    PAIRS = _ips_store_pairs()
+    onQty = _ips_wk('o', 'o.sell_sub_clm_qty', 'on_qty')
+    onGmv = _ips_wk('o', 'o.normal_gmv', 'on_gmv')
+    onNt = _ips_wk('o', 'o.revenue', 'on_nt')
+    onCp = _ips_wk('o', 'o.contribution_profit_pre', 'on_cp')
+    offQty = _ips_wk('ev', 'ev.sell_qty-ev.clm_qty', 'off_qty')
+    offGmv = _ips_wk('ev', 'ev.ord_amt', 'off_gmv')
+    offNt = _ips_wk('ev', 'ev.profit', 'off_nt')
+    offCp = _ips_wk('ev', 'ev.contribution_profit', 'off_cp')
+    return f"""
+WITH wk AS (
+  SELECT
+    DATE_TRUNC('WEEK', CURRENT_DATE())              AS ws,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),7)  AS w0s, DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),1)  AS w0e,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),14) AS w1s, DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),8)  AS w1e,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),21) AS w2s, DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),15) AS w2e,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),28) AS w3s, DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),22) AS w3e,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),56) AS p4s, DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),29) AS p4e,
+    LEAST(DATE_TRUNC('WEEK', CURRENT_DATE()),
+          (SELECT MAX(base_date) FROM team.sales.dsh_sku_stock_history_by_storage)) AS w0,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),7)  AS w1,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),14) AS w2,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),21) AS w3,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),28) AS base_mon,
+    LEAST(DATE_TRUNC('WEEK', CURRENT_DATE()),
+          (SELECT MAX(ord_state_date) FROM team.sales.dsh_d_upt_editorial_stock_summary)) AS con_dt
+),
+pur_brands AS (SELECT explode(array({PURB})) AS brand_id),
+onl_raw AS (
+  SELECT o.brand AS brand_id, o.ord_com_type, o.hier,
+    MAX(o.com_id) AS com_id,
+    SUM(CASE WHEN o.ord_state_date BETWEEN wk.w3s AND wk.w0e THEN o.normal_gmv ELSE 0 END) AS gmv4,
+    {onQty},
+    {onGmv},
+    {onNt},
+    {onCp},
+    SUM(CASE WHEN o.ord_state_date>=wk.base_mon THEN o.mem_dc+o.cou_dc+o.cart_cou_dc ELSE 0 END) AS coupon_m0,
+    SUM(CASE WHEN o.ord_state_date BETWEEN wk.w3s AND wk.w0e THEN o.normal_ggmv ELSE 0 END) AS on_nggmv_4w,
+    SUM(CASE WHEN o.ord_state_date BETWEEN wk.p4s AND wk.p4e THEN o.normal_gmv ELSE 0 END) AS gmv_prev4w,
+    SUM(CASE WHEN o.ord_state_date BETWEEN wk.p4s AND wk.p4e THEN o.sell_sub_clm_qty ELSE 0 END) AS qty_prev4w
+  FROM team.sales.dsh_d_upt_orders_merged_yoy_new o CROSS JOIN wk
+  WHERE (
+      o.hier IN ('무신사 풋웨어실','무신사 플레이어실')
+      OR o.com_id IN ({EXTRA})
+      OR (o.ord_com_type='공급(매입)' AND o.brand IN (SELECT brand_id FROM pur_brands))
+    )
+    AND COALESCE(o.com_id,'') NOT IN ({EXCLUDE})
+    AND o.ord_state_date BETWEEN wk.p4s AND wk.w0e
+  GROUP BY o.brand, o.ord_com_type, o.hier
+),
+onl_hier AS (SELECT brand_id, ord_com_type, hier, gmv4 FROM onl_raw),
+onl AS (
+  SELECT brand_id, ord_com_type,
+    MAX(hier) AS hier, MAX(com_id) AS com_id,
+    SUM(on_qty_w0) AS on_qty_w0, SUM(on_qty_w1) AS on_qty_w1, SUM(on_qty_w2) AS on_qty_w2, SUM(on_qty_w3) AS on_qty_w3,
+    SUM(on_gmv_w0) AS on_gmv_w0, SUM(on_gmv_w1) AS on_gmv_w1, SUM(on_gmv_w2) AS on_gmv_w2, SUM(on_gmv_w3) AS on_gmv_w3,
+    SUM(on_nt_w0)  AS on_nt_w0,  SUM(on_nt_w1)  AS on_nt_w1,  SUM(on_nt_w2)  AS on_nt_w2,  SUM(on_nt_w3)  AS on_nt_w3,
+    SUM(on_cp_w0)  AS on_cp_w0,  SUM(on_cp_w1)  AS on_cp_w1,  SUM(on_cp_w2)  AS on_cp_w2,  SUM(on_cp_w3)  AS on_cp_w3,
+    SUM(coupon_m0) AS coupon_m0, SUM(on_nggmv_4w) AS on_nggmv_4w,
+    SUM(gmv_prev4w) AS gmv_prev4w, SUM(qty_prev4w) AS qty_prev4w
+  FROM onl_raw GROUP BY brand_id, ord_com_type
+),
+offl AS (
+  SELECT ev.brand_id, ev.ord_com_type,
+    {offQty},
+    {offGmv},
+    {offNt},
+    {offCp},
+    SUM(CASE WHEN ev.ord_state_date BETWEEN wk.w3s AND wk.w0e THEN ev.normal_amt ELSE 0 END) AS off_namt_4w,
+    SUM(CASE WHEN ev.ord_state_date BETWEEN wk.w3s AND wk.w0e THEN ev.coupon_dc_amt ELSE 0 END) AS off_coupon_4w,
+    SUM(CASE WHEN ev.ord_state_date BETWEEN wk.p4s AND wk.p4e THEN ev.ord_amt ELSE 0 END) AS off_gmv_prev4w,
+    SUM(CASE WHEN ev.ord_state_date BETWEEN wk.p4s AND wk.p4e THEN ev.sell_qty-ev.clm_qty ELSE 0 END) AS off_qty_prev4w
+  FROM team.sales.dsh_d_upt_editorial_summary_v ev CROSS JOIN wk
+  WHERE ev.ord_state_date BETWEEN wk.p4s AND wk.w0e
+    AND ev.ord_com_type IS NOT NULL
+  GROUP BY ev.brand_id, ev.ord_com_type
+),
+rep_hier AS (
+  SELECT brand_id, ord_com_type, hier FROM (
+    SELECT brand_id, ord_com_type, hier,
+      ROW_NUMBER() OVER (PARTITION BY brand_id, ord_com_type ORDER BY gmv4 DESC) rn
+    FROM onl_hier WHERE hier IS NOT NULL AND hier<>'유즈드' AND gmv4>0
+  ) WHERE rn=1
+),
+scope_com AS (
+  SELECT DISTINCT g.com_id FROM datamart.datamart.goods g
+  WHERE g.brand IN (SELECT brand_id FROM onl UNION SELECT brand_id FROM pur_brands) AND g.com_id IS NOT NULL
+),
+goods_scope AS (
+  SELECT CAST(g.goods_no AS STRING) AS product_no, g.brand AS brand_id,
+         g.brand_nm, g.normal_price
+  FROM datamart.datamart.goods g
+  WHERE g.brand IN (SELECT brand_id FROM onl UNION SELECT brand_id FROM pur_brands)
+),
+target_goods AS (SELECT product_no, brand_id FROM goods_scope),
+stk_raw AS (
+  SELECT tg.brand_id, h.biz_type, h.com_id,
+    CASE WHEN ({PAIRS})
+           OR h.storage_loc_cd IN ({P1700}) THEN 1 ELSE 0 END AS is_store,
+    h.base_date, h.end_stock_qty
+  FROM team.sales.dsh_sku_stock_history_by_storage h
+  JOIN target_goods tg ON h.product_no=tg.product_no
+  CROSS JOIN wk
+  WHERE h.platform='MUSINSA' AND h.biz_type IN ('1P','3P','MFS')
+    AND h.base_date IN (wk.w0, wk.w1, wk.w2, wk.w3, wk.base_mon)
+    AND (h.com_id IS NULL OR h.com_id IN (SELECT com_id FROM scope_com))
+    AND COALESCE(h.com_id,'') NOT IN ({EXCLUDE})
+),
+stk_axis AS (
+  SELECT DISTINCT brand_id, CASE WHEN biz_type='1P' THEN '공급(매입)' ELSE '입점(위탁)' END AS ord_com_type
+  FROM stk_raw
+),
+axis AS (
+  SELECT brand_id, ord_com_type FROM onl
+  UNION SELECT f.brand_id, f.ord_com_type FROM offl f
+    WHERE f.brand_id IN (SELECT brand_id FROM onl UNION SELECT brand_id FROM pur_brands)
+  UNION SELECT brand_id, ord_com_type FROM stk_axis
+),
+con_stk AS (
+  SELECT brand_id,
+    SUM(CASE WHEN base_date=(SELECT w0 FROM wk) THEN end_stock_qty ELSE 0 END) AS total_cur,
+    SUM(CASE WHEN base_date=(SELECT w0 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS store_cur,
+    SUM(CASE WHEN base_date=(SELECT w0 FROM wk) AND is_store=0 THEN end_stock_qty ELSE 0 END) AS logi_cur,
+    SUM(CASE WHEN base_date=(SELECT base_mon FROM wk) THEN end_stock_qty ELSE 0 END) AS total_base,
+    SUM(CASE WHEN base_date=(SELECT base_mon FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS store_base,
+    SUM(CASE WHEN base_date=(SELECT w0 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS st_w0,
+    SUM(CASE WHEN base_date=(SELECT w1 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS st_w1,
+    SUM(CASE WHEN base_date=(SELECT w2 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS st_w2,
+    SUM(CASE WHEN base_date=(SELECT w3 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS st_w3
+  FROM stk_raw WHERE biz_type IN ('3P','MFS') GROUP BY brand_id
+),
+pur_stk AS (
+  SELECT brand_id,
+    SUM(CASE WHEN base_date=(SELECT w0 FROM wk) THEN end_stock_qty ELSE 0 END) AS total_cur,
+    SUM(CASE WHEN base_date=(SELECT w0 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS store_cur,
+    SUM(CASE WHEN base_date=(SELECT w0 FROM wk) AND is_store=0 THEN end_stock_qty ELSE 0 END) AS logi_cur,
+    SUM(CASE WHEN base_date=(SELECT base_mon FROM wk) THEN end_stock_qty ELSE 0 END) AS total_base,
+    SUM(CASE WHEN base_date=(SELECT base_mon FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS store_base,
+    SUM(CASE WHEN base_date=(SELECT w0 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS st_w0,
+    SUM(CASE WHEN base_date=(SELECT w1 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS st_w1,
+    SUM(CASE WHEN base_date=(SELECT w2 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS st_w2,
+    SUM(CASE WHEN base_date=(SELECT w3 FROM wk) AND is_store=1 THEN end_stock_qty ELSE 0 END) AS st_w3
+  FROM stk_raw WHERE biz_type='1P' GROUP BY brand_id
+),
+goods_agg AS (SELECT brand_id, MAX(brand_nm) AS brand_nm, ROUND(AVG(NULLIF(normal_price,0))) AS normal_price FROM goods_scope GROUP BY brand_id),
+con_stock_src AS (
+  SELECT s.brand AS brand_id, s.com_id,
+    SUM(s.sellable_qty) AS sellable_qty,
+    AVG(NULLIF(s.normal_price,0)) AS avg_price
+  FROM team.sales.dsh_d_upt_editorial_stock_summary s CROSS JOIN wk
+  WHERE s.ord_state_date=wk.con_dt AND s.ord_com_type='입점(위탁)'
+  GROUP BY s.brand, s.com_id
+),
+con_price AS (SELECT brand_id, ROUND(AVG(avg_price)) AS normal_price FROM con_stock_src WHERE avg_price>0 GROUP BY brand_id),
+rep_pur AS (SELECT brand_id, com_id FROM (SELECT brand_id, com_id, ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY SUM(end_stock_qty) DESC) rn FROM stk_raw WHERE biz_type='1P' AND base_date=(SELECT w0 FROM wk) GROUP BY brand_id, com_id) WHERE rn=1),
+rep_con AS (SELECT brand_id, com_id FROM (SELECT brand_id, com_id, ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY sellable_qty DESC) rn FROM con_stock_src WHERE COALESCE(com_id,'') NOT IN ({EXCLUDE})) WHERE rn=1),
+con_rows AS (
+  SELECT COALESCE(rh.hier, o.hier) AS sil, '위탁' AS gubun, CAST(a.brand_id AS STRING) AS brand_code,
+    COALESCE(rcon.com_id, o.com_id,'') AS com_id, COALESCE(cm.brand_nm, CAST(a.brand_id AS STRING)) AS brand_nm,
+    COALESCE(s.total_cur,0) AS total_cur, COALESCE(s.store_cur,0) AS store_cur, COALESCE(s.logi_cur,0) AS logi_cur, COALESCE(s.total_base,0) AS total_base, COALESCE(s.store_base,0) AS store_base,
+    COALESCE(s.st_w0,0) AS st_w0, COALESCE(s.st_w1,0) AS st_w1, COALESCE(s.st_w2,0) AS st_w2, COALESCE(s.st_w3,0) AS st_w3, COALESCE(cp.normal_price,0) AS normal_price,
+    COALESCE(o.on_qty_w0,0) AS on_qty_w0, COALESCE(o.on_qty_w1,0) AS on_qty_w1, COALESCE(o.on_qty_w2,0) AS on_qty_w2, COALESCE(o.on_qty_w3,0) AS on_qty_w3, COALESCE(o.on_gmv_w0,0) AS on_gmv_w0, COALESCE(o.on_gmv_w1,0) AS on_gmv_w1, COALESCE(o.on_gmv_w2,0) AS on_gmv_w2, COALESCE(o.on_gmv_w3,0) AS on_gmv_w3, COALESCE(o.on_nt_w0,0) AS on_nt_w0, COALESCE(o.on_nt_w1,0) AS on_nt_w1, COALESCE(o.on_nt_w2,0) AS on_nt_w2, COALESCE(o.on_nt_w3,0) AS on_nt_w3, COALESCE(o.on_cp_w0,0) AS on_cp_w0, COALESCE(o.on_cp_w1,0) AS on_cp_w1, COALESCE(o.on_cp_w2,0) AS on_cp_w2, COALESCE(o.on_cp_w3,0) AS on_cp_w3, COALESCE(o.coupon_m0,0) AS coupon_m0, COALESCE(o.on_nggmv_4w,0) AS on_nggmv_4w, COALESCE(o.gmv_prev4w,0) AS gmv_prev4w, COALESCE(o.qty_prev4w,0) AS qty_prev4w, f.off_qty_w0,f.off_qty_w1,f.off_qty_w2,f.off_qty_w3, f.off_gmv_w0,f.off_gmv_w1,f.off_gmv_w2,f.off_gmv_w3, f.off_nt_w0,f.off_nt_w1,f.off_nt_w2,f.off_nt_w3, f.off_cp_w0,f.off_cp_w1,f.off_cp_w2,f.off_cp_w3, f.off_namt_4w, f.off_coupon_4w, f.off_gmv_prev4w, f.off_qty_prev4w
+  FROM axis a
+  LEFT JOIN onl o ON a.brand_id=o.brand_id AND a.ord_com_type=o.ord_com_type
+  LEFT JOIN offl f ON a.brand_id=f.brand_id AND a.ord_com_type=f.ord_com_type
+  LEFT JOIN rep_hier rh ON a.brand_id=rh.brand_id AND a.ord_com_type=rh.ord_com_type
+  LEFT JOIN con_stk s ON a.brand_id=s.brand_id
+  LEFT JOIN con_price cp ON a.brand_id=cp.brand_id
+  LEFT JOIN goods_agg cm ON a.brand_id=cm.brand_id
+  LEFT JOIN rep_con rcon ON a.brand_id=rcon.brand_id
+  WHERE a.ord_com_type='입점(위탁)'
+),
+pur_rows AS (
+  SELECT COALESCE(rh.hier, o.hier) AS sil, '매입' AS gubun, CAST(a.brand_id AS STRING) AS brand_code,
+    COALESCE(rpur.com_id, o.com_id,'') AS com_id, COALESCE(ga.brand_nm, CAST(a.brand_id AS STRING)) AS brand_nm,
+    COALESCE(s.total_cur,0) AS total_cur, COALESCE(s.store_cur,0) AS store_cur, COALESCE(s.logi_cur,0) AS logi_cur, COALESCE(s.total_base,0) AS total_base, COALESCE(s.store_base,0) AS store_base,
+    COALESCE(s.st_w0,0) AS st_w0, COALESCE(s.st_w1,0) AS st_w1, COALESCE(s.st_w2,0) AS st_w2, COALESCE(s.st_w3,0) AS st_w3, COALESCE(ga.normal_price,0) AS normal_price,
+    COALESCE(o.on_qty_w0,0) AS on_qty_w0, COALESCE(o.on_qty_w1,0) AS on_qty_w1, COALESCE(o.on_qty_w2,0) AS on_qty_w2, COALESCE(o.on_qty_w3,0) AS on_qty_w3, COALESCE(o.on_gmv_w0,0) AS on_gmv_w0, COALESCE(o.on_gmv_w1,0) AS on_gmv_w1, COALESCE(o.on_gmv_w2,0) AS on_gmv_w2, COALESCE(o.on_gmv_w3,0) AS on_gmv_w3, COALESCE(o.on_nt_w0,0) AS on_nt_w0, COALESCE(o.on_nt_w1,0) AS on_nt_w1, COALESCE(o.on_nt_w2,0) AS on_nt_w2, COALESCE(o.on_nt_w3,0) AS on_nt_w3, COALESCE(o.on_cp_w0,0) AS on_cp_w0, COALESCE(o.on_cp_w1,0) AS on_cp_w1, COALESCE(o.on_cp_w2,0) AS on_cp_w2, COALESCE(o.on_cp_w3,0) AS on_cp_w3, COALESCE(o.coupon_m0,0) AS coupon_m0, COALESCE(o.on_nggmv_4w,0) AS on_nggmv_4w, COALESCE(o.gmv_prev4w,0) AS gmv_prev4w, COALESCE(o.qty_prev4w,0) AS qty_prev4w, f.off_qty_w0,f.off_qty_w1,f.off_qty_w2,f.off_qty_w3, f.off_gmv_w0,f.off_gmv_w1,f.off_gmv_w2,f.off_gmv_w3, f.off_nt_w0,f.off_nt_w1,f.off_nt_w2,f.off_nt_w3, f.off_cp_w0,f.off_cp_w1,f.off_cp_w2,f.off_cp_w3, f.off_namt_4w, f.off_coupon_4w, f.off_gmv_prev4w, f.off_qty_prev4w
+  FROM axis a
+  LEFT JOIN onl o ON a.brand_id=o.brand_id AND a.ord_com_type=o.ord_com_type
+  LEFT JOIN offl f ON a.brand_id=f.brand_id AND a.ord_com_type=f.ord_com_type
+  LEFT JOIN rep_hier rh ON a.brand_id=rh.brand_id AND a.ord_com_type=rh.ord_com_type
+  LEFT JOIN pur_stk s ON a.brand_id=s.brand_id
+  LEFT JOIN goods_agg ga ON a.brand_id=ga.brand_id
+  LEFT JOIN rep_pur rpur ON a.brand_id=rpur.brand_id
+  WHERE a.ord_com_type='공급(매입)'
+),
+allrows AS (SELECT * FROM con_rows UNION ALL SELECT * FROM pur_rows)
+SELECT
+  sil, gubun, brand_code, com_id, brand_nm,
+  GREATEST(store_cur - store_base + COALESCE(off_qty_w0,0)+COALESCE(off_qty_w1,0)+COALESCE(off_qty_w2,0)+COALESCE(off_qty_w3,0), 0) AS inbound,
+  total_base, total_cur, logi_cur,
+  store_cur, store_base,
+  st_w0, st_w1, st_w2, st_w3,
+  ROUND((on_qty_w0+on_qty_w1+on_qty_w2+on_qty_w3+COALESCE(off_qty_w0,0)+COALESCE(off_qty_w1,0)+COALESCE(off_qty_w2,0)+COALESCE(off_qty_w3,0)) / NULLIF(on_qty_w0+on_qty_w1+on_qty_w2+on_qty_w3+COALESCE(off_qty_w0,0)+COALESCE(off_qty_w1,0)+COALESCE(off_qty_w2,0)+COALESCE(off_qty_w3,0)+total_cur,0)*100,1) AS sell_through,
+  CASE WHEN (on_qty_w0+on_qty_w1+on_qty_w2+on_qty_w3+COALESCE(off_qty_w0,0)+COALESCE(off_qty_w1,0)+COALESCE(off_qty_w2,0)+COALESCE(off_qty_w3,0))>0 THEN ROUND(total_cur/((on_qty_w0+on_qty_w1+on_qty_w2+on_qty_w3+COALESCE(off_qty_w0,0)+COALESCE(off_qty_w1,0)+COALESCE(off_qty_w2,0)+COALESCE(off_qty_w3,0))/28.0),1) END AS days_all,
+  CASE WHEN (COALESCE(off_qty_w0,0)+COALESCE(off_qty_w1,0)+COALESCE(off_qty_w2,0)+COALESCE(off_qty_w3,0))>0 THEN ROUND(store_cur/((COALESCE(off_qty_w0,0)+COALESCE(off_qty_w1,0)+COALESCE(off_qty_w2,0)+COALESCE(off_qty_w3,0))/28.0),1) END AS days_off,
+  (on_qty_w0+COALESCE(off_qty_w0,0)) AS qty_tot_w0, (on_qty_w1+COALESCE(off_qty_w1,0)) AS qty_tot_w1, (on_qty_w2+COALESCE(off_qty_w2,0)) AS qty_tot_w2, (on_qty_w3+COALESCE(off_qty_w3,0)) AS qty_tot_w3,
+  on_qty_w0 AS qty_on_w0, on_qty_w1 AS qty_on_w1, on_qty_w2 AS qty_on_w2, on_qty_w3 AS qty_on_w3,
+  COALESCE(off_qty_w0,0) AS qty_off_w0, COALESCE(off_qty_w1,0) AS qty_off_w1, COALESCE(off_qty_w2,0) AS qty_off_w2, COALESCE(off_qty_w3,0) AS qty_off_w3,
+  ROUND(on_gmv_w0+COALESCE(off_gmv_w0,0)) AS gmv_tot_w0, ROUND(on_gmv_w1+COALESCE(off_gmv_w1,0)) AS gmv_tot_w1, ROUND(on_gmv_w2+COALESCE(off_gmv_w2,0)) AS gmv_tot_w2, ROUND(on_gmv_w3+COALESCE(off_gmv_w3,0)) AS gmv_tot_w3,
+  ROUND(on_gmv_w0) AS gmv_on_w0, ROUND(on_gmv_w1) AS gmv_on_w1, ROUND(on_gmv_w2) AS gmv_on_w2, ROUND(on_gmv_w3) AS gmv_on_w3,
+  ROUND(COALESCE(off_gmv_w0,0)) AS gmv_off_w0, ROUND(COALESCE(off_gmv_w1,0)) AS gmv_off_w1, ROUND(COALESCE(off_gmv_w2,0)) AS gmv_off_w2, ROUND(COALESCE(off_gmv_w3,0)) AS gmv_off_w3,
+  ROUND(on_nt_w0+COALESCE(off_nt_w0,0)) AS nt_tot_w0, ROUND(on_nt_w1+COALESCE(off_nt_w1,0)) AS nt_tot_w1, ROUND(on_nt_w2+COALESCE(off_nt_w2,0)) AS nt_tot_w2, ROUND(on_nt_w3+COALESCE(off_nt_w3,0)) AS nt_tot_w3,
+  ROUND(on_nt_w0) AS nt_on_w0, ROUND(on_nt_w1) AS nt_on_w1, ROUND(on_nt_w2) AS nt_on_w2, ROUND(on_nt_w3) AS nt_on_w3,
+  ROUND(COALESCE(off_nt_w0,0)) AS nt_off_w0, ROUND(COALESCE(off_nt_w1,0)) AS nt_off_w1, ROUND(COALESCE(off_nt_w2,0)) AS nt_off_w2, ROUND(COALESCE(off_nt_w3,0)) AS nt_off_w3,
+  ROUND(on_cp_w0+COALESCE(off_cp_w0,0)) AS cp_tot_w0, ROUND(on_cp_w1+COALESCE(off_cp_w1,0)) AS cp_tot_w1, ROUND(on_cp_w2+COALESCE(off_cp_w2,0)) AS cp_tot_w2, ROUND(on_cp_w3+COALESCE(off_cp_w3,0)) AS cp_tot_w3,
+  ROUND(on_cp_w0) AS cp_on_w0, ROUND(on_cp_w1) AS cp_on_w1, ROUND(on_cp_w2) AS cp_on_w2, ROUND(on_cp_w3) AS cp_on_w3,
+  ROUND(COALESCE(off_cp_w0,0)) AS cp_off_w0, ROUND(COALESCE(off_cp_w1,0)) AS cp_off_w1, ROUND(COALESCE(off_cp_w2,0)) AS cp_off_w2, ROUND(COALESCE(off_cp_w3,0)) AS cp_off_w3,
+  normal_price,
+  ROUND(on_nggmv_4w + COALESCE(off_namt_4w,0)) AS normal_gmv_4w
+FROM allrows
+WHERE (on_gmv_w0+on_gmv_w1+on_gmv_w2+on_gmv_w3)>0
+   OR (COALESCE(off_gmv_w0,0)+COALESCE(off_gmv_w1,0)+COALESCE(off_gmv_w2,0)+COALESCE(off_gmv_w3,0))>0
+   OR total_cur>0
+ORDER BY (on_gmv_w0+on_gmv_w1+on_gmv_w2+on_gmv_w3+COALESCE(off_gmv_w0,0)+COALESCE(off_gmv_w1,0)+COALESCE(off_gmv_w2,0)+COALESCE(off_gmv_w3,0)) DESC
+"""
+
+
+def _ips_inbound_po() -> pd.DataFrame:
+    """PLANT 1000 외부업체 입고예정(발주잔량/open PO) — datamart.erp.mmaws0090(SAP 미착 현황).
+       입고예정 = EINDT(입고예정일)>=오늘 & LOEKZ(삭제) 없음. S_MATNR→goods_no로 브랜드 매핑.
+       ⚠️ 이 원천엔 수취수량 컬럼이 없어 '미래 EINDT(=미도착)'만 집계(과거 미착분 제외)."""
+    q = r"""
+      WITH po AS (
+        SELECT CAST(S_MATNR AS STRING) AS product_no, CAST(MENGE AS DOUBLE) AS qty
+        FROM datamart.erp.mmaws0090
+        WHERE WERKS='1000' AND (LOEKZ IS NULL OR LOEKZ='')
+          AND EINDT >= date_format(current_date(),'yyyyMMdd')
+      )
+      SELECT CAST(g.brand AS STRING) AS brand_code, SUM(po.qty) AS inbound_po
+      FROM po JOIN datamart.datamart.goods g ON po.product_no = CAST(g.goods_no AS STRING)
+      WHERE g.brand IS NOT NULL
+      GROUP BY g.brand
+    """
+    d = run_df(q)
+    d["brand_code"] = d["brand_code"].astype(str)
+    d["inbound_po"] = pd.to_numeric(d["inbound_po"], errors="coerce").fillna(0.0)
+    return d
+
+
+def fetch_ips() -> pd.DataFrame:
+    """통합 IPS 브랜드×구분 스냅샷. 선행조회(플랜트1700·매입브랜드) 후 메인 집계 1회
+       + PLANT 1000 입고예정(open PO)을 매입 행에 병합."""
+    p1700 = _ips_p1700_locs()
+    purb = _ips_pur_brands(p1700)
+    d = run_df(_ips_build_sql(p1700, purb))
+    for c in ("sil", "gubun", "brand_code", "com_id", "brand_nm"):
+        d[c] = d[c].fillna("")
+    # PLANT 1000 입고예정(open PO) — 매입 행에만 브랜드코드로 병합.
+    try:
+        po = _ips_inbound_po().set_index("brand_code")["inbound_po"].to_dict()
+        d["inbound_po"] = [po.get(str(bc), 0.0) if gb == "매입" else 0.0
+                           for bc, gb in zip(d["brand_code"], d["gubun"])]
+    except Exception:
+        d["inbound_po"] = 0.0
+    num_cols = [c for c in d.columns if c not in ("sil", "gubun", "brand_code", "com_id", "brand_nm")]
+    for c in num_cols:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    return d
+
+
+def _ips_goods_sql(p1700: list[str], purb: list[str]) -> str:
+    """IPS 상품단위(드릴다운) — (브랜드코드×구분×goods_no). 현재고 + 4주 판매(전체/온/오프) + 셀스루.
+       브랜드 스코프·구분 매핑·매장판정은 브랜드 집계와 동일 규칙."""
+    P1700 = _ips_qlist(p1700)
+    PURB = _ips_qlist(purb)
+    EXTRA = _ips_qlist(IPS_EXTRA_COM_LIST)
+    EXCLUDE = _ips_qlist(IPS_EXCLUDE_COM_LIST)
+    PAIRS = _ips_store_pairs()
+    return f"""
+WITH wk AS (
+  SELECT
+    DATE_TRUNC('WEEK', CURRENT_DATE())              AS ws,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),7)  AS w0s, DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),1) AS w0e,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),28) AS w3s,
+    DATE_SUB(DATE_TRUNC('WEEK', CURRENT_DATE()),56) AS p4s,
+    LEAST(DATE_TRUNC('WEEK', CURRENT_DATE()),
+          (SELECT MAX(base_date) FROM team.sales.dsh_sku_stock_history_by_storage)) AS w0
+),
+pur_brands AS (SELECT explode(array({PURB})) AS brand_id),
+brand_scope AS (
+  SELECT DISTINCT o.brand AS brand_id
+  FROM team.sales.dsh_d_upt_orders_merged_yoy_new o CROSS JOIN wk
+  WHERE (o.hier IN ('무신사 풋웨어실','무신사 플레이어실') OR o.com_id IN ({EXTRA})
+         OR (o.ord_com_type='공급(매입)' AND o.brand IN (SELECT brand_id FROM pur_brands)))
+    AND COALESCE(o.com_id,'') NOT IN ({EXCLUDE})
+    AND o.ord_state_date BETWEEN wk.p4s AND wk.w0e
+  UNION SELECT brand_id FROM pur_brands
+),
+goods_scope AS (
+  SELECT CAST(g.goods_no AS STRING) AS product_no, g.brand AS brand_id,
+         ANY_VALUE(g.goods_nm) AS goods_nm, ANY_VALUE(g.brand_nm) AS brand_nm, ANY_VALUE(g.com_id) AS com_id
+  FROM datamart.datamart.goods g
+  WHERE g.brand IN (SELECT brand_id FROM brand_scope) AND g.goods_no IS NOT NULL
+  GROUP BY CAST(g.goods_no AS STRING), g.brand
+),
+onl AS (
+  SELECT o.brand AS brand_id, CAST(o.goods_no AS STRING) AS product_no,
+    CASE WHEN o.ord_com_type='공급(매입)' THEN '매입' ELSE '위탁' END AS gubun,
+    SUM(o.sell_sub_clm_qty) AS on_qty, SUM(o.normal_gmv) AS on_gmv, SUM(o.revenue) AS on_nt
+  FROM team.sales.dsh_d_upt_orders_merged_yoy_new o CROSS JOIN wk
+  WHERE o.brand IN (SELECT brand_id FROM brand_scope) AND o.goods_no IS NOT NULL
+    AND COALESCE(o.com_id,'') NOT IN ({EXCLUDE})
+    AND o.ord_state_date BETWEEN wk.w3s AND wk.w0e
+  GROUP BY o.brand, CAST(o.goods_no AS STRING), CASE WHEN o.ord_com_type='공급(매입)' THEN '매입' ELSE '위탁' END
+),
+offl AS (
+  SELECT ev.brand_id, CAST(ev.goods_no AS STRING) AS product_no,
+    CASE WHEN ev.ord_com_type='공급(매입)' THEN '매입' ELSE '위탁' END AS gubun,
+    SUM(ev.sell_qty-ev.clm_qty) AS off_qty, SUM(ev.ord_amt) AS off_gmv, SUM(ev.profit) AS off_nt
+  FROM team.sales.dsh_d_upt_editorial_summary_v ev CROSS JOIN wk
+  WHERE ev.brand_id IN (SELECT brand_id FROM brand_scope) AND ev.goods_no IS NOT NULL
+    AND ev.ord_com_type IS NOT NULL
+    AND ev.ord_state_date BETWEEN wk.w3s AND wk.w0e
+  GROUP BY ev.brand_id, CAST(ev.goods_no AS STRING), CASE WHEN ev.ord_com_type='공급(매입)' THEN '매입' ELSE '위탁' END
+),
+stk AS (
+  SELECT gs.brand_id, gs.product_no,
+    CASE WHEN h.biz_type='1P' THEN '매입' ELSE '위탁' END AS gubun,
+    SUM(h.end_stock_qty) AS total_cur,
+    SUM(CASE WHEN ({PAIRS}) OR h.storage_loc_cd IN ({P1700}) THEN h.end_stock_qty ELSE 0 END) AS store_cur
+  FROM team.sales.dsh_sku_stock_history_by_storage h
+  JOIN goods_scope gs ON h.product_no=gs.product_no
+  CROSS JOIN wk
+  WHERE h.platform='MUSINSA' AND h.biz_type IN ('1P','3P','MFS')
+    AND h.base_date=wk.w0
+    AND COALESCE(h.com_id,'') NOT IN ({EXCLUDE})
+  GROUP BY gs.brand_id, gs.product_no, CASE WHEN h.biz_type='1P' THEN '매입' ELSE '위탁' END
+),
+axis AS (
+  SELECT brand_id, product_no, gubun FROM onl
+  UNION SELECT brand_id, product_no, gubun FROM offl
+  UNION SELECT brand_id, product_no, gubun FROM stk
+)
+SELECT
+  CAST(a.brand_id AS STRING) AS brand_code, a.gubun,
+  a.product_no, gs.goods_nm, gs.brand_nm,
+  COALESCE(s.total_cur,0) AS total_cur, COALESCE(s.store_cur,0) AS store_cur,
+  COALESCE(s.total_cur,0)-COALESCE(s.store_cur,0) AS logi_cur,
+  COALESCE(o.on_qty,0) AS qty_on, COALESCE(f.off_qty,0) AS qty_off, COALESCE(o.on_qty,0)+COALESCE(f.off_qty,0) AS qty_tot,
+  ROUND(COALESCE(o.on_gmv,0)) AS gmv_on, ROUND(COALESCE(f.off_gmv,0)) AS gmv_off, ROUND(COALESCE(o.on_gmv,0)+COALESCE(f.off_gmv,0)) AS gmv_tot,
+  ROUND(COALESCE(o.on_nt,0)) AS nt_on, ROUND(COALESCE(f.off_nt,0)) AS nt_off, ROUND(COALESCE(o.on_nt,0)+COALESCE(f.off_nt,0)) AS nt_tot,
+  ROUND((COALESCE(o.on_qty,0)+COALESCE(f.off_qty,0)) / NULLIF(COALESCE(o.on_qty,0)+COALESCE(f.off_qty,0)+COALESCE(s.total_cur,0),0)*100,1) AS sell_through,
+  CASE WHEN (COALESCE(o.on_qty,0)+COALESCE(f.off_qty,0))>0 THEN ROUND(COALESCE(s.total_cur,0)/((COALESCE(o.on_qty,0)+COALESCE(f.off_qty,0))/28.0),1) END AS days_all
+FROM axis a
+LEFT JOIN onl o ON a.brand_id=o.brand_id AND a.product_no=o.product_no AND a.gubun=o.gubun
+LEFT JOIN offl f ON a.brand_id=f.brand_id AND a.product_no=f.product_no AND a.gubun=f.gubun
+LEFT JOIN stk s ON a.brand_id=s.brand_id AND a.product_no=s.product_no AND a.gubun=s.gubun
+LEFT JOIN goods_scope gs ON a.brand_id=gs.brand_id AND a.product_no=gs.product_no
+WHERE COALESCE(o.on_gmv,0)+COALESCE(f.off_gmv,0)>0 OR COALESCE(s.total_cur,0)>0
+"""
+
+
+def fetch_ips_goods() -> pd.DataFrame:
+    """IPS 상품단위(드릴다운) 스냅샷. 브랜드 집계와 동일 스코프, goods_no 그레인.
+       + PLANT 1000 입고예정(open PO)을 goods_no로 병합(매입 한정)."""
+    p1700 = _ips_p1700_locs()
+    purb = _ips_pur_brands(p1700)
+    d = run_df(_ips_goods_sql(p1700, purb))
+    for c in ("brand_code", "gubun", "product_no", "goods_nm", "brand_nm"):
+        d[c] = d[c].fillna("").astype(str)
+    # 상품단위 입고예정(open PO) 병합.
+    try:
+        q = r"""
+          SELECT CAST(S_MATNR AS STRING) AS product_no, SUM(CAST(MENGE AS DOUBLE)) AS inbound_po
+          FROM datamart.erp.mmaws0090
+          WHERE WERKS='1000' AND (LOEKZ IS NULL OR LOEKZ='')
+            AND EINDT >= date_format(current_date(),'yyyyMMdd')
+          GROUP BY CAST(S_MATNR AS STRING)
+        """
+        po = run_df(q)
+        po_map = dict(zip(po["product_no"].astype(str), pd.to_numeric(po["inbound_po"], errors="coerce").fillna(0.0)))
+        d["inbound_po"] = [po_map.get(p, 0.0) if g == "매입" else 0.0
+                           for p, g in zip(d["product_no"], d["gubun"])]
+    except Exception:
+        d["inbound_po"] = 0.0
+    num_cols = [c for c in d.columns if c not in ("brand_code", "gubun", "product_no", "goods_nm", "brand_nm")]
+    for c in num_cols:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    return d
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_md_names() -> dict:
     """offline_md_id(예: minsu.kim) → 한글명. 여러 소스의 (md_id→md_nm)를 합쳐 최대 커버리지."""

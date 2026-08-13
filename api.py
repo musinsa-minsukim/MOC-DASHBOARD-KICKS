@@ -333,19 +333,24 @@ def require_cron(x_cron_token: str = Header(default="")) -> None:
 
 
 @app.post("/api/cron/refresh")
-def cron_refresh(mode: str = Query("sales"), _: None = Depends(require_cron)):
+def cron_refresh(mode: str = Query("sales"), names: str = Query(""), _: None = Depends(require_cron)):
     """Cloud Scheduler가 호출하는 '동기' 갱신 — scale-to-zero 환경에서 요청이 끝날 때까지
        인스턴스가 살아있어 갱신이 끝까지 실행된다(백그라운드 스레드면 응답 후 CPU 회수로 중단될 수 있음).
          mode=full    → 전체(판매 증분 + 스냅샷 전체 교체). 매일 07:00.  캐시 비었으면 전체 빌드도 겸함.
          mode=sales   → 판매 증분(+영수증). 매시 10분(11:10~23:10).
          mode=rebuild → sales·receipts까지 전체 재빌드(full). 스키마/집계 로직 변경 후 1회 수동 호출용.
+         mode=snap&names=a,b → 지정 스냅샷만 교체(무거운 신규 캐시를 야간 full과 분리해 독립 갱신).
        store._write는 원자적(tmp→os.replace)이라 갱신 중에도 읽기(사용자 조회)는 안전."""
     if _refresh["running"]:
         return {"ok": False, "running": True, "skipped": "already running"}
     _refresh.update(running=True, error=None)
     t0 = time.time()
     try:
-        if mode == "rebuild":
+        if mode == "snap":
+            # 지정 스냅샷만 교체(전체 full 없이). 예: ?mode=snap&names=ips,ips_goods
+            wanted = [s.strip() for s in names.split(",") if s.strip()]
+            result = store.refresh_named(wanted)
+        elif mode == "rebuild":
             result = store.refresh_all(full=True)     # sales·receipts 전체 재빌드(스키마/로직 변경 후 1회)
         elif mode == "full":
             result = store.refresh_all()
@@ -1123,6 +1128,100 @@ def daily_restock_csv(basis: str | None = None, seg: str | None = None,
     fname = f"restock_{d0 or 'empty'}.csv"
     return Response(content=data, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+# 통합 IPS — 브랜드×구분(매입/위탁) 단일 뷰. 공통 필터 미적용(독립 탭). CP는 Phase1에서 숨김.
+_IPS_ID_COLS = ("sil", "gubun", "brand_code", "com_id", "brand_nm")
+# 합계에서 단순 합산하면 안 되는 파생지표(비율/일수) — 합계행에서 재계산.
+_IPS_DERIVED = {"sell_through", "days_all", "days_off", "normal_price"}
+
+
+def _ips_week_labels():
+    """주차 라벨(W0=직전 완료주 월~일). Spark DATE_TRUNC('WEEK')=월요일 시작과 동일하게 계산."""
+    import datetime as _dt
+    today = _dt.date.fromisoformat(store.today_kst())
+    ws = today - _dt.timedelta(days=today.weekday())   # 이번 주 월요일
+    out = {}
+    for i in range(4):
+        s = ws - _dt.timedelta(days=7 * (i + 1))
+        e = ws - _dt.timedelta(days=7 * i + 1)
+        out[f"w{i}"] = f"{s.strftime('%m/%d')}~{e.strftime('%m/%d')}"
+    return out
+
+
+@app.get("/api/ips")
+def ips(_: str = Depends(require_user), __: None = Depends(require_ready)):
+    """통합 IPS 브랜드×구분 스냅샷. 재고(전체/매장/물류)+입고 + 4주 판매(수량/GMV/NetTake, 전체/온/오프)
+       + 셀스루·예상일수. 원천: orders_merged/editorial_summary/sku_stock_history. ips 캐시 필요."""
+    try:
+        df = store.query("SELECT * FROM ips")
+    except Exception:
+        return {"available": False, "rows": []}
+    if df is None or df.empty:
+        return {"available": False, "rows": []}
+    num_cols = [c for c in df.columns if c not in _IPS_ID_COLS]
+    rows = []
+    for r in df.itertuples(index=False):
+        d = r._asdict()
+        row = {k: (str(d.get(k) or "")) for k in _IPS_ID_COLS}
+        for c in num_cols:
+            v = d.get(c)
+            # 비율/일수는 null 허용(계산 불가 표시), 나머지는 0으로.
+            if c in _IPS_DERIVED:
+                fv = float(v) if v is not None and not (isinstance(v, float) and math.isnan(v)) else None
+                row[c] = fv
+            else:
+                row[c] = _num(v)
+        rows.append(row)
+    rows.sort(key=lambda x: -(x.get("gmv_tot_w0", 0) + x.get("gmv_tot_w1", 0)
+                              + x.get("gmv_tot_w2", 0) + x.get("gmv_tot_w3", 0)))
+
+    # 합계행 — 합산 가능한 컬럼만 합산, 파생지표는 합계 기준 재계산.
+    tot = {k: "" for k in _IPS_ID_COLS}
+    tot["brand_nm"] = "합계"
+    for c in num_cols:
+        if c not in _IPS_DERIVED:
+            tot[c] = sum(x.get(c, 0) or 0 for x in rows)
+    q4 = tot["qty_tot_w0"] + tot["qty_tot_w1"] + tot["qty_tot_w2"] + tot["qty_tot_w3"]
+    off4 = tot["qty_off_w0"] + tot["qty_off_w1"] + tot["qty_off_w2"] + tot["qty_off_w3"]
+    tc = tot["total_cur"]
+    tot["sell_through"] = round(q4 / (q4 + tc) * 100, 1) if (q4 + tc) else None
+    tot["days_all"] = round(tc / (q4 / 28.0), 1) if q4 else None
+    tot["days_off"] = round(tot["store_cur"] / (off4 / 28.0), 1) if off4 else None
+    tot["normal_price"] = None
+
+    data_date = store._mtime_kst("ips") or ""
+    return {"available": True, "rows": rows, "totals": tot,
+            "weeks": _ips_week_labels(), "refreshed_at": data_date[:16]}
+
+
+@app.get("/api/ips/goods")
+def ips_goods(brand_code: str = Query(...), gubun: str = Query(...), limit: int = 2000,
+              _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """IPS 상품 드릴다운 — 특정 브랜드×구분의 상품(goods_no) 단위 재고+4주판매+입고예정.
+       ips_goods 캐시에서 필터. GMV 4주합 내림차순."""
+    try:
+        df = store.query(
+            "SELECT * FROM ips_goods WHERE brand_code = ? AND gubun = ? ORDER BY gmv_tot DESC LIMIT ?",
+            [brand_code, gubun, int(limit)])
+    except Exception:
+        return {"available": False, "rows": []}
+    id_cols = ("brand_code", "gubun", "product_no", "goods_nm", "brand_nm")
+    der = {"sell_through", "days_all"}
+    rows = []
+    for r in df.itertuples(index=False):
+        d = r._asdict()
+        row = {k: str(d.get(k) or "") for k in id_cols}
+        for c in df.columns:
+            if c in id_cols:
+                continue
+            v = d.get(c)
+            if c in der:
+                row[c] = float(v) if v is not None and not (isinstance(v, float) and math.isnan(v)) else None
+            else:
+                row[c] = _num(v)
+        rows.append(row)
+    return {"available": True, "rows": rows}
 
 
 # ----------------------------------------------------------------- 빌드된 React SPA 서빙 (단일 포트)
