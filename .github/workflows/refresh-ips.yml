@@ -1,0 +1,71 @@
+name: Refresh IPS (daily)
+
+# 통합 IPS(ips·ips_goods) 전용 일일 갱신 — 무거운(웜 ~10분) 쿼리라 판매/full과 분리.
+# ⚠️ 핵심: refresh.yml(full)·refresh-sales.yml(hourly)과 동일 concurrency group("data-refresh")로 묶어
+#    셋이 절대 동시에 안 돌게 함 → 공유 웨어하우스(c0ee970a9c3ed562) 경합 제거(=시간별 판매 갱신 타임아웃 예방).
+# 시각: 20:30 UTC = 05:30 KST — 07:00 daily full 이전, 시간별(:25, 11~23시 KST) 창과 겹치지 않는 조용한 시간대.
+# 흐름: _meta.json만 내려받기 → refresh.py --ips (ips·ips_goods parquet 재생성) → GCS 업로드 → 슬랙(실패시).
+
+on:
+  schedule:
+    - cron: "30 20 * * *"     # 05:30 KST 매일
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: data-refresh          # full/hourly와 동일 그룹 → 동시 실행 방지(웨어하우스 경합·파일 충돌 방지)
+  cancel-in-progress: false
+
+jobs:
+  refresh-ips:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30        # 웜 ~10분 + 콜드 여유
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Download _meta.json (freshness merge)
+        run: |
+          mkdir -p cache
+          B="gs://${{ vars.GCS_CACHE_BUCKET }}"
+          gcloud storage cp "$B/_meta.json" ./cache/ || true
+
+      - name: Run IPS refresh (ips·ips_goods)
+        env:
+          WAREHOUSE_CACHE: ${{ github.workspace }}/cache
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: python refresh.py --ips
+
+      - name: Upload IPS cache to GCS
+        run: |
+          B="gs://${{ vars.GCS_CACHE_BUCKET }}"
+          gcloud storage cp ./cache/ips.parquet ./cache/ips_goods.parquet ./cache/_meta.json "$B/"
+
+      - name: Slack notify — 실패 시에만
+        if: failure()
+        run: |
+          curl -s -X POST -H 'Content-type: application/json' "${{ secrets.SLACK_WEBHOOK_URL }}" -d @- <<EOF
+          {"text":":x: 무신사 대시보드 *통합 IPS 갱신 실패* — <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|로그 확인>"}
+          EOF
