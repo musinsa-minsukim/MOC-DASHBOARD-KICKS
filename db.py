@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import datetime as _dt
 
 try:
     import truststore
@@ -872,11 +873,25 @@ def _ips_inbound_po() -> pd.DataFrame:
     return d
 
 
+# 선행조회(p1700·pur_brands) 하루 1회 메모 — fetch_ips/fetch_ips_goods가 같은 리프레시에서
+# 각각 재실행(특히 pur_brands stock⨝goods ~32초)하던 중복 제거. 날짜 키라 Cloud Run 장수명에서도 안전.
+_ips_prefetch_memo: dict = {"date": None, "val": None}
+
+
+def _ips_prefetch() -> tuple[list[str], list[str]]:
+    today = _dt.date.today().isoformat()
+    if _ips_prefetch_memo["date"] != today:
+        p1700 = _ips_p1700_locs()
+        purb = _ips_pur_brands(p1700)
+        _ips_prefetch_memo["date"] = today
+        _ips_prefetch_memo["val"] = (p1700, purb)
+    return _ips_prefetch_memo["val"]
+
+
 def fetch_ips() -> pd.DataFrame:
     """통합 IPS 브랜드×구분 스냅샷. 선행조회(플랜트1700·매입브랜드) 후 메인 집계 1회
        + PLANT 1000 입고예정(open PO)을 매입 행에 병합."""
-    p1700 = _ips_p1700_locs()
-    purb = _ips_pur_brands(p1700)
+    p1700, purb = _ips_prefetch()
     d = run_df(_ips_build_sql(p1700, purb))
     for c in ("sil", "gubun", "brand_code", "com_id", "brand_nm"):
         d[c] = d[c].fillna("")
@@ -988,8 +1003,7 @@ WHERE COALESCE(o.on_gmv,0)+COALESCE(f.off_gmv,0)>0 OR COALESCE(s.total_cur,0)>0
 def fetch_ips_goods() -> pd.DataFrame:
     """IPS 상품단위(드릴다운) 스냅샷. 브랜드 집계와 동일 스코프, goods_no 그레인.
        + PLANT 1000 입고예정(open PO)을 goods_no로 병합(매입 한정)."""
-    p1700 = _ips_p1700_locs()
-    purb = _ips_pur_brands(p1700)
+    p1700, purb = _ips_prefetch()
     d = run_df(_ips_goods_sql(p1700, purb))
     for c in ("brand_code", "gubun", "product_no", "goods_nm", "brand_nm"):
         d[c] = d[c].fillna("").astype(str)
