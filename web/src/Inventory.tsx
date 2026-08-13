@@ -55,6 +55,8 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     colText("style_no", "스타일넘버", { minWidth: 118 }),
     colText("goods_opt", "옵션", { minWidth: 80 }),
     colText("business_type", "사업구분", { minWidth: 78 }),
+    colText("cat_top", "최상위카테", { minWidth: 92 }),
+    colText("cat_large", "대카테", { minWidth: 92 }),
     colText("cat_medium", "중카테", { minWidth: 92 }),
     colNum("normal_price", "정상가", "num", { minWidth: 84 }),
     colNum("sale_price", "판매가", "num", { minWidth: 84 }),
