@@ -154,7 +154,17 @@ _DECOUPLED = {"ips", "ips_goods"}
 
 
 def refresh_snapshots() -> dict:
-    return {n: refresh_snapshot(n) for n in _SNAPSHOTS if n not in _DECOUPLED}
+    # 스냅샷별 소요시간을 stdout에 남겨 어느 것이 느린지 로그로 드러나게(리프레시 병목 진단).
+    import time as _t
+    out = {}
+    for n in _SNAPSHOTS:
+        if n in _DECOUPLED:
+            continue
+        t0 = _t.time()
+        rows = refresh_snapshot(n)
+        print(f"    [snap] {n}: {rows} rows in {_t.time() - t0:.1f}s", flush=True)
+        out[n] = rows
+    return out
 
 
 def refresh_named(names: list[str]) -> dict:
