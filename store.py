@@ -31,16 +31,22 @@ _SNAPSHOTS = {
     "target_daily": db.fetch_targets,   # 매장별 일 목표(gspread) — 목표 대비 실적 탭
     "footfall": db.fetch_footfall,             # 매장 입객수(일자×매장) — 구매전환율
     "global_customer": db.fetch_global_customer,  # 국가별 GMV(일자×매장×국적) — 고객 탭
-    "settlement": db.fetch_settlement,         # 순이익(Net Take)·공헌이익(CP) 일자×매장×상품 — 판매 탭
-    "settlement_option": db.fetch_settlement_option,  # 정산 상세 일자×매장×상품×옵션 — CSV 전용
-    "settlement_daily": db.fetch_settlement_daily,    # 손익(P&L) 일자×매장×브랜드 — 손익 탭 전용
     "ips": db.fetch_ips,                                # 통합 IPS 브랜드×구분(매입/위탁) — IPS 탭 전용
     "ips_goods": db.fetch_ips_goods,                    # 통합 IPS 상품단위(드릴다운) — IPS 탭 상품 드릴
+}
+# 증분(윈도우) 스냅샷 — {name: (fetch_fn, window_days)}. sales_date 기준 최근 N일만 재적재하고 과거는 보존.
+# editorial_summary_v는 296만행(2023-10~) 전이력이라 매 daily마다 전체 재집계하면 느림 →
+# 최근 90일만 재적재(과거는 _incremental이 유지). CP는 ~2개월 내 확정되므로 90일 윈도우면 최신성 충분.
+# (전월/전년동월 비교용 과거 데이터는 보존되어 P&L 정확도 불변.)
+_INCR_SNAPSHOTS = {
+    "settlement": (db.fetch_settlement, 90),          # 순이익(Net Take)·CP 일자×매장×상품 — 판매 탭
+    "settlement_option": (db.fetch_settlement_option, 90),  # 정산 상세 일자×매장×상품×옵션 — CSV 전용
+    "settlement_daily": (db.fetch_settlement_daily, 90),    # 손익(P&L) 일자×매장×브랜드 — 손익 탭 전용
 }
 # readiness(=앱 구동 가능)에서 제외하는 선택 스냅샷: 아직 캐시에 없어도 앱은 정상 동작하고,
 # 다음 full 갱신(mode=full/rebuild) 때 생성되면 자동으로 뷰가 잡힌다(receipts와 동일 취급).
 _OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option", "settlement_daily", "ips", "ips_goods"}
-_ALL = ["sales", *_SNAPSHOTS]
+_ALL = ["sales", *_SNAPSHOTS, *_INCR_SNAPSHOTS]
 # DuckDB 뷰 생성 대상(=_ALL + 객단가용 영수증). receipts는 readiness(missing) 게이트에는 넣지 않아
 # 기존 캐시만 있어도 앱이 동작하고, 판매 갱신/빌드 시 생성되면 자동으로 뷰가 잡힌다.
 _VIEW_TABLES = [*_ALL, "receipts"]
@@ -153,7 +159,7 @@ def refresh_snapshot(name: str) -> int:
 _DECOUPLED = {"ips", "ips_goods"}
 
 
-def refresh_snapshots() -> dict:
+def refresh_snapshots(full: bool = False) -> dict:
     # 스냅샷별 소요시간을 stdout에 남겨 어느 것이 느린지 로그로 드러나게(리프레시 병목 진단).
     import time as _t
     out = {}
@@ -164,6 +170,12 @@ def refresh_snapshots() -> dict:
         rows = refresh_snapshot(n)
         print(f"    [snap] {n}: {rows} rows in {_t.time() - t0:.1f}s", flush=True)
         out[n] = rows
+    # 증분 스냅샷 — 최근 window_days만 재적재(과거 보존). full=True면 전이력 재적재.
+    for n, (fn, w) in _INCR_SNAPSHOTS.items():
+        t0 = _t.time()
+        df, mode = _incremental(n, fn, w, full)
+        print(f"    [snap] {n}: {len(df)} rows in {_t.time() - t0:.1f}s ({mode})", flush=True)
+        out[n] = len(df)
     return out
 
 
@@ -175,7 +187,7 @@ def refresh_named(names: list[str]) -> dict:
 
 def refresh_all(full: bool = False) -> dict:
     out = {"sales": refresh_sales(full=full)}
-    out.update(refresh_snapshots())
+    out.update(refresh_snapshots(full=full))
     return out
 
 

@@ -449,12 +449,14 @@ def fetch_global_customer() -> pd.DataFrame:
     return d[d["sales_date"].notna()]
 
 
-def fetch_settlement() -> pd.DataFrame:
+def fetch_settlement(since: str | None = None) -> pd.DataFrame:
     """오프라인 편집샵 순이익(Net Take)·공헌이익(CP) — team.sales.dsh_d_upt_editorial_summary_v.
        그레인: 일자×매장×상품(goods_no). Net Take=profit(순이익), CP=contribution_profit_pre(공헌이익).
        검증 항등식(2026-06-21): CP ≈ profit − offline_cost_fixed + additional_rev.
        ⚠️ CP는 매장 고정비(offline_cost_fixed) 배부값이라 최근 ~2개월은 예측치(변동)·상품 1건당 음수 가능.
-       대시보드 매장(dim_store)만. GMV(MOSS 기반)와 별개 지표로 추가."""
+       대시보드 매장(dim_store)만. GMV(MOSS 기반)와 별개 지표로 추가.
+       since='YYYY-MM-DD' 주면 그 날짜 이후만(증분 갱신용). None=전체."""
+    df = f"AND v.ord_state_date >= '{since}'" if since else ""
     q = ("WITH " + DIM_STORE + r"""
         SELECT v.ord_state_date AS sales_date, ds.store_name, ds.shop_type,
                CAST(v.goods_no AS BIGINT) AS goods_no,
@@ -462,7 +464,7 @@ def fetch_settlement() -> pd.DataFrame:
                CAST(SUM(v.contribution_profit_pre) AS DOUBLE) AS cp
         FROM team.sales.dsh_d_upt_editorial_summary_v v
         JOIN dim_store ds ON ds.shop_no = v.shop_no
-        WHERE v.ord_state_date IS NOT NULL AND v.goods_no IS NOT NULL
+        WHERE v.ord_state_date IS NOT NULL AND v.goods_no IS NOT NULL """ + df + r"""
         GROUP BY 1, 2, 3, 4
     """)
     d = run_df(q)
@@ -473,11 +475,13 @@ def fetch_settlement() -> pd.DataFrame:
     return d[d["sales_date"].notna()]
 
 
-def fetch_settlement_option() -> pd.DataFrame:
+def fetch_settlement_option(since: str | None = None) -> pd.DataFrame:
     """오프라인 편집샵 정산 상세(옵션/사이즈 단위) — team.sales.dsh_d_upt_editorial_summary_v.
        그레인: 일자×매장×상품×옵션(option_nm). CSV(일자·옵션별 순이익·CP·정산GMV) 전용.
        ⚠️ gmv=ord_amt(정산기준, MOSS 화면 GMV와 다를 수 있음). Net Take=profit, CP=contribution_profit_pre.
-       대시보드 매장(dim_store)만. net_take 요약은 goods 단위 settlement 캐시가 담당(여긴 CSV 상세용)."""
+       대시보드 매장(dim_store)만. net_take 요약은 goods 단위 settlement 캐시가 담당(여긴 CSV 상세용).
+       since='YYYY-MM-DD' 주면 그 날짜 이후만(증분 갱신용). None=전체."""
+    df = f"AND v.ord_state_date >= '{since}'" if since else ""
     q = ("WITH " + DIM_STORE + r"""
         SELECT v.ord_state_date AS sales_date, ds.store_name, ds.shop_type,
                v.brand_nm, v.large_nm AS cat_large, v.medium_nm AS cat_medium,
@@ -490,7 +494,7 @@ def fetch_settlement_option() -> pd.DataFrame:
                CAST(SUM(v.contribution_profit_pre) AS DOUBLE) AS cp
         FROM team.sales.dsh_d_upt_editorial_summary_v v
         JOIN dim_store ds ON ds.shop_no = v.shop_no
-        WHERE v.ord_state_date IS NOT NULL AND v.goods_no IS NOT NULL
+        WHERE v.ord_state_date IS NOT NULL AND v.goods_no IS NOT NULL """ + df + r"""
         GROUP BY 1, 2, 3, 4, 5, 6, 7, 9
     """)
     d = run_df(q)
@@ -503,11 +507,13 @@ def fetch_settlement_option() -> pd.DataFrame:
     return d[d["sales_date"].notna()]
 
 
-def fetch_settlement_daily() -> pd.DataFrame:
+def fetch_settlement_daily(since: str | None = None) -> pd.DataFrame:
     """오프라인 손익(P&L) 일자×매장×브랜드 집계 — team.sales.dsh_d_upt_editorial_summary_v. 손익 탭 전용.
        Net Take=profit, CP=contribution_profit_pre, GMV=ord_amt(정산), 매장고정비=offline_cost_fixed.
        전월·전년동월 비교 위해 전체 이력(2023-10~) 보관. 대시보드 매장(dim_store)만.
-       ⚠️ 최근 ~2개월 CP·매장고정비는 예측(잠정) — SAP 실적 확정 전."""
+       ⚠️ 최근 ~2개월 CP·매장고정비는 예측(잠정) — SAP 실적 확정 전.
+       since='YYYY-MM-DD' 주면 그 날짜 이후만(증분). 과거는 증분 병합이 보존(전월/전년 비교 유지)."""
+    df = f"AND v.ord_state_date >= '{since}'" if since else ""
     q = ("WITH " + DIM_STORE + r"""
         SELECT v.ord_state_date AS sales_date, ds.store_name, ds.shop_type, v.brand_nm,
                CAST(SUM(v.qty) AS DOUBLE)          AS qty,
@@ -519,7 +525,7 @@ def fetch_settlement_daily() -> pd.DataFrame:
                CAST(SUM(v.additional_rev) AS DOUBLE)          AS add_rev
         FROM team.sales.dsh_d_upt_editorial_summary_v v
         JOIN dim_store ds ON ds.shop_no = v.shop_no
-        WHERE v.ord_state_date IS NOT NULL
+        WHERE v.ord_state_date IS NOT NULL """ + df + r"""
         GROUP BY 1, 2, 3, 4
     """)
     d = run_df(q)

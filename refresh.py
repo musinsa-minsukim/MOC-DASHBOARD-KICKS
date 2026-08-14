@@ -41,7 +41,7 @@ def main():
     kw = {"window_days": window} if window is not None else {}
     print("  sales:", store.refresh_sales(full=full, **kw))
     if "--snapshots" in args:
-        print("  snapshots:", store.refresh_snapshots())
+        print("  snapshots:", store.refresh_snapshots(full=full))
     print("완료:", store.status())
 
 
