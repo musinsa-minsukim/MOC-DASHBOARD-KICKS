@@ -81,14 +81,36 @@ def _prep(f):
     return df, vis, hubcols, hcol
 
 
+def _cat_pies(df, top_n=8):
+    """카테고리별(최상위/대/중) 총재고(점재고+허브) 구성 — 원형그래프용. 상위 top_n + '기타'."""
+    total = (df["__jaego"].fillna(0) + df["__hub"].fillna(0))
+    out = {}
+    for key in ("cat_top", "cat_large", "cat_medium"):
+        if key not in df.columns:
+            out[key] = []
+            continue
+        cat = df[key].astype(str).str.strip().replace("", "(미분류)").fillna("(미분류)")
+        g = total.groupby(cat).sum()
+        g = g[g > 0].sort_values(ascending=False)
+        items = [{"name": str(k), "value": _f(v)} for k, v in g.items()]
+        if len(items) > top_n:
+            head = items[:top_n]
+            etc = sum(x["value"] for x in items[top_n:])
+            head.append({"name": f"기타 {len(items) - top_n}종", "value": _f(etc)})
+            items = head
+        out[key] = items
+    return out
+
+
 def compute(f=None, limit=300):
     df, vis, hubcols, hcol = _prep(f)
     if df.empty:
         return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "options": 0, "goods": 0},
-                "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols}
+                "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols, "cats": {}}
 
     kpis = {"jaego": _f(df["__jaego"].sum()), "hub": _f(df["__hub"].sum()),
             "options": int(len(df)), "goods": int(df["goods_no"].nunique())}
+    cats = _cat_pies(df)
 
     # 매장별 재고 (위탁/매입) — store × business_type
     stores = []
@@ -119,7 +141,7 @@ def compute(f=None, limit=300):
     sub = sub.rename(columns={"__jaego": "점재고합계", "__hub": "허브합계"})
     rows = sub.to_dict(orient="records")
     return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows,
-            "store_cols": vis, "hubcols": hubcols}
+            "store_cols": vis, "hubcols": hubcols, "cats": cats}
 
 
 def csv_rows(f=None):

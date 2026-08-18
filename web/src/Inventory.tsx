@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList, Cell } from "recharts";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList, Cell, PieChart, Pie } from "recharts";
 import { Boxes, Warehouse, Package, Tags, Download } from "lucide-react";
 import { api, num, getToken, toQuery, type Filters } from "./lib";
 import { Card, CardBody, SectionTitle, Spinner, FitText } from "./ui";
@@ -13,6 +13,33 @@ function Kpi({ icon, label, value }: { icon: React.ReactNode; label: string; val
     <Card><CardBody className="p-4">
       <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400"><span className="shrink-0">{icon}</span><span className="line-clamp-2 min-w-0 text-xs font-medium leading-tight">{label}</span></div>
       <div className="mt-2 truncate text-xl font-bold tabular-nums tracking-tight text-slate-900 md:text-2xl dark:text-slate-50"><FitText>{value}</FitText></div>
+    </CardBody></Card>
+  );
+}
+
+const PIE_COLORS = ["#6366f1", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981", "#06b6d4", "#ef4444", "#84cc16", "#a855f7", "#94a3b8"];
+
+// 카테고리별 재고구성 원형그래프 (총재고=점재고+허브)
+function CatPie({ title, data, C }: { title: string; data: { name: string; value: number }[]; C: any }) {
+  const total = data.reduce((a, x) => a + (x.value || 0), 0);
+  return (
+    <Card><CardBody>
+      <SectionTitle title={title} sub={`총재고 ${num(total)}`} />
+      {!data.length ? (
+        <div className="flex h-[260px] items-center justify-center text-sm text-slate-400">데이터 없음</div>
+      ) : (
+        <ResponsiveContainer width="100%" height={270}>
+          <PieChart>
+            <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="46%" outerRadius={82} innerRadius={44} paddingAngle={1} isAnimationActive={false} stroke="none">
+              {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+            </Pie>
+            <Tooltip
+              formatter={(v: any, n: any) => [`${num(v as number)} (${total ? (((v as number) / total) * 100).toFixed(1) : 0}%)`, n]}
+              contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }} />
+            <Legend wrapperStyle={{ fontSize: 11 }} iconSize={9} />
+          </PieChart>
+        </ResponsiveContainer>
+      )}
     </CardBody></Card>
   );
 }
@@ -87,6 +114,14 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
             <Kpi icon={<Package size={16} />} label="옵션 수 (barcode)" value={num(d.kpis.options)} />
             <Kpi icon={<Tags size={16} />} label="상품 수 (goods)" value={num(d.kpis.goods)} />
           </div>
+
+          {(d.cats?.cat_top?.length || d.cats?.cat_large?.length || d.cats?.cat_medium?.length) ? (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <CatPie title="최상위카테고리 재고구성" data={d.cats?.cat_top ?? []} C={C} />
+              <CatPie title="대카테고리 재고구성" data={d.cats?.cat_large ?? []} C={C} />
+              <CatPie title="중카테고리 재고구성" data={d.cats?.cat_medium ?? []} C={C} />
+            </div>
+          ) : null}
 
           <Card><CardBody>
             <SectionTitle title="매장별 재고수량" sub={onPick ? "사업구분(위탁/매입) 누적 · 막대 클릭=필터" : "사업구분(위탁/매입) 누적"} />
