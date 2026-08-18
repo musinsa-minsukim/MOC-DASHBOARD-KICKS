@@ -60,12 +60,13 @@ export default function FilterBar({
     ];
   })();
   const uidCount = parseUids(f.goods).length;
+  const nameOn = f.name_like.trim().length > 0;
   const active =
     f.biz.length || f.type.length || f.store.length || f.brand.length || f.cat_top.length ||
-    f.cat_large.length || f.cat_medium.length || f.md.length || uidCount;
+    f.cat_large.length || f.cat_medium.length || f.md.length || uidCount || nameOn;
   const activeN =
     f.biz.length + f.type.length + f.store.length + f.brand.length + f.cat_top.length +
-    f.cat_large.length + f.cat_medium.length + f.md.length + (uidCount ? 1 : 0);
+    f.cat_large.length + f.cat_medium.length + f.md.length + (uidCount ? 1 : 0) + (nameOn ? 1 : 0);
 
   return (
     <Card>
@@ -151,6 +152,20 @@ export default function FilterBar({
           />
         </div>
 
+        <div>
+          <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">상품명 포함</div>
+          <div className="flex items-center gap-1.5">
+            <Chip active={f.name_like.trim().toLowerCase() === "acg"}
+              onClick={() => set({ name_like: f.name_like.trim().toLowerCase() === "acg" ? "" : "ACG" })}>ACG</Chip>
+            <input
+              value={f.name_like}
+              onChange={(e) => set({ name_like: e.target.value })}
+              placeholder="상품명 일부"
+              className="w-28 rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm outline-none transition focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/25 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            />
+          </div>
+        </div>
+
         {showGran && (
           <div>
             <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">추이 단위</div>
@@ -164,7 +179,7 @@ export default function FilterBar({
 
         {active ? (
           <button
-            onClick={() => set({ biz: [], type: [], store: [], brand: [], cat_top: [], cat_large: [], cat_medium: [], md: [], goods: "" })}
+            onClick={() => set({ biz: [], type: [], store: [], brand: [], cat_top: [], cat_large: [], cat_medium: [], md: [], goods: "", name_like: "" })}
             className="ml-auto inline-flex items-center gap-1.5 self-end rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
           >
             <RotateCcw size={13} /> 필터 초기화

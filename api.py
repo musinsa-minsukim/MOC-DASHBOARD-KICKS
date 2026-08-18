@@ -119,11 +119,11 @@ def get_filters(
     store: list[str] = Query(default=[]), brand: list[str] = Query(default=[]),
     cat_top: list[str] = Query(default=[]), cat_large: list[str] = Query(default=[]),
     cat_medium: list[str] = Query(default=[]), md: list[str] = Query(default=[]),
-    goods: list[int] = Query(default=[]),
+    goods: list[int] = Query(default=[]), name_like: str | None = None,
 ) -> dict:
     return {"date_from": date_from, "date_to": date_to, "biz": biz, "type": type,
             "store": store, "brand": brand, "cat_top": cat_top, "cat_large": cat_large,
-            "cat_medium": cat_medium, "md": md, "goods": goods}
+            "cat_medium": cat_medium, "md": md, "goods": goods, "name_like": name_like}
 
 
 def build_where(f: dict):
@@ -143,6 +143,10 @@ def build_where(f: dict):
         g = [int(x) for x in f["goods"]]
         clauses.append(f"goods_no IN ({','.join(['?'] * len(g))})")
         params += g
+    if f.get("name_like"):
+        # 상품명 부분일치(대소문자 무시). 예: ACG. sales에 goods_nm 존재.
+        clauses.append("lower(goods_nm) LIKE ?")
+        params.append("%" + str(f["name_like"]).lower() + "%")
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
