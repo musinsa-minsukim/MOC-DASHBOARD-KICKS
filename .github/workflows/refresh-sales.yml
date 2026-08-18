@@ -43,11 +43,11 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Download sales/receipts cache only
+      - name: Download sales/receipts/sales_option cache only
         run: |
           mkdir -p cache
           B="gs://${{ vars.GCS_CACHE_BUCKET }}"
-          gcloud storage cp "$B/sales.parquet" "$B/receipts.parquet" "$B/_meta.json" ./cache/ || true
+          gcloud storage cp "$B/sales.parquet" "$B/receipts.parquet" "$B/sales_option.parquet" "$B/_meta.json" ./cache/ || true
 
       - name: Run sales refresh (증분)
         env:
@@ -58,10 +58,10 @@ jobs:
           DBX_CLOUD_FETCH: "1"          # 프록시 없는 러너 → CloudFetch로 대용량 페치 가속(Thrift 행단위 수신 회피)
         run: python refresh.py --window=7   # 시간별: 최근 7일만 재적재(스캔·페치 ~6배↓). 45일 전체 보정은 일일 full이 담당
 
-      - name: Upload sales/receipts cache only
+      - name: Upload sales/receipts/sales_option cache only
         run: |
           B="gs://${{ vars.GCS_CACHE_BUCKET }}"
-          gcloud storage cp ./cache/sales.parquet ./cache/receipts.parquet ./cache/_meta.json "$B/"
+          gcloud storage cp ./cache/sales.parquet ./cache/receipts.parquet ./cache/sales_option.parquet ./cache/_meta.json "$B/"
 
       - name: Slack notify — 실패 시에만
         if: failure()
