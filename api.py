@@ -965,8 +965,7 @@ def _settlement_option_df(f: dict):
     where, params = _sales_option_where(f)
     # 순이익/CP: 옵션명이 MOSS↔정산 간 표기 차이로 정확 매칭률이 낮아, goods(일자×매장×상품) 단위
     # 정산값을 옵션 GMV 비중으로 배분(전 옵션 커버 + goods 합계는 정산과 일치). 정산 미반영분(오늘 등)은 공란.
-    try:
-        df = store.query(f"""
+    _so_cte = f"""
             WITH so AS (
                 SELECT so.sales_date, so.store_name, so.business_type, so.brand_nm,
                        so.cat_top, so.cat_large, so.cat_medium, so.goods_no,
@@ -979,20 +978,33 @@ def _settlement_option_df(f: dict):
                          so.cat_top, so.cat_large, so.cat_medium, so.goods_no, so.option_nm
                 HAVING sum(so.qty) <> 0 OR sum(so.gmv) <> 0
             ),
-            sog AS (SELECT sales_date, store_name, goods_no, sum(gmv) goods_gmv FROM so GROUP BY 1, 2, 3),
-            stg AS (SELECT sales_date, store_name, goods_no,
-                           sum(net_take) nt, sum(cp) cp FROM settlement_option GROUP BY 1, 2, 3)
-            SELECT so.sales_date, so.store_name, so.business_type, so.brand_nm,
+            sog AS (SELECT sales_date, store_name, goods_no, sum(gmv) goods_gmv FROM so GROUP BY 1, 2, 3)"""
+    _cols_base = """so.sales_date, so.store_name, so.business_type, so.brand_nm,
                    so.cat_top, so.cat_large, so.cat_medium, so.goods_no, so.goods_nm, so.option_nm,
-                   so.qty, so.gmv, so.normal_amt, so.pay,
+                   so.qty, so.gmv, so.normal_amt, so.pay"""
+    # 1차: settlement_option 조인(순이익/CP 배분). 없으면(뷰 미존재/에러) 2차: sales_option만(순이익/CP 공란).
+    q_full = f"""{_so_cte},
+            stg AS (SELECT sales_date, store_name, goods_no, sum(net_take) nt, sum(cp) cp FROM settlement_option GROUP BY 1, 2, 3)
+            SELECT {_cols_base},
                    CAST(stg.nt * (so.gmv / NULLIF(sog.goods_gmv, 0)) AS DOUBLE) net_take,
                    CAST(stg.cp * (so.gmv / NULLIF(sog.goods_gmv, 0)) AS DOUBLE) cp
             FROM so
             JOIN sog ON sog.sales_date = so.sales_date AND sog.store_name = so.store_name AND sog.goods_no = so.goods_no
             LEFT JOIN stg ON stg.sales_date = so.sales_date AND stg.store_name = so.store_name AND stg.goods_no = so.goods_no
-            ORDER BY so.sales_date, so.store_name, so.gmv DESC""", params)
-    except Exception:
-        return None
+            ORDER BY so.sales_date, so.store_name, so.gmv DESC"""
+    q_bare = f"""{_so_cte}
+            SELECT {_cols_base}, CAST(NULL AS DOUBLE) net_take, CAST(NULL AS DOUBLE) cp
+            FROM so JOIN sog ON sog.sales_date = so.sales_date AND sog.store_name = so.store_name AND sog.goods_no = so.goods_no
+            ORDER BY so.sales_date, so.store_name, so.gmv DESC"""
+    df = None
+    for q in (q_full, q_bare):
+        try:
+            df = store.query(q, params)
+            break
+        except Exception:
+            df = None
+    if df is None:
+        return None   # sales_option 캐시 자체가 없을 때만 → goods 단위 폴백
     try:   # (goods_no × 매장) 점재고(goods 단위) 조인 — 옵션별로 반복 표기
         stk = store.query('SELECT goods_no, store_name, CAST(sum("점재고") AS DOUBLE) stock '
                           "FROM inventory_store_long GROUP BY 1, 2")
