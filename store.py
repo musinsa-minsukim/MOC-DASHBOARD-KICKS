@@ -179,10 +179,18 @@ def refresh_snapshots(full: bool = False) -> dict:
     return out
 
 
-def refresh_named(names: list[str]) -> dict:
-    """지정 스냅샷만 교체(전체 full 없이). 무거운 신규 스냅샷(예: ips)을 야간 full과
-       분리해 독립적으로 채우거나 갱신할 때 사용. 알 수 없는 이름은 무시."""
-    return {n: refresh_snapshot(n) for n in names if n in _SNAPSHOTS}
+def refresh_named(names: list[str], full: bool = False) -> dict:
+    """지정 스냅샷만 교체(전체 full 없이). 무거운/증분 스냅샷을 야간 full과 분리해 독립 갱신.
+       _SNAPSHOTS(전체교체)와 _INCR_SNAPSHOTS(증분) 둘 다 지원. 알 수 없는 이름은 무시."""
+    out = {}
+    for n in names:
+        if n in _SNAPSHOTS:
+            out[n] = refresh_snapshot(n)
+        elif n in _INCR_SNAPSHOTS:
+            fn, w = _INCR_SNAPSHOTS[n]
+            df, _ = _incremental(n, fn, w, full)
+            out[n] = len(df)
+    return out
 
 
 def refresh_all(full: bool = False) -> dict:

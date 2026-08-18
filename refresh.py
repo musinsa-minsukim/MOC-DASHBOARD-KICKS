@@ -37,6 +37,11 @@ def main():
         print("  ips:", store.refresh_named(["ips", "ips_goods"]))
         print("완료(ips):", {k: store.status().get(k) for k in ("ips_refreshed_at", "ips_goods_refreshed_at")})
         return
+    if "--settlement" in args:
+        # 정산(순이익/CP) 3종만 증분 갱신 — CSV(매출일자×옵션) 캐시 복구용. 다른 스냅샷 미변경.
+        print("  settlement:", store.refresh_named(
+            ["settlement", "settlement_option", "settlement_daily"], full="--full" in args))
+        return
     full = "--full" in args
     kw = {"window_days": window} if window is not None else {}
     print("  sales:", store.refresh_sales(full=full, **kw))
