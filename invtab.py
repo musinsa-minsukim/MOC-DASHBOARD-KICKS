@@ -70,6 +70,10 @@ def _prep(f):
     if f.get("goods"):
         gset = {str(x) for x in f["goods"]}
         df = df[df["goods_no"].astype(str).isin(gset)]
+    if f.get("name_like"):                       # 상품명 부분일치(대소문자 무시) — 예: ACG
+        nl = str(f["name_like"]).strip().lower()
+        if nl:
+            df = df[df["goods_nm"].astype(str).str.lower().str.contains(nl, na=False, regex=False)]
     df = df[df["goods_nm"].astype(str).str.strip() != ""].copy()
     df["__jaego"] = df[vis].sum(axis=1) if vis else 0
     df["__hub"] = df[hcol].fillna(0) if hcol else 0

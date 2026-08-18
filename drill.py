@@ -58,11 +58,13 @@ def _sales_where(f: dict):
     if f.get("goods"):
         g = [int(x) for x in f["goods"]]
         clauses.append(f"goods_no IN ({','.join(['?'] * len(g))})"); params += g
+    if f.get("name_like") and str(f["name_like"]).strip():
+        clauses.append("lower(goods_nm) LIKE ?"); params.append("%" + str(f["name_like"]).strip().lower() + "%")
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
 def _inv_where(f: dict):
-    """재고 WHERE — 날짜/MD/매장타입 제외(스냅샷이라 없음). 매장·브랜드·카테·사업·goods만."""
+    """재고 WHERE — 날짜/MD/매장타입 제외(스냅샷이라 없음). 매장·브랜드·카테·사업·goods·상품명만."""
     clauses, params = [], []
     for key, col in _INV_IN.items():
         vals = f.get(key)
@@ -71,6 +73,10 @@ def _inv_where(f: dict):
     if f.get("goods"):
         g = [int(x) for x in f["goods"]]
         clauses.append(f"i.goods_no IN ({','.join(['?'] * len(g))})"); params += g
+    if f.get("name_like") and str(f["name_like"]).strip():
+        # 재고엔 goods_nm이 없어 sales의 goods_no 매핑으로 반영(조인 중복 방지 위해 서브쿼리).
+        clauses.append("i.goods_no IN (SELECT DISTINCT goods_no FROM sales WHERE lower(goods_nm) LIKE ?)")
+        params.append("%" + str(f["name_like"]).strip().lower() + "%")
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
