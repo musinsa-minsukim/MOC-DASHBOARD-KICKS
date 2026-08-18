@@ -223,6 +223,91 @@ def fetch_sales(since: str | None = None) -> pd.DataFrame:
     return df  # concept는 app에서 load_concept_map으로 매핑(뷰 불안정 분리)
 
 
+def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
+    """옵션 단위 오프라인 판매(신선 — 오늘 포함) — 판매 CSV(매출일자×매장×상품×옵션) 베이스.
+       fetch_sales와 동일 주문원장(order_option+master+claim)·환불귀속, 옵션(option_name) 그레인만 추가.
+       goods_nm/option_nm은 원장 값. 순이익/CP는 익일 반영이라 여기 없음(CSV에서 settlement_option 조인).
+       → settlement_option이 stale/미반영이어도 CSV가 항상 매출일자×옵션으로 나오게 하는 신선 소스.
+       ⚠️ 히스토리는 최근 60일로 제한(옵션단위라 전이력은 과대 — CSV는 최근 운영 상세용)."""
+    floor = (_dt.date.today() - _dt.timedelta(days=60)).isoformat()
+    since = max(since, floor) if since else floor       # 미지정(첫 적재)도 180일로 바운드
+    ordf = f"AND CAST(COALESCE(om.transaction_at, om.created_at) AS DATE) >= '{since}'"
+    reff = f"AND CAST(created_at AS DATE) >= '{since}'"
+    q = ("WITH " + DIM_STORE + r""",
+        dim_brand AS (
+          SELECT cb.com_id, cb.brand AS brand_code, b.brand_nm,
+            CASE c.margin_type WHEN 'FEE' THEN '위탁' WHEN 'WONGA' THEN '매입' ELSE '기타' END AS business_type
+          FROM musinsa.partnerportal.company_brand cb
+          LEFT JOIN musinsa.partnerportal.brand   b ON b.brand  = cb.brand
+          LEFT JOIN musinsa.partnerportal.company c ON c.com_id = cb.com_id
+        ),
+        catmap AS (
+          SELECT goods_no, ANY_VALUE(final_large_nm_off) AS cat_top, ANY_VALUE(large_nm_off) AS cat_large,
+                 ANY_VALUE(medium_nm_off) AS cat_medium, ANY_VALUE(offline_md_id) AS off_md_id
+          FROM team.sales.dsh_d_upt_editorial_stock_summary s2
+          JOIN (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary) lc
+            ON s2.ord_state_date = lc.d
+          GROUP BY goods_no
+        ),
+        ord AS (
+          SELECT CAST(COALESCE(om.transaction_at, om.created_at) AS DATE) AS sales_date,
+                 om.shop_no, oo.goods_no, oo.company_id, oo.brand_id, oo.goods_name, oo.option_name,
+                 1 AS sgn, oo.quantity, oo.order_amount, oo.normal_amount, oo.pay_amount
+          FROM ocmp.moss.order_option oo
+          JOIN ocmp.moss.order_master om ON om.order_id = oo.order_id
+          WHERE om.dummy_order = 0 AND om.order_status = 50 """ + ordf + r"""
+        ),
+        refclaim AS (
+          SELECT order_id, CAST(created_at AS DATE) AS refund_date
+          FROM ocmp.moss.claim WHERE claim_type = 'REFUND' """ + reff + r"""
+          GROUP BY order_id, CAST(created_at AS DATE)
+        ),
+        ref AS (
+          SELECT rc.refund_date AS sales_date,
+                 om.shop_no, oo.goods_no, oo.company_id, oo.brand_id, oo.goods_name, oo.option_name,
+                 -1 AS sgn, oo.quantity, oo.order_amount, oo.normal_amount, oo.pay_amount
+          FROM refclaim rc
+          JOIN ocmp.moss.order_master om ON om.order_id = rc.order_id
+          JOIN ocmp.moss.order_option oo ON oo.order_id = rc.order_id
+          WHERE om.dummy_order = 0
+        ),
+        lines AS (SELECT * FROM ord UNION ALL SELECT * FROM ref),
+        fact AS (
+          SELECT l.sales_date, st.store_name, st.shop_type,
+                 COALESCE(br.brand_nm, '(미매칭)') AS brand_nm,
+                 COALESCE(br.business_type, '기타') AS business_type,
+                 CAST(l.goods_no AS BIGINT) AS goods_no, l.goods_name AS goods_nm,
+                 COALESCE(NULLIF(TRIM(l.option_name), ''), '(옵션없음)') AS option_nm,
+                 cat.cat_top, cat.cat_large, cat.cat_medium, cat.off_md_id,
+                 l.sgn, l.quantity, l.order_amount, l.normal_amount, l.pay_amount
+          FROM lines l
+          JOIN dim_store st ON st.shop_no = l.shop_no
+          LEFT JOIN dim_brand br ON br.com_id = l.company_id AND br.brand_code = l.brand_id
+          LEFT JOIN catmap cat ON cat.goods_no = l.goods_no
+        )
+        SELECT sales_date, store_name, shop_type, business_type, brand_nm,
+               CAST(goods_no AS BIGINT) AS goods_no, ANY_VALUE(goods_nm) AS goods_nm, option_nm,
+               cat_top, cat_large, cat_medium, off_md_id,
+               CAST(SUM(sgn*quantity)     AS DOUBLE) AS qty,
+               CAST(SUM(sgn*order_amount) AS DOUBLE) AS gmv,
+               CAST(SUM(sgn*normal_amount) AS DOUBLE) AS normal_amt,
+               CAST(SUM(sgn*pay_amount)   AS DOUBLE) AS pay
+        FROM fact
+        GROUP BY sales_date, store_name, shop_type, business_type, brand_nm, goods_no, option_nm,
+                 cat_top, cat_large, cat_medium, off_md_id
+    """)
+    df = run_df(q)
+    df["sales_date"] = pd.to_datetime(df["sales_date"], errors="coerce")
+    df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
+    for c in ("qty", "gmv", "normal_amt", "pay"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    for c in ("store_name", "shop_type", "business_type", "brand_nm", "goods_nm", "option_nm",
+              "cat_top", "cat_large", "cat_medium", "off_md_id"):
+        df[c] = df[c].fillna("")
+    df.loc[df["brand_nm"] == "수베니어샵", "qty"] = 0.0
+    return df[df["sales_date"].notna()]
+
+
 def fetch_receipts(since: str | None = None) -> pd.DataFrame:
     """객단가용 영수증(주문) 단위 집계. 그레인 = 주문ID × 판매일 × 매장 × 매장타입 × 내외국인
        × 사업구분 × 카테(최상위/대/중) × 브랜드.  → 카테/브랜드/사업구분 필터별 객단가 지원.

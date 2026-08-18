@@ -937,34 +937,60 @@ def _goods_store_long(f: dict):
     return df
 
 
-def _settlement_option_df(f: dict):
-    """CSV용 (매출일자 × 매장 × 상품 × 옵션) 정산 상세 + 점재고(goods×매장). sales 필터 goods 세트로 스코프.
-       settlement_option 캐시 없으면 None → 상위에서 goods 단위 폴백."""
-    wsales, psales = build_where(f)
-    wso, pso = [], []
+def _sales_option_where(f: dict):
+    """sales_option(옵션단위 신선 판매) 공통필터 WHERE — 모든 컬럼 보유(so.* 직접 적용)."""
+    cl, pr = [], []
     if f.get("date_from"):
-        wso.append("so.sales_date >= CAST(? AS DATE)"); pso.append(f["date_from"])
+        cl.append("so.sales_date >= CAST(? AS DATE)"); pr.append(f["date_from"])
     if f.get("date_to"):
-        wso.append("so.sales_date < CAST(? AS DATE) + INTERVAL 1 DAY"); pso.append(f["date_to"])
-    for key, col in (("type", "shop_type"), ("store", "store_name"), ("brand", "brand_nm"),
-                     ("cat_large", "cat_large"), ("cat_medium", "cat_medium")):
+        cl.append("so.sales_date < CAST(? AS DATE) + INTERVAL 1 DAY"); pr.append(f["date_to"])
+    for key, col in (("biz", "business_type"), ("type", "shop_type"), ("store", "store_name"),
+                     ("brand", "brand_nm"), ("cat_top", "cat_top"), ("cat_large", "cat_large"),
+                     ("cat_medium", "cat_medium"), ("md", "off_md_id")):
         vals = f.get(key)
         if vals:
-            wso.append(f"so.{col} IN ({','.join(['?'] * len(vals))})"); pso += list(vals)
-    inner = " AND ".join(wso)
-    cond = " WHERE " + ((inner + " AND ") if inner else "") + "so.goods_no IN (SELECT goods_no FROM g)"
+            cl.append(f"so.{col} IN ({','.join(['?'] * len(vals))})"); pr += list(vals)
+    if f.get("goods"):
+        g = [int(x) for x in f["goods"]]
+        cl.append(f"so.goods_no IN ({','.join(['?'] * len(g))})"); pr += g
+    if f.get("name_like"):
+        cl.append("lower(so.goods_nm) LIKE ?"); pr.append("%" + str(f["name_like"]).lower() + "%")
+    return (" WHERE " + " AND ".join(cl)) if cl else "", pr
+
+
+def _settlement_option_df(f: dict):
+    """CSV용 (매출일자 × 매장 × 상품 × 옵션) — 베이스=sales_option(신선, 오늘 포함),
+       순이익(NetTake)·CP는 settlement_option(익일 반영) LEFT JOIN(최근분은 공란 가능) + 점재고.
+       sales_option 캐시 없으면 None → 상위에서 goods 단위 폴백."""
+    where, params = _sales_option_where(f)
+    # 순이익/CP: 옵션명이 MOSS↔정산 간 표기 차이로 정확 매칭률이 낮아, goods(일자×매장×상품) 단위
+    # 정산값을 옵션 GMV 비중으로 배분(전 옵션 커버 + goods 합계는 정산과 일치). 정산 미반영분(오늘 등)은 공란.
     try:
         df = store.query(f"""
-            WITH g AS (SELECT DISTINCT goods_no FROM sales{wsales})
-            SELECT so.sales_date, so.store_name, so.brand_nm, so.cat_large, so.cat_medium,
-                   so.goods_no, any_value(so.goods_nm) goods_nm, so.option_nm,
-                   CAST(sum(so.qty) AS DOUBLE) qty, CAST(sum(so.gmv) AS DOUBLE) gmv,
-                   CAST(sum(so.normal_amt) AS DOUBLE) normal_amt, CAST(sum(so.pay) AS DOUBLE) pay,
-                   CAST(sum(so.net_take) AS DOUBLE) net_take, CAST(sum(so.cp) AS DOUBLE) cp
-            FROM settlement_option so{cond}
-            GROUP BY so.sales_date, so.store_name, so.brand_nm, so.cat_large, so.cat_medium, so.goods_no, so.option_nm
-            HAVING sum(so.qty) <> 0 OR sum(so.gmv) <> 0
-            ORDER BY so.sales_date, so.store_name, gmv DESC""", psales + pso)
+            WITH so AS (
+                SELECT so.sales_date, so.store_name, so.business_type, so.brand_nm,
+                       so.cat_top, so.cat_large, so.cat_medium, so.goods_no,
+                       any_value(so.goods_nm) goods_nm, so.option_nm,
+                       CAST(sum(so.qty) AS DOUBLE) qty, CAST(sum(so.gmv) AS DOUBLE) gmv,
+                       CAST(sum(so.normal_amt) AS DOUBLE) normal_amt, CAST(sum(so.pay) AS DOUBLE) pay
+                FROM sales_option so
+                {where}
+                GROUP BY so.sales_date, so.store_name, so.business_type, so.brand_nm,
+                         so.cat_top, so.cat_large, so.cat_medium, so.goods_no, so.option_nm
+                HAVING sum(so.qty) <> 0 OR sum(so.gmv) <> 0
+            ),
+            sog AS (SELECT sales_date, store_name, goods_no, sum(gmv) goods_gmv FROM so GROUP BY 1, 2, 3),
+            stg AS (SELECT sales_date, store_name, goods_no,
+                           sum(net_take) nt, sum(cp) cp FROM settlement_option GROUP BY 1, 2, 3)
+            SELECT so.sales_date, so.store_name, so.business_type, so.brand_nm,
+                   so.cat_top, so.cat_large, so.cat_medium, so.goods_no, so.goods_nm, so.option_nm,
+                   so.qty, so.gmv, so.normal_amt, so.pay,
+                   CAST(stg.nt * (so.gmv / NULLIF(sog.goods_gmv, 0)) AS DOUBLE) net_take,
+                   CAST(stg.cp * (so.gmv / NULLIF(sog.goods_gmv, 0)) AS DOUBLE) cp
+            FROM so
+            JOIN sog ON sog.sales_date = so.sales_date AND sog.store_name = so.store_name AND sog.goods_no = so.goods_no
+            LEFT JOIN stg ON stg.sales_date = so.sales_date AND stg.store_name = so.store_name AND stg.goods_no = so.goods_no
+            ORDER BY so.sales_date, so.store_name, so.gmv DESC""", params)
     except Exception:
         return None
     try:   # (goods_no × 매장) 점재고(goods 단위) 조인 — 옵션별로 반복 표기
@@ -980,8 +1006,8 @@ def _settlement_option_df(f: dict):
 @app.get("/api/sales/goods.csv")
 def sales_goods_csv(f: dict = Depends(get_filters),
                     _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """판매 CSV — tidy/long. settlement_option 있으면 (매출일자 × 매장 × 상품 × 옵션)당 1행
-       (순이익·CP·정산GMV 포함), 없으면 (매장 × 상품) goods 단위로 폴백. 화면 기본은 TOTAL."""
+    """판매 CSV — tidy/long. sales_option(신선, 오늘 포함) 있으면 (매출일자 × 매장 × 상품 × 옵션)당 1행
+       (순이익·CP는 settlement goods단위를 GMV비중 배분), 캐시 없으면 (매장 × 상품) goods 단위로 폴백."""
     import io, csv
     df = _settlement_option_df(f)
     buf = io.StringIO()
@@ -989,7 +1015,7 @@ def sales_goods_csv(f: dict = Depends(get_filters),
     if df is not None and not df.empty:
         cat = prodmeta.goods_catalog([int(x) for x in df["goods_no"].unique().tolist()])
         w.writerow(["매출일자", "매장", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명", "옵션",
-                    "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV(정산)", "정상가매출", "실결제",
+                    "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV", "정상가매출", "실결제",
                     "순이익(NetTake)", "공헌이익(CP)", "점재고"])
         for r in df.itertuples():
             c = cat.get(int(r.goods_no), {})

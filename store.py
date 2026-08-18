@@ -49,7 +49,7 @@ _OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settl
 _ALL = ["sales", *_SNAPSHOTS, *_INCR_SNAPSHOTS]
 # DuckDB 뷰 생성 대상(=_ALL + 객단가용 영수증). receipts는 readiness(missing) 게이트에는 넣지 않아
 # 기존 캐시만 있어도 앱이 동작하고, 판매 갱신/빌드 시 생성되면 자동으로 뷰가 잡힌다.
-_VIEW_TABLES = [*_ALL, "receipts"]
+_VIEW_TABLES = [*_ALL, "receipts", "sales_option"]   # sales_option: 판매 CSV(옵션단위) — receipts처럼 readiness 비게이트
 
 
 def _path(name: str) -> str:
@@ -136,11 +136,13 @@ def _incremental(name: str, fetch_fn, window_days: int, full: bool):
 def refresh_sales(window_days: int = SALES_WINDOW_DAYS, full: bool = False) -> dict:
     df, mode = _incremental("sales", db.fetch_sales, window_days, full)
     rdf, _ = _incremental("receipts", db.fetch_receipts, window_days, full)  # 객단가용 영수증 집계
+    sodf, _ = _incremental("sales_option", db.fetch_sales_option, window_days, full)  # 판매 CSV(옵션단위, 신선)
     mx = str(pd.to_datetime(df["sales_date"]).max().date())
     ts = db.sales_latest_ts()   # 가장 최근 거래 시각(원천 timestamp)
     _meta_set(sales_refreshed_at=_stamp(), sales_max_date=mx, sales_max_ts=ts,
-              sales_rows=int(len(df)), receipts_rows=int(len(rdf)))
-    return {"mode": mode, "rows": int(len(df)), "receipts": int(len(rdf)), "max_date": mx, "max_ts": ts}
+              sales_rows=int(len(df)), receipts_rows=int(len(rdf)), sales_option_rows=int(len(sodf)))
+    return {"mode": mode, "rows": int(len(df)), "receipts": int(len(rdf)),
+            "sales_option": int(len(sodf)), "max_date": mx, "max_ts": ts}
 
 
 # ------------------------------------------------------- 스냅샷 (전체 교체)
