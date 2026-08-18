@@ -27,8 +27,10 @@ function heatRateCol(field: string, header: string, rows: any[], anchor: number,
 
 export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
   const [d, setD] = useState<any>(null);
-  const [mode, setMode] = useState<"month" | "day">("month");
+  const [mode, setMode] = useState<"month" | "day" | "range">("month");
   const [period, setPeriod] = useState<string>("");
+  const [rangeFrom, setRangeFrom] = useState<string>(""); // 기간 모드 from(YYYY-MM-DD)
+  const [rangeTo, setRangeTo] = useState<string>("");     // 기간 모드 to
   const [types, setTypes] = useState<string[]>([]);
   const [drill, setDrill] = useState<string | null>(null); // null=매장별, 값=그 매장의 브랜드별
   const [loading, setLoading] = useState(true);
@@ -41,23 +43,34 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     p.set("mode", mode); p.set("level", level);
-    if (period) p.set("period", period);
+    if (mode === "range") {
+      if (rangeFrom) p.set("date_from", rangeFrom);
+      if (rangeTo) p.set("date_to", rangeTo);
+    } else if (period) {
+      p.set("period", period);
+    }
     if (drill) p.set("store", drill);
     else types.forEach((t) => p.append("type", t));
     return "?" + p.toString();
-  }, [mode, level, period, types, drill]);
+  }, [mode, level, period, rangeFrom, rangeTo, types, drill]);
 
   useEffect(() => {
     let alive = true;
     setLoading(true); setError("");
     api.pnl(qs)
-      .then((r) => { if (alive) { setD(r); if (!period && r?.period) setPeriod(r.period); } })
+      .then((r) => {
+        if (!alive) return;
+        setD(r);
+        if (mode !== "range" && !period && r?.period) setPeriod(r.period);
+        // 기간 모드 최초 진입 시 서버가 정한 기본 범위(최신월 1일~max)를 입력에 채움
+        if (mode === "range" && r?.range) { if (!rangeFrom) setRangeFrom(r.range.from); if (!rangeTo) setRangeTo(r.range.to); }
+      })
       .catch((e) => alive && setError(e.message))
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
   }, [qs, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const switchMode = (m: "month" | "day") => { if (m !== mode) { setMode(m); setPeriod(""); } };
+  const switchMode = (m: "month" | "day" | "range") => { if (m !== mode) { setMode(m); setPeriod(""); } };
 
   const pctCol = (field: string, header: string) =>
     colNum(field, header, "num", {
@@ -66,8 +79,8 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
       cellStyle: (p: any) => ({ textAlign: "right", fontWeight: 700, color: p.value == null ? "var(--ratio-neutral)" : (p.value as number) >= 0 ? up : down }),
     });
 
-  const pmLabel = mode === "day" ? "전일" : "전월";
-  const pyLabel = mode === "day" ? "전년동일" : "전년동월";
+  const pmLabel = mode === "day" ? "전일" : mode === "range" ? "직전기간" : "전월";
+  const pyLabel = mode === "day" ? "전년동일" : mode === "range" ? "전년동기간" : "전년동월";
 
   const cols = useMemo(() => {
     const rows = d?.rows || [];
@@ -114,14 +127,27 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
           <div className="flex gap-1.5">
             <Chip active={mode === "month"} onClick={() => switchMode("month")}>월마감</Chip>
             <Chip active={mode === "day"} onClick={() => switchMode("day")}>일마감</Chip>
+            <Chip active={mode === "range"} onClick={() => switchMode("range")}>기간</Chip>
           </div>
         </div>
         <div>
-          <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">{mode === "day" ? "일자" : "월"}</div>
+          <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">
+            {mode === "day" ? "일자" : mode === "range" ? "기간(from ~ to)" : "월"}
+          </div>
           {mode === "day" ? (
             <input type="date" value={period || d?.period || ""} max={d?.max_date}
               onChange={(e) => setPeriod(e.target.value)}
               className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200" />
+          ) : mode === "range" ? (
+            <div className="flex items-center gap-1.5">
+              <input type="date" value={rangeFrom} min={d?.min_date} max={rangeTo || d?.max_date}
+                onChange={(e) => setRangeFrom(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200" />
+              <span className="text-slate-400">~</span>
+              <input type="date" value={rangeTo} min={rangeFrom || d?.min_date} max={d?.max_date}
+                onChange={(e) => setRangeTo(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200" />
+            </div>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {(d?.months || []).slice(0, 14).map((m: string) => (
@@ -164,7 +190,7 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
       ) : (
         <Card><CardBody>
           <div className="mb-3">
-            <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{drill ? `${drill} · 브랜드별` : "매장별"} 손익 · {d.period} {mode === "day" ? "(일마감)" : "(월마감)"}</h3>
+            <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{drill ? `${drill} · 브랜드별` : "매장별"} 손익 · {d.period} {mode === "day" ? "(일마감)" : mode === "range" ? "(기간)" : "(월마감)"}</h3>
             <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">CP 내림차순 · 합계 고정 · {pmLabel}·{pyLabel} CP 대비 · 순매출율/CP율 = 전체 대비 색상</p>
           </div>
           <DataGrid key={gridKey} rows={d.rows} columns={cols} dark={dark} pinnedTop={total} onCellClicked={onCellClicked}

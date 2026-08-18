@@ -1021,13 +1021,15 @@ def sales_goods_csv(f: dict = Depends(get_filters),
 
 @app.get("/api/pnl")
 def pnl(mode: str = "month", period: str | None = None, level: str = "store",
+        date_from: str | None = None, date_to: str | None = None,
         store_f: list[str] = Query(default=[], alias="store"),
         types_f: list[str] = Query(default=[], alias="type"),
         brand_f: list[str] = Query(default=[], alias="brand"),
         _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """손익(P&L) — 매장별(level=store) 또는 브랜드별(level=brand, 매장 필터) × 월마감/일마감.
+    """손익(P&L) — 매장별(level=store) 또는 브랜드별(level=brand, 매장 필터) × 월마감/일마감/기간.
        공식 정산값(editorial): Net Take=profit, CP=contribution_profit_pre, GMV=정산(ord_amt),
-       매장고정비=offline_cost. 당기 + 전월(전일)·전년동월(전년동일) CP 대비. settlement_daily 캐시 필요."""
+       매장고정비=offline_cost. 당기 + 직전기간·전년동기간 CP 대비. settlement_daily 캐시 필요.
+       mode=range + date_from/date_to → 임의 기간(직전 동일길이·전년동기간과 비교)."""
     import datetime as _dt, calendar as _cal
     try:
         mrow = store.query("SELECT CAST(max(sales_date) AS DATE) mx, CAST(min(sales_date) AS DATE) mn FROM settlement_daily").iloc[0]
@@ -1040,7 +1042,24 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
 
     def mrange(y, m):
         return _dt.date(y, m, 1), _dt.date(y, m, _cal.monthrange(y, m)[1])
-    if mode == "day":
+
+    def yr_ago(d):
+        try:
+            return d.replace(year=d.year - 1)
+        except ValueError:              # 2/29 → 전년 없음
+            return d - _dt.timedelta(days=365)
+    if mode == "range":
+        # 임의 기간. 미지정 시 최신월 1일~max_d. from>to면 스왑.
+        cf = _dt.date.fromisoformat(date_from) if date_from else max_d.replace(day=1)
+        ct = _dt.date.fromisoformat(date_to) if date_to else max_d
+        if cf > ct:
+            cf, ct = ct, cf
+        cur = (cf, ct)
+        length = (ct - cf).days                     # 직전 동일길이 구간(바로 앞)
+        pm = (cf - _dt.timedelta(days=length + 1), cf - _dt.timedelta(days=1))
+        py = (yr_ago(cf), yr_ago(ct))               # 전년 동기간
+        label = f"{cf.isoformat()} ~ {ct.isoformat()}"
+    elif mode == "day":
         cd = _dt.date.fromisoformat(period) if period else max_d
         cur, pm, py = (cd, cd), (cd - _dt.timedelta(days=1),) * 2, (cd.replace(year=cd.year - 1),) * 2
         label = cd.isoformat()
@@ -1101,7 +1120,8 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
     provisional = cur[1] >= (max_d.replace(day=1) - _dt.timedelta(days=62))
     return {"available": True, "mode": mode, "level": level, "period": label,
             "rows": rows, "totals": totals, "provisional": provisional,
-            "months": months[::-1], "max_date": max_d.isoformat()}
+            "months": months[::-1], "max_date": max_d.isoformat(), "min_date": min_d.isoformat(),
+            "range": {"from": cur[0].isoformat(), "to": cur[1].isoformat()}}
 
 
 @app.get("/api/daily")
