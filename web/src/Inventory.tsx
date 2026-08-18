@@ -19,6 +19,20 @@ function Kpi({ icon, label, value }: { icon: React.ReactNode; label: string; val
 
 const PIE_COLORS = ["#6366f1", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981", "#06b6d4", "#ef4444", "#84cc16", "#a855f7", "#94a3b8"];
 
+// 조각 안 비중(%) 라벨 — 마우스 없이 바로 표시. 5% 미만은 겹침 방지로 생략.
+const pieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
+  if (!percent || percent < 0.05) return null;
+  const RAD = Math.PI / 180;
+  const r = innerRadius + (outerRadius - innerRadius) * 0.5;
+  const x = cx + r * Math.cos(-midAngle * RAD);
+  const y = cy + r * Math.sin(-midAngle * RAD);
+  return (
+    <text x={x} y={y} fill="#fff" fontSize={11} fontWeight={700} textAnchor="middle" dominantBaseline="central">
+      {(percent * 100).toFixed(0)}%
+    </text>
+  );
+};
+
 // 카테고리별 재고구성 원형그래프 (총재고=점재고+허브)
 function CatPie({ title, data, C }: { title: string; data: { name: string; value: number }[]; C: any }) {
   const total = data.reduce((a, x) => a + (x.value || 0), 0);
@@ -30,7 +44,7 @@ function CatPie({ title, data, C }: { title: string; data: { name: string; value
       ) : (
         <ResponsiveContainer width="100%" height={270}>
           <PieChart>
-            <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="46%" outerRadius={82} innerRadius={44} paddingAngle={1} isAnimationActive={false} stroke="none">
+            <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="46%" outerRadius={82} innerRadius={44} paddingAngle={1} isAnimationActive={false} stroke="none" label={pieLabel} labelLine={false}>
               {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
             </Pie>
             <Tooltip
