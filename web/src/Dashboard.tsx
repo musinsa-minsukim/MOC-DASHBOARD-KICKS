@@ -306,7 +306,10 @@ function brandCsv(rows: any[], storeCols: string[] = []) {
 
 async function goodsCsv(qs: string) {
   const r = await fetch("/api/sales/goods.csv" + qs, { headers: { Authorization: `Bearer ${getToken()}` } });
-  if (!r.ok) { alert("CSV 실패 (" + r.status + ")"); return; }
+  if (!r.ok) {
+    let detail = ""; try { detail = (await r.json()).detail || ""; } catch { /* non-json */ }
+    alert("CSV 실패 (" + r.status + ")" + (detail ? "\n" + detail : "")); return;
+  }
   const blob = await r.blob();
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "offline_sales_by_goods.csv"; a.click(); URL.revokeObjectURL(a.href);
 }

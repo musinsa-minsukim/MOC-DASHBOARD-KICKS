@@ -1020,7 +1020,15 @@ def sales_goods_csv(f: dict = Depends(get_filters),
                     _: str = Depends(require_user), __: None = Depends(require_ready)):
     """판매 CSV — tidy/long. sales_option(신선, 오늘 포함) 있으면 (매출일자 × 매장 × 상품 × 옵션)당 1행
        (순이익·CP는 settlement goods단위를 GMV비중 배분), 캐시 없으면 (매장 × 상품) goods 단위로 폴백."""
-    import io, csv
+    import io, csv, traceback
+    try:
+        return _sales_goods_csv_impl(f, io, csv)
+    except Exception as e:
+        logging.error("sales_goods_csv failed: %s\n%s", e, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"CSV 생성 오류: {type(e).__name__}: {e}")
+
+
+def _sales_goods_csv_impl(f: dict, io, csv):
     df = _settlement_option_df(f)
     buf = io.StringIO()
     w = csv.writer(buf)
