@@ -304,6 +304,17 @@ function brandCsv(rows: any[], storeCols: string[] = []) {
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "offline_sales_by_brand.csv"; a.click(); URL.revokeObjectURL(a.href);
 }
 
+async function brandStoreCsv(qs: string) {
+  // 브랜드별 상세 CSV — 매장별 long(브랜드×매장 행, GMV·재고 매장별). 백엔드 생성.
+  const r = await fetch("/api/sales/brands.csv" + qs, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (!r.ok) {
+    let detail = ""; try { detail = (await r.json()).detail || ""; } catch { /* non-json */ }
+    alert("CSV 실패 (" + r.status + ")" + (detail ? "\n" + detail : "")); return;
+  }
+  const blob = await r.blob();
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "offline_sales_by_brand_store.csv"; a.click(); URL.revokeObjectURL(a.href);
+}
+
 async function goodsCsv(qs: string) {
   const r = await fetch("/api/sales/goods.csv" + qs, { headers: { Authorization: `Bearer ${getToken()}` } });
   if (!r.ok) {
@@ -536,9 +547,9 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
             </div>
             <div className="flex items-center gap-3">
               <SectionStat cur={cur} byBiz={byBiz} />
-              <button onClick={() => brandCsv(brands, brandSC)} disabled={!brands.length}
+              <button onClick={() => brandStoreCsv(qs)} disabled={!brands.length}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50">
-                <Download size={14} /> CSV
+                <Download size={14} /> CSV (매장별)
               </button>
             </div>
           </div>

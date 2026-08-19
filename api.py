@@ -1069,6 +1069,61 @@ def _sales_goods_csv_impl(f: dict, io, csv):
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
+@app.get("/api/sales/brands.csv")
+def sales_brands_csv(f: dict = Depends(get_filters),
+                     _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """브랜드별 상세 CSV — 매장별 long. (브랜드 × 매장)당 1행: 그 매장의 GMV·판매수량과 그 매장의 재고.
+       GMV/판매는 기간필터 반영, 재고(점재고)는 스냅샷(카테/브랜드/상품명 필터의 goods만, 기간 무관)."""
+    import io, csv, traceback
+    try:
+        where, psales = build_where(f)
+        f_nodate = {**f, "date_from": None, "date_to": None}   # 재고 goods 스코프는 날짜 제외(현재고)
+        wnd, pnd = build_where(f_nodate)
+        df = store.query(f"""
+            WITH s AS (
+                SELECT business_type, brand_nm, store_name,
+                       CAST(sum(qty) AS DOUBLE) qty, CAST(sum(gmv) AS DOUBLE) gmv,
+                       CAST(sum(normal_amt) AS DOUBLE) normal_amt, CAST(sum(pay) AS DOUBLE) pay,
+                       CAST(sum(foreign_gmv) AS DOUBLE) foreign_gmv
+                FROM sales{where} GROUP BY 1, 2, 3 HAVING sum(qty) <> 0 OR sum(gmv) <> 0
+            ),
+            bbiz AS (SELECT brand_nm, any_value(business_type) bt FROM s GROUP BY brand_nm),
+            gset AS (SELECT DISTINCT goods_no FROM sales{wnd}),
+            dmap AS (SELECT DISTINCT goods_no, brand_nm FROM sales),
+            k AS (
+                SELECT dmap.brand_nm, i.store_name, CAST(sum(i."점재고") AS DOUBLE) stock
+                FROM inventory_store_long i
+                JOIN dmap ON dmap.goods_no = i.goods_no
+                WHERE i.goods_no IN (SELECT goods_no FROM gset)
+                  AND dmap.brand_nm IN (SELECT brand_nm FROM s)
+                GROUP BY 1, 2
+            )
+            SELECT COALESCE(bbiz.bt, '') business_type,
+                   COALESCE(s.brand_nm, k.brand_nm) brand_nm,
+                   COALESCE(s.store_name, k.store_name) store_name,
+                   COALESCE(s.qty, 0) qty, COALESCE(s.gmv, 0) gmv, COALESCE(s.normal_amt, 0) normal_amt,
+                   COALESCE(s.pay, 0) pay, COALESCE(s.foreign_gmv, 0) foreign_gmv,
+                   COALESCE(k.stock, 0) stock
+            FROM s FULL OUTER JOIN k ON k.brand_nm = s.brand_nm AND k.store_name = s.store_name
+            LEFT JOIN bbiz ON bbiz.brand_nm = COALESCE(s.brand_nm, k.brand_nm)
+            ORDER BY brand_nm, gmv DESC, store_name""", psales + pnd)
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["사업구분", "브랜드", "매장", "순판매수량", "GMV", "정상가매출", "실결제",
+                    "외국인GMV", "할인율%", "점재고"])
+        for r in df.itertuples():
+            gmv, normal = _num(r.gmv), _num(r.normal_amt)
+            w.writerow([r.business_type, r.brand_nm, r.store_name, int(_num(r.qty)), int(gmv), int(normal),
+                        int(_num(r.pay)), int(_num(r.foreign_gmv)),
+                        round((1 - gmv / normal) * 100, 1) if normal else 0, int(_num(r.stock))])
+        data = ("﻿" + buf.getvalue()).encode("utf-8")
+        return Response(content=data, media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": 'attachment; filename="offline_sales_by_brand_store.csv"'})
+    except Exception as e:
+        logging.error("sales_brands_csv failed: %s\n%s", e, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"브랜드 CSV 오류: {type(e).__name__}: {e}")
+
+
 @app.get("/api/pnl")
 def pnl(mode: str = "month", period: str | None = None, level: str = "store",
         date_from: str | None = None, date_to: str | None = None,
