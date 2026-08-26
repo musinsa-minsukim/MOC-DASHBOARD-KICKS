@@ -60,6 +60,8 @@ def _sales_where(f: dict):
         clauses.append(f"goods_no IN ({','.join(['?'] * len(g))})"); params += g
     if f.get("name_like") and str(f["name_like"]).strip():
         clauses.append("lower(goods_nm) LIKE ?"); params.append("%" + str(f["name_like"]).strip().lower() + "%")
+    if f.get("brand_ex"):
+        clauses.append(f"brand_nm NOT IN ({','.join(['?'] * len(f['brand_ex']))})"); params += list(f["brand_ex"])
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
@@ -77,6 +79,8 @@ def _inv_where(f: dict):
         # 재고엔 goods_nm이 없어 sales의 goods_no 매핑으로 반영(조인 중복 방지 위해 서브쿼리).
         clauses.append("i.goods_no IN (SELECT DISTINCT goods_no FROM sales WHERE lower(goods_nm) LIKE ?)")
         params.append("%" + str(f["name_like"]).strip().lower() + "%")
+    if f.get("brand_ex"):   # 재고 차원(d) 브랜드 제외
+        clauses.append(f"d.brand_nm NOT IN ({','.join(['?'] * len(f['brand_ex']))})"); params += list(f["brand_ex"])
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 

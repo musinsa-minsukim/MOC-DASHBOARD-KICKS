@@ -120,10 +120,12 @@ def get_filters(
     cat_top: list[str] = Query(default=[]), cat_large: list[str] = Query(default=[]),
     cat_medium: list[str] = Query(default=[]), md: list[str] = Query(default=[]),
     goods: list[int] = Query(default=[]), name_like: str | None = None,
+    brand_ex: list[str] = Query(default=[]),
 ) -> dict:
     return {"date_from": date_from, "date_to": date_to, "biz": biz, "type": type,
             "store": store, "brand": brand, "cat_top": cat_top, "cat_large": cat_large,
-            "cat_medium": cat_medium, "md": md, "goods": goods, "name_like": name_like}
+            "cat_medium": cat_medium, "md": md, "goods": goods, "name_like": name_like,
+            "brand_ex": brand_ex}
 
 
 def build_where(f: dict):
@@ -147,6 +149,9 @@ def build_where(f: dict):
         # 상품명 부분일치(대소문자 무시). 예: ACG. sales에 goods_nm 존재.
         clauses.append("lower(goods_nm) LIKE ?")
         params.append("%" + str(f["name_like"]).lower() + "%")
+    if f.get("brand_ex"):   # 브랜드 제외
+        clauses.append(f"brand_nm NOT IN ({','.join(['?'] * len(f['brand_ex']))})")
+        params += list(f["brand_ex"])
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
@@ -167,6 +172,9 @@ def build_where_receipts(f: dict):
         if vals:
             clauses.append(f"{col} IN ({','.join(['?'] * len(vals))})")
             params += list(vals)
+    if f.get("brand_ex"):
+        clauses.append(f"brand_nm NOT IN ({','.join(['?'] * len(f['brand_ex']))})")
+        params += list(f["brand_ex"])
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
@@ -955,6 +963,8 @@ def _sales_option_where(f: dict):
         cl.append(f"so.goods_no IN ({','.join(['?'] * len(g))})"); pr += g
     if f.get("name_like"):
         cl.append("lower(so.goods_nm) LIKE ?"); pr.append("%" + str(f["name_like"]).lower() + "%")
+    if f.get("brand_ex"):
+        cl.append(f"so.brand_nm NOT IN ({','.join(['?'] * len(f['brand_ex']))})"); pr += list(f["brand_ex"])
     return (" WHERE " + " AND ".join(cl)) if cl else "", pr
 
 

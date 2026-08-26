@@ -42,6 +42,7 @@ export type Filters = {
   type: string[];
   store: string[];
   brand: string[];
+  brand_ex: string[]; // 제외 브랜드
   cat_top: string[];
   cat_large: string[];
   cat_medium: string[];
@@ -71,6 +72,7 @@ export function toQuery(f: Filters, opts: { withDate?: boolean } = {}): string {
   multi("type", f.type);
   multi("store", f.store);
   multi("brand", f.brand);
+  multi("brand_ex", f.brand_ex);
   multi("cat_top", f.cat_top);
   multi("cat_large", f.cat_large);
   multi("cat_medium", f.cat_medium);
@@ -82,7 +84,7 @@ export function toQuery(f: Filters, opts: { withDate?: boolean } = {}): string {
 
 // 빈 필터 기본값
 export function emptyFilters(dateFrom: string, dateTo: string): Filters {
-  return { date_from: dateFrom, date_to: dateTo, biz: [], type: [], store: [], brand: [],
+  return { date_from: dateFrom, date_to: dateTo, biz: [], type: [], store: [], brand: [], brand_ex: [],
     cat_top: [], cat_large: [], cat_medium: [], md: [], goods: "", name_like: "", gran: "day" };
 }
 

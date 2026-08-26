@@ -62,6 +62,8 @@ def _prep(f):
         df = df[df["business_type"].isin(f["biz"])]
     if f.get("brand"):
         df = df[df["brand_nm"].isin(f["brand"])]
+    if f.get("brand_ex"):                        # 브랜드 제외
+        df = df[~df["brand_nm"].isin(f["brand_ex"])]
     for col in ("cat_top", "cat_large", "cat_medium"):
         if f.get(col) and col in df.columns:
             df = df[df[col].isin(f[col])]

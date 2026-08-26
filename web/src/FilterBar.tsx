@@ -62,10 +62,10 @@ export default function FilterBar({
   const uidCount = parseUids(f.goods).length;
   const nameOn = f.name_like.trim().length > 0;
   const active =
-    f.biz.length || f.type.length || f.store.length || f.brand.length || f.cat_top.length ||
+    f.biz.length || f.type.length || f.store.length || f.brand.length || f.brand_ex.length || f.cat_top.length ||
     f.cat_large.length || f.cat_medium.length || f.md.length || uidCount || nameOn;
   const activeN =
-    f.biz.length + f.type.length + f.store.length + f.brand.length + f.cat_top.length +
+    f.biz.length + f.type.length + f.store.length + f.brand.length + f.brand_ex.length + f.cat_top.length +
     f.cat_large.length + f.cat_medium.length + f.md.length + (uidCount ? 1 : 0) + (nameOn ? 1 : 0);
 
   return (
@@ -135,6 +135,7 @@ export default function FilterBar({
           <div className="flex flex-wrap gap-1.5">
             <MultiSelect label="매장" options={storeOpts} value={f.store} onChange={(v) => set({ store: v })} />
             <MultiSelect label="브랜드" options={meta.brands} value={f.brand} onChange={(v) => set({ brand: v })} />
+            <MultiSelect label="브랜드 제외" options={meta.brands} value={f.brand_ex} onChange={(v) => set({ brand_ex: v })} />
             <MultiSelect label="최상위" options={meta.cat_top} value={f.cat_top} onChange={(v) => set({ cat_top: v })} />
             <MultiSelect label="대카테" options={meta.cat_large} value={f.cat_large} onChange={(v) => set({ cat_large: v })} />
             <MultiSelect label="중카테" options={meta.cat_medium} value={f.cat_medium} onChange={(v) => set({ cat_medium: v })} />
@@ -179,7 +180,7 @@ export default function FilterBar({
 
         {active ? (
           <button
-            onClick={() => set({ biz: [], type: [], store: [], brand: [], cat_top: [], cat_large: [], cat_medium: [], md: [], goods: "", name_like: "" })}
+            onClick={() => set({ biz: [], type: [], store: [], brand: [], brand_ex: [], cat_top: [], cat_large: [], cat_medium: [], md: [], goods: "", name_like: "" })}
             className="ml-auto inline-flex items-center gap-1.5 self-end rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
           >
             <RotateCcw size={13} /> 필터 초기화
