@@ -55,11 +55,11 @@ export default function Drill({ filters, dark }: { meta?: any; dark: boolean; fi
 
   // 라벨 셀 클릭 → 하위 단계로 드릴 (상품 레벨은 리프)
   const onCellClicked = (e: any) => {
-    if (isLeaf) return;
+    if (isLeaf || e?.node?.rowPinned) return;      // 합계(고정) 행은 드릴 안 함
     const colId = e?.column?.getColId?.() ?? e?.colDef?.field;
     if (colId !== "name") return;
     const val = e?.data?.name;
-    if (val == null) return;
+    if (val == null || val === "합계") return;
     setPath((p) => [...p, { filterKey: FILTER_KEY[level as Exclude<Level, "goods">], value: String(val) }]);
   };
 
@@ -68,6 +68,19 @@ export default function Drill({ filters, dark }: { meta?: any; dark: boolean; fi
   const totalGmv = useMemo(() => rawRows.reduce((s: number, r: any) => s + (r.gmv || 0), 0), [rawRows]);
   const rows = useMemo(() => rawRows.map((r: any) => ({ ...r, gmv_ratio: totalGmv ? (r.gmv / totalGmv) * 100 : 0 })), [rawRows, totalGmv]);
   const maxRatio = useMemo(() => rows.reduce((mx: number, r: any) => Math.max(mx, r.gmv_ratio || 0), 0) || 1, [rows]);
+
+  // 합계 고정행(판매 탭과 동일) — 필터/드릴 값에 따라 변동. pinnedTop DOM 리렌더 한계 때문에 key로 리마운트.
+  const total = useMemo(() => {
+    if (!rows.length) return [];
+    const sum = (k: string) => rows.reduce((s: number, r: any) => s + (Number(r[k]) || 0), 0);
+    const gmv = sum("gmv"), normal = sum("normal_amt"), fgn = sum("foreign_gmv");
+    return [{
+      name: "합계", key: "", qty: sum("qty"), gmv, gmv_ratio: 100,
+      normal_amt: normal, foreign_gmv: fgn, goods_count: sum("goods_count"), stock: sum("stock"),
+      discount_rate: normal ? (1 - gmv / normal) * 100 : 0, foreign_ratio: gmv ? (fgn / gmv) * 100 : 0,
+    }];
+  }, [rows]);
+  const gridKey = useMemo(() => `${level}|${rows.length}|${Math.round(totalGmv)}`, [level, rows.length, totalGmv]);
 
   const columns = useMemo(() => {
     const first = colText("name", LABEL[level], {
@@ -158,7 +171,7 @@ export default function Drill({ filters, dark }: { meta?: any; dark: boolean; fi
         ) : rows.length === 0 ? (
           <div className="p-10 text-center text-sm text-slate-400">조건에 해당하는 데이터가 없습니다.</div>
         ) : (
-          <DataGrid rows={rows} columns={columns} dark={dark} height={560} onCellClicked={onCellClicked} />
+          <DataGrid key={gridKey} rows={rows} columns={columns} dark={dark} height={560} pinnedTop={total} onCellClicked={onCellClicked} />
         )}
       </CardBody></Card>
     </div>
