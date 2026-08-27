@@ -63,6 +63,12 @@ export default function Drill({ filters, dark }: { meta?: any; dark: boolean; fi
     setPath((p) => [...p, { filterKey: FILTER_KEY[level as Exclude<Level, "goods">], value: String(val) }]);
   };
 
+  // GMV 비중(판매 탭과 동일): 현재 표시 행들의 GMV 합 대비 비율 + 최대 비중 대비 인디고 히트맵.
+  const rawRows = d?.rows ?? [];
+  const totalGmv = useMemo(() => rawRows.reduce((s: number, r: any) => s + (r.gmv || 0), 0), [rawRows]);
+  const rows = useMemo(() => rawRows.map((r: any) => ({ ...r, gmv_ratio: totalGmv ? (r.gmv / totalGmv) * 100 : 0 })), [rawRows, totalGmv]);
+  const maxRatio = useMemo(() => rows.reduce((mx: number, r: any) => Math.max(mx, r.gmv_ratio || 0), 0) || 1, [rows]);
+
   const columns = useMemo(() => {
     const first = colText("name", LABEL[level], {
       pinned: "left",
@@ -70,11 +76,22 @@ export default function Drill({ filters, dark }: { meta?: any; dark: boolean; fi
       cellClass: isLeaf ? "" : "cursor-pointer font-medium text-indigo-600 dark:text-indigo-400",
     });
     const pct = (p: any) => (Number(p.value) || 0).toFixed(1);
+    const gmvRatioCol = colNum("gmv_ratio", "GMV비중", "num", {
+      minWidth: 92,
+      valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%",
+      cellStyle: (p: any) => {
+        const a = Math.max(0, Math.min(1, (p.value || 0) / maxRatio));
+        const [base, scale] = dark ? [0.14, 0.46] : [0.06, 0.5];
+        const rgb = dark ? "129,140,248" : "99,102,241";
+        return { textAlign: "right", backgroundColor: `rgba(${rgb},${(base + scale * a).toFixed(3)})`, ...(dark ? { color: "#e2e8f0" } : {}), fontWeight: a > 0.55 ? 600 : 400 };
+      },
+    });
     return [
       first,
       ...(isLeaf ? [colNum("key", "상품번호", "int", { minWidth: 96, valueFormatter: (p: any) => String(p.value ?? "") })] : []),
       colNum("qty", "순판매수량", "num", { minWidth: 96 }),
       colNum("gmv", "GMV", "num", { minWidth: 120 }),
+      gmvRatioCol,   // GMV 바로 뒤 — 판매 탭과 동일 위치·형식
       colNum("normal_amt", "정상가매출", "num", { minWidth: 110 }),
       colNum("foreign_gmv", "외국인GMV", "num", { minWidth: 110 }),
       colNum("goods_count", "상품수", "int", { minWidth: 84 }),
@@ -82,9 +99,7 @@ export default function Drill({ filters, dark }: { meta?: any; dark: boolean; fi
       colNum("discount_rate", "할인율%", "num", { minWidth: 84, valueFormatter: pct }),
       colNum("foreign_ratio", "외국인비중%", "num", { minWidth: 96, valueFormatter: pct }),
     ];
-  }, [level, isLeaf]);
-
-  const rows = d?.rows ?? [];
+  }, [level, isLeaf, maxRatio, dark]);
 
   return (
     <div className="space-y-4">
