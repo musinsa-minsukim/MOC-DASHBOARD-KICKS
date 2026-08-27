@@ -58,10 +58,13 @@ jobs:
           DBX_CLOUD_FETCH: "1"          # 프록시 없는 러너 → CloudFetch로 대용량 페치 가속(Thrift 행단위 수신 회피)
         run: python refresh.py --window=7   # 시간별: 최근 7일만 재적재(스캔·페치 ~6배↓). 45일 전체 보정은 일일 full이 담당
 
-      - name: Upload sales/receipts/sales_option cache only
+      - name: Upload cache (core 필수 + sales_option 선택)
         run: |
           B="gs://${{ vars.GCS_CACHE_BUCKET }}"
-          gcloud storage cp ./cache/sales.parquet ./cache/receipts.parquet ./cache/sales_option.parquet ./cache/_meta.json "$B/"
+          # core(판매/영수증/메타)는 반드시 업로드 — sales_option 유무와 무관하게 대시보드 최신 유지.
+          gcloud storage cp ./cache/sales.parquet ./cache/receipts.parquet ./cache/_meta.json "$B/"
+          # sales_option(부가 CSV 캐시)은 있을 때만 — 없다고 core 업로드가 막히면 안 됨.
+          if [ -f ./cache/sales_option.parquet ]; then gcloud storage cp ./cache/sales_option.parquet "$B/"; else echo "sales_option.parquet 없음 — 건너뜀"; fi
 
       - name: Slack notify — 실패 시에만
         if: failure()

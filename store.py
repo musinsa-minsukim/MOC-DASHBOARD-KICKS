@@ -136,13 +136,20 @@ def _incremental(name: str, fetch_fn, window_days: int, full: bool):
 def refresh_sales(window_days: int = SALES_WINDOW_DAYS, full: bool = False) -> dict:
     df, mode = _incremental("sales", db.fetch_sales, window_days, full)
     rdf, _ = _incremental("receipts", db.fetch_receipts, window_days, full)  # 객단가용 영수증 집계
-    sodf, _ = _incremental("sales_option", db.fetch_sales_option, window_days, full)  # 판매 CSV(옵션단위, 신선)
+    # sales_option(판매 CSV 옵션단위)은 부가 캐시 — 실패해도 core 판매 갱신을 막지 않도록 격리.
+    so_n = -1
+    try:
+        sodf, _ = _incremental("sales_option", db.fetch_sales_option, window_days, full)
+        so_n = int(len(sodf))
+    except Exception as e:
+        import logging as _lg
+        _lg.error("sales_option refresh failed (core sales unaffected): %s", e)
     mx = str(pd.to_datetime(df["sales_date"]).max().date())
     ts = db.sales_latest_ts()   # 가장 최근 거래 시각(원천 timestamp)
     _meta_set(sales_refreshed_at=_stamp(), sales_max_date=mx, sales_max_ts=ts,
-              sales_rows=int(len(df)), receipts_rows=int(len(rdf)), sales_option_rows=int(len(sodf)))
+              sales_rows=int(len(df)), receipts_rows=int(len(rdf)), sales_option_rows=so_n)
     return {"mode": mode, "rows": int(len(df)), "receipts": int(len(rdf)),
-            "sales_option": int(len(sodf)), "max_date": mx, "max_ts": ts}
+            "sales_option": so_n, "max_date": mx, "max_ts": ts}
 
 
 # ------------------------------------------------------- 스냅샷 (전체 교체)
