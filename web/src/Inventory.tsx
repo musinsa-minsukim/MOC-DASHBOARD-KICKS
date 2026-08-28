@@ -38,7 +38,7 @@ function CatPie({ title, data, C }: { title: string; data: { name: string; value
   const total = data.reduce((a, x) => a + (x.value || 0), 0);
   return (
     <Card><CardBody>
-      <SectionTitle title={title} sub={`총재고 ${num(total)}`} />
+      <SectionTitle title={title} sub={`점재고 ${num(total)}`} />
       {!data.length ? (
         <div className="flex h-[260px] items-center justify-center text-sm text-slate-400">데이터 없음</div>
       ) : (
@@ -131,9 +131,9 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
 
           {(d.cats?.cat_top?.length || d.cats?.cat_large?.length || d.cats?.cat_medium?.length) ? (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <CatPie title="최상위카테고리 재고구성" data={d.cats?.cat_top ?? []} C={C} />
-              <CatPie title="대카테고리 재고구성" data={d.cats?.cat_large ?? []} C={C} />
-              <CatPie title="중카테고리 재고구성" data={d.cats?.cat_medium ?? []} C={C} />
+              <CatPie title="최상위카테고리 점재고 구성" data={d.cats?.cat_top ?? []} C={C} />
+              <CatPie title="대카테고리 점재고 구성" data={d.cats?.cat_large ?? []} C={C} />
+              <CatPie title="중카테고리 점재고 구성" data={d.cats?.cat_medium ?? []} C={C} />
             </div>
           ) : null}
 

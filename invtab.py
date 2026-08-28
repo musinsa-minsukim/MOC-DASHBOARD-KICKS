@@ -84,8 +84,9 @@ def _prep(f):
 
 
 def _cat_pies(df, top_n=8):
-    """카테고리별(최상위/대/중) 총재고(점재고+허브) 구성 — 원형그래프용. 상위 top_n + '기타'."""
-    total = (df["__jaego"].fillna(0) + df["__hub"].fillna(0))
+    """카테고리별(최상위/대/중) **점재고(선택 매장)** 구성 — 원형그래프용. 상위 top_n + '기타'.
+       (허브/창고 재고는 제외 — 매장 진열/판매 관점 점재고만.)"""
+    total = df["__jaego"].fillna(0)
     out = {}
     for key in ("cat_top", "cat_large", "cat_medium"):
         if key not in df.columns:
