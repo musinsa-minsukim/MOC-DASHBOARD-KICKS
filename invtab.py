@@ -105,11 +105,31 @@ def _cat_pies(df, top_n=8):
     return out
 
 
+def _brand_stock(df, vis, top_n=20):
+    """브랜드별 점재고(선택 매장) — 사업구분(위탁/매입/기타) 스택 + 전체 대비 비중. 상위 top_n.
+       매장별 재고수량 차트와 동일 스키마({name,위탁,매입,기타,total}) + share."""
+    if not vis or df.empty:
+        return []
+    grand = float(df["__jaego"].sum()) or 0.0
+    piv = df.groupby(["brand_nm", "business_type"])["__jaego"].sum().unstack(fill_value=0.0)
+    rows = []
+    for brand, row in piv.iterrows():
+        wt = float(row.get("위탁", 0.0)); mi = float(row.get("매입", 0.0))
+        etc = float(row.sum()) - wt - mi          # 기타 + 그 외 사업구분
+        total = wt + mi + etc
+        if total <= 0:
+            continue
+        rows.append({"name": (str(brand) or "(미매칭)"), "위탁": _f(wt), "매입": _f(mi), "기타": _f(etc),
+                     "total": _f(total), "share": round(total / grand * 100, 1) if grand else 0.0})
+    rows.sort(key=lambda x: -x["total"])
+    return rows[:top_n]
+
+
 def compute(f=None, limit=300):
     df, vis, hubcols, hcol = _prep(f)
     if df.empty:
         return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "options": 0, "goods": 0},
-                "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols, "cats": {}}
+                "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols, "cats": {}, "brand_stock": []}
 
     kpis = {"jaego": _f(df["__jaego"].sum()), "hub": _f(df["__hub"].sum()),
             "options": int(len(df)), "goods": int(df["goods_no"].nunique())}
@@ -144,7 +164,8 @@ def compute(f=None, limit=300):
     sub = sub.rename(columns={"__jaego": "점재고합계", "__hub": "허브합계"})
     rows = sub.to_dict(orient="records")
     return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows,
-            "store_cols": vis, "hubcols": hubcols, "cats": cats}
+            "store_cols": vis, "hubcols": hubcols, "cats": cats,
+            "brand_stock": _brand_stock(df, vis)}
 
 
 def csv_rows(f=None):

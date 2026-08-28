@@ -70,6 +70,9 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
   const activeStores = filters.store || [];
   const storeOp = (name: string) => (activeStores.length ? (activeStores.includes(name) ? 1 : 0.28) : 1);
   const pickStore = onPick ? (dd: any) => { const nm = dd?.name ?? dd?.payload?.name; if (nm != null) onPick("store", String(nm)); } : undefined;
+  const activeBrands = filters.brand || [];
+  const brandOp = (name: string) => (activeBrands.length ? (activeBrands.includes(name) ? 1 : 0.28) : 1);
+  const pickBrand = onPick ? (dd: any) => { const nm = dd?.name ?? dd?.payload?.name; if (nm != null) onPick("brand", String(nm)); } : undefined;
   const C = dark
     ? { grid: "#1e293b", axis: "#94a3b8", ttFg: "#cbd5e1", ttBg: "#1e293b", ttBorder: "#475569", cursor: "rgba(129,140,248,0.14)", wt: "#818cf8", mi: "#a78bfa", etc: "#94a3b8" }
     : { grid: "#f1f5f9", axis: "#94a3b8", ttFg: "#475569", ttBg: "#ffffff", ttBorder: "#e2e8f0", cursor: "#f8fafc", wt: "#4f46e5", mi: "#7c3aed", etc: "#94a3b8" };
@@ -156,6 +159,31 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
                   <Bar dataKey="기타" stackId="a" fill={C.etc} radius={[0, 4, 4, 0]} onClick={pickStore} cursor={onPick ? "pointer" : undefined} isAnimationActive={false}>
                     {onPick && d.stores.map((s: any, i: number) => <Cell key={i} fill={C.etc} fillOpacity={storeOp(s.name)} />)}
                     <LabelList valueAccessor={(e: any) => e?.payload?.total} position="right" formatter={(v: any) => num(v as number)} fontSize={11} fill={C.ttFg} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </CardBody></Card>
+
+          <Card><CardBody>
+            <SectionTitle title="브랜드별 점재고 수량 및 비중" sub={`상위 ${num((d.brand_stock || []).length)}개 · 사업구분(위탁/매입) 누적 · 전체 점재고 대비 비중${onPick ? " · 막대 클릭=브랜드 필터" : ""}`} />
+            {(d.brand_stock || []).length === 0 ? <div className="flex h-[300px] items-center justify-center text-sm text-slate-400">표시할 브랜드 점재고가 없습니다.</div> : (
+              <ResponsiveContainer width="100%" height={Math.max(260, (d.brand_stock.length) * 26 + 60)}>
+                <BarChart data={d.brand_stock} layout="vertical" margin={{ left: 8, right: 92, top: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.grid} horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={(v) => num(v)} />
+                  <YAxis type="category" dataKey="name" width={140} interval={0} tick={<CatTick fill={C.ttFg} width={130} />} tickLine={false} axisLine={false} />
+                  <Tooltip formatter={(v: any, n: any, item: any) => { const tot = item?.payload?.total || 0; return [`${num(v as number)} (${tot ? ((v / tot) * 100).toFixed(1) : 0}%)`, n]; }} contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }} cursor={{ fill: C.cursor }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="위탁" stackId="a" fill={C.wt} onClick={pickBrand} cursor={onPick ? "pointer" : undefined} isAnimationActive={false}>
+                    {onPick && d.brand_stock.map((s: any, i: number) => <Cell key={i} fill={C.wt} fillOpacity={brandOp(s.name)} />)}
+                  </Bar>
+                  <Bar dataKey="매입" stackId="a" fill={C.mi} onClick={pickBrand} cursor={onPick ? "pointer" : undefined} isAnimationActive={false}>
+                    {onPick && d.brand_stock.map((s: any, i: number) => <Cell key={i} fill={C.mi} fillOpacity={brandOp(s.name)} />)}
+                  </Bar>
+                  <Bar dataKey="기타" stackId="a" fill={C.etc} radius={[0, 4, 4, 0]} onClick={pickBrand} cursor={onPick ? "pointer" : undefined} isAnimationActive={false}>
+                    {onPick && d.brand_stock.map((s: any, i: number) => <Cell key={i} fill={C.etc} fillOpacity={brandOp(s.name)} />)}
+                    <LabelList valueAccessor={(e: any) => { const p = e?.payload; return p ? `${num(p.total)} (${p.share}%)` : ""; }} position="right" fontSize={11} fill={C.ttFg} />
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
