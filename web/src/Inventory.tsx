@@ -19,6 +19,14 @@ function Kpi({ icon, label, value }: { icon: React.ReactNode; label: string; val
 
 const PIE_COLORS = ["#6366f1", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981", "#06b6d4", "#ef4444", "#84cc16", "#a855f7", "#94a3b8"];
 
+// 재고/매출 배수(재고비중÷SOB) 색상: >1.5 과다(빨강) · <0.7 건전/부족(초록) · 그 외 중립. null(매출0)=과다.
+function overStyle(v: number | null | undefined, dark: boolean): any {
+  const up = dark ? "#f87171" : "#dc2626", down = dark ? "#4ade80" : "#16a34a", neu = dark ? "#cbd5e1" : "#475569";
+  if (v == null) return { textAlign: "right", color: up, fontWeight: 700 };
+  const c = v >= 1.5 ? up : v <= 0.7 ? down : neu;
+  return { textAlign: "right", color: c, fontWeight: v >= 1.5 || v <= 0.7 ? 700 : 500 };
+}
+
 // 조각 안 비중(%) 라벨 — 마우스 없이 바로 표시. 5% 미만은 겹침 방지로 생략.
 const pieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
   if (!percent || percent < 0.05) return null;
@@ -70,8 +78,6 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
   const activeStores = filters.store || [];
   const storeOp = (name: string) => (activeStores.length ? (activeStores.includes(name) ? 1 : 0.28) : 1);
   const pickStore = onPick ? (dd: any) => { const nm = dd?.name ?? dd?.payload?.name; if (nm != null) onPick("store", String(nm)); } : undefined;
-  const activeBrands = filters.brand || [];
-  const brandOp = (name: string) => (activeBrands.length ? (activeBrands.includes(name) ? 1 : 0.28) : 1);
   const pickBrand = onPick ? (dd: any) => { const nm = dd?.name ?? dd?.payload?.name; if (nm != null) onPick("brand", String(nm)); } : undefined;
   const C = dark
     ? { grid: "#1e293b", axis: "#94a3b8", ttFg: "#cbd5e1", ttBg: "#1e293b", ttBorder: "#475569", cursor: "rgba(129,140,248,0.14)", wt: "#818cf8", mi: "#a78bfa", etc: "#94a3b8" }
@@ -109,6 +115,32 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     ...hubcols.map((h) => colNum(h, h, "num")),
     colNum("허브합계", "허브합계", "num"),
   ], [storeCols.join(","), hubcols.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 브랜드별 점재고·GMV·SOB 표 (그래프 대체) — 재고 과다 판단
+  const brandRows: any[] = d?.brand_stock ?? [];
+  const brandTotal = useMemo(() => {
+    if (!brandRows.length) return [];
+    const s = (k: string) => brandRows.reduce((a: number, r: any) => a + (Number(r[k]) || 0), 0);
+    const ss = s("share"), gs = s("gmv_share");
+    return [{ name: "합계(상위)", total: s("total"), share: ss, gmv: s("gmv"), gmv_share: gs, over_index: gs ? +(ss / gs).toFixed(2) : null }];
+  }, [brandRows]);
+  const brandTblCols = useMemo(() => [
+    colText("name", "브랜드", {
+      pinned: "left", minWidth: 150,
+      cellStyle: (p: any): any => (p.data?.name && p.data?.name !== "합계(상위)" && onPick ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : { fontWeight: 700 }),
+    }),
+    colNum("total", "점재고", "num", { minWidth: 90 }),
+    colNum("share", "재고비중", "num", { minWidth: 86, valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%" }),
+    colNum("gmv", "GMV(28일)", "compact", { minWidth: 100 }),
+    colNum("gmv_share", "SOB", "num", { minWidth: 82, headerTooltip: "Share of Business = 매출비중(최근28일 전체 GMV 대비)", valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%" }),
+    colNum("over_index", "재고/매출배수", "num", {
+      minWidth: 112, headerTooltip: "재고비중 ÷ SOB · >1 재고과다(느린 회전) · <1 재고부족(빠른 회전) · ∞=최근 매출 없음",
+      valueFormatter: (p: any) => (p.value == null ? "∞" : (p.value as number).toFixed(2) + "×"),
+      cellStyle: (p: any): any => overStyle(p.value, dark),
+    }),
+  ], [dark, onPick]);
+  const brandGridKey = useMemo(() => `${brandRows.length}|${Math.round(brandTotal[0]?.total || 0)}|${Math.round(brandTotal[0]?.gmv || 0)}`, [brandRows.length, brandTotal]);
+  const onBrandClick = (e: any) => { if (e?.node?.rowPinned || !pickBrand) return; const nm = e?.data?.name; if (nm && nm !== "합계(상위)") pickBrand({ name: nm }); };
 
   return (
     <div className="space-y-5">
@@ -166,27 +198,10 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
           </CardBody></Card>
 
           <Card><CardBody>
-            <SectionTitle title="브랜드별 점재고 수량 및 비중" sub={`상위 ${num((d.brand_stock || []).length)}개 · 사업구분(위탁/매입) 누적 · 전체 점재고 대비 비중${onPick ? " · 막대 클릭=브랜드 필터" : ""}`} />
-            {(d.brand_stock || []).length === 0 ? <div className="flex h-[300px] items-center justify-center text-sm text-slate-400">표시할 브랜드 점재고가 없습니다.</div> : (
-              <ResponsiveContainer width="100%" height={Math.max(260, (d.brand_stock.length) * 26 + 60)}>
-                <BarChart data={d.brand_stock} layout="vertical" margin={{ left: 8, right: 92, top: 4 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={C.grid} horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={(v) => num(v)} />
-                  <YAxis type="category" dataKey="name" width={140} interval={0} tick={<CatTick fill={C.ttFg} width={130} />} tickLine={false} axisLine={false} />
-                  <Tooltip formatter={(v: any, n: any, item: any) => { const tot = item?.payload?.total || 0; return [`${num(v as number)} (${tot ? ((v / tot) * 100).toFixed(1) : 0}%)`, n]; }} contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }} cursor={{ fill: C.cursor }} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="위탁" stackId="a" fill={C.wt} onClick={pickBrand} cursor={onPick ? "pointer" : undefined} isAnimationActive={false}>
-                    {onPick && d.brand_stock.map((s: any, i: number) => <Cell key={i} fill={C.wt} fillOpacity={brandOp(s.name)} />)}
-                  </Bar>
-                  <Bar dataKey="매입" stackId="a" fill={C.mi} onClick={pickBrand} cursor={onPick ? "pointer" : undefined} isAnimationActive={false}>
-                    {onPick && d.brand_stock.map((s: any, i: number) => <Cell key={i} fill={C.mi} fillOpacity={brandOp(s.name)} />)}
-                  </Bar>
-                  <Bar dataKey="기타" stackId="a" fill={C.etc} radius={[0, 4, 4, 0]} onClick={pickBrand} cursor={onPick ? "pointer" : undefined} isAnimationActive={false}>
-                    {onPick && d.brand_stock.map((s: any, i: number) => <Cell key={i} fill={C.etc} fillOpacity={brandOp(s.name)} />)}
-                    <LabelList valueAccessor={(e: any) => { const p = e?.payload; return p ? `${num(p.total)} (${p.share}%)` : ""; }} position="right" fontSize={11} fill={C.ttFg} />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+            <SectionTitle title="브랜드별 점재고 · GMV · 재고 과다" sub={`상위 ${num(brandRows.length)}개 · 재고=현재 점재고(선택 매장) · GMV/SOB=최근 28일${d.brand_gmv_window ? ` (${d.brand_gmv_window})` : ""} · 재고/매출배수>1=재고과다${onPick ? " · 행 클릭=브랜드 필터" : ""}`} />
+            {brandRows.length === 0 ? <div className="flex h-[200px] items-center justify-center text-sm text-slate-400">표시할 브랜드 점재고가 없습니다.</div> : (
+              <DataGrid key={brandGridKey} rows={brandRows} columns={brandTblCols} dark={dark} pinnedTop={brandTotal}
+                onCellClicked={onBrandClick} height={Math.min(720, 96 + (brandRows.length + 1) * 34)} />
             )}
           </CardBody></Card>
 

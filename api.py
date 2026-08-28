@@ -724,13 +724,42 @@ def _add_store_stock_goods(rows: list[dict], store_cols: list[str]):
     return rows
 
 
+def _add_brand_gmv(r: dict, f: dict) -> None:
+    """brand_stock 행에 최근 28일 GMV·SOB(매출비중)·재고/매출 배수 병합 — GMV 대비 재고 과다 판단.
+       재고비중(share, 전체 점재고 대비)과 SOB(gmv_share, 전체 GMV 대비)를 같은 브랜드 집합에서 비교.
+       재고/매출 배수 = 재고비중 ÷ SOB (>1 재고과다·느린회전, <1 재고부족·빠른회전, 매출0 → None=∞)."""
+    brand_rows = r.get("brand_stock") or []
+    if not brand_rows:
+        return
+    import datetime as _dt
+    d_to = _dt.date.today(); d_from = d_to - _dt.timedelta(days=28)
+    f28 = {**f, "date_from": d_from.isoformat(), "date_to": d_to.isoformat()}
+    where, params = build_where(f28)
+    gmap = {}
+    try:
+        g = store.query(f"SELECT brand_nm, CAST(sum(gmv) AS DOUBLE) gmv FROM sales{where} GROUP BY brand_nm", params)
+        gmap = {row.brand_nm: _num(row.gmv) for row in g.itertuples()}
+    except Exception:
+        gmap = {}
+    tot_gmv = sum(gmap.values()) or 0.0
+    for b in brand_rows:
+        gv = gmap.get(b["name"], 0.0)
+        b["gmv"] = gv
+        b["gmv_share"] = round(gv / tot_gmv * 100, 1) if tot_gmv else 0.0
+        b["over_index"] = round(b["share"] / b["gmv_share"], 2) if b["gmv_share"] else None
+    r["brand_gmv_window"] = f"{d_from.isoformat()} ~ {d_to.isoformat()}"
+
+
 @app.get("/api/inventory")
 def inventory(f: dict = Depends(get_filters), limit: int = 1000,
               _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """재고 탭 — 최신 스냅샷. 공통 필터(사업구분·매장·브랜드·카테·MD·UID) 적용, 매장타입/매장으로 보이는 점재고 결정(기간 미적용)."""
+    """재고 탭 — 최신 스냅샷. 공통 필터(사업구분·매장·브랜드·카테·MD·UID) 적용, 매장타입/매장으로 보이는 점재고 결정(기간 미적용).
+       브랜드 표엔 최근 28일 GMV·SOB를 병합해 재고 과다 판단 지원."""
     r = invtab.compute(f, int(limit))
     if not r.get("empty") and r.get("rows"):
         _add_catalog(r["rows"])   # 스타일넘버·정상가·판매가 (#1, #4)
+    if not r.get("empty"):
+        _add_brand_gmv(r, f)      # 브랜드별 GMV·SOB·재고/매출 배수
     return r
 
 
