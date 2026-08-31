@@ -159,7 +159,9 @@ def fetch_sales(since: str | None = None) -> pd.DataFrame:
           WHERE om.dummy_order = 0 AND om.order_status = 50 """ + ordf + r"""
         ),
         -- 환불 (음수). claim_type=REFUND를 주문라인에 귀속, 환불 처리일(claim.created_at) 기준.
-        --   (검증: 2026-06-21 총주문−환불 = 765,922,600/20,649 로 기존 MOSS 검증값과 정확히 일치. 교환은 수량중립이라 제외.)
+        --   (검증: 2026-06-21 총주문−환불 = 765,922,600원 / 순판매수량 20,649개 로 기존 MOSS 검증값과 정확히 일치.
+        --    교환은 수량중립이라 제외. ※ 20,649는 영수증수가 아니라 순판매수량이고, shop_no 19(뷰티 스페이스 1) 제외 기준이다.
+        --    그날 영수증수는 9,366건. 19번 포함 시 766,039,700 / 20,658.)
         refclaim AS (
           SELECT order_id, CAST(created_at AS DATE) AS refund_date
           FROM ocmp.moss.claim
@@ -252,6 +254,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
         ord AS (
           SELECT CAST(COALESCE(om.transaction_at, om.created_at) AS DATE) AS sales_date,
                  om.shop_no, oo.goods_no, oo.company_id, oo.brand_id, oo.goods_name, oo.option_name,
+                 (CASE WHEN om.tax_refund_type IS NOT NULL AND om.tax_refund_type <> 'NONE' THEN 1 ELSE 0 END) AS is_foreign,
                  1 AS sgn, oo.quantity, oo.order_amount, oo.normal_amount, oo.pay_amount
           FROM ocmp.moss.order_option oo
           JOIN ocmp.moss.order_master om ON om.order_id = oo.order_id
@@ -265,6 +268,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
         ref AS (
           SELECT rc.refund_date AS sales_date,
                  om.shop_no, oo.goods_no, oo.company_id, oo.brand_id, oo.goods_name, oo.option_name,
+                 (CASE WHEN om.tax_refund_type IS NOT NULL AND om.tax_refund_type <> 'NONE' THEN 1 ELSE 0 END) AS is_foreign,
                  -1 AS sgn, oo.quantity, oo.order_amount, oo.normal_amount, oo.pay_amount
           FROM refclaim rc
           JOIN ocmp.moss.order_master om ON om.order_id = rc.order_id
@@ -279,7 +283,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
                  CAST(l.goods_no AS BIGINT) AS goods_no, l.goods_name AS goods_nm,
                  COALESCE(NULLIF(TRIM(l.option_name), ''), '(옵션없음)') AS option_nm,
                  cat.cat_top, cat.cat_large, cat.cat_medium, cat.off_md_id,
-                 l.sgn, l.quantity, l.order_amount, l.normal_amount, l.pay_amount
+                 l.is_foreign, l.sgn, l.quantity, l.order_amount, l.normal_amount, l.pay_amount
           FROM lines l
           JOIN dim_store st ON st.shop_no = l.shop_no
           LEFT JOIN dim_brand br ON br.com_id = l.company_id AND br.brand_code = l.brand_id
@@ -291,7 +295,8 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
                CAST(SUM(sgn*quantity)     AS DOUBLE) AS qty,
                CAST(SUM(sgn*order_amount) AS DOUBLE) AS gmv,
                CAST(SUM(sgn*normal_amount) AS DOUBLE) AS normal_amt,
-               CAST(SUM(sgn*pay_amount)   AS DOUBLE) AS pay
+               CAST(SUM(sgn*pay_amount)   AS DOUBLE) AS pay,
+               CAST(SUM(sgn*order_amount*is_foreign) AS DOUBLE) AS foreign_gmv
         FROM fact
         GROUP BY sales_date, store_name, shop_type, business_type, brand_nm, goods_no, option_nm,
                  cat_top, cat_large, cat_medium, off_md_id
@@ -299,7 +304,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
     df = run_df(q)
     df["sales_date"] = pd.to_datetime(df["sales_date"], errors="coerce")
     df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
-    for c in ("qty", "gmv", "normal_amt", "pay"):
+    for c in ("qty", "gmv", "normal_amt", "pay", "foreign_gmv"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     for c in ("store_name", "shop_type", "business_type", "brand_nm", "goods_nm", "option_nm",
               "cat_top", "cat_large", "cat_medium", "off_md_id"):

@@ -1028,13 +1028,21 @@ def _settlement_option_df(f: dict):
     where, params = _sales_option_where(f)
     # 순이익/CP: 옵션명이 MOSS↔정산 간 표기 차이로 정확 매칭률이 낮아, goods(일자×매장×상품) 단위
     # 정산값을 옵션 GMV 비중으로 배분(전 옵션 커버 + goods 합계는 정산과 일치). 정산 미반영분(오늘 등)은 공란.
-    _so_cte = f"""
+    # foreign_gmv(외국인GMV) 열은 신규 → 구 캐시(컬럼 없음)엔 0으로 폴백(fg 플래그).
+    _cols_base = """so.sales_date, so.store_name, so.business_type, so.brand_nm,
+                   so.cat_top, so.cat_large, so.cat_medium, so.goods_no, so.goods_nm, so.option_nm,
+                   so.qty, so.gmv, so.normal_amt, so.pay, so.foreign_gmv"""
+
+    def _so_cte(fg: bool) -> str:
+        fexpr = "CAST(sum(so.foreign_gmv) AS DOUBLE)" if fg else "CAST(0 AS DOUBLE)"
+        return f"""
             WITH so AS (
                 SELECT so.sales_date, so.store_name, so.business_type, so.brand_nm,
                        so.cat_top, so.cat_large, so.cat_medium, so.goods_no,
                        any_value(so.goods_nm) goods_nm, so.option_nm,
                        CAST(sum(so.qty) AS DOUBLE) qty, CAST(sum(so.gmv) AS DOUBLE) gmv,
-                       CAST(sum(so.normal_amt) AS DOUBLE) normal_amt, CAST(sum(so.pay) AS DOUBLE) pay
+                       CAST(sum(so.normal_amt) AS DOUBLE) normal_amt, CAST(sum(so.pay) AS DOUBLE) pay,
+                       {fexpr} foreign_gmv
                 FROM sales_option so
                 {where}
                 GROUP BY so.sales_date, so.store_name, so.business_type, so.brand_nm,
@@ -1042,27 +1050,27 @@ def _settlement_option_df(f: dict):
                 HAVING sum(so.qty) <> 0 OR sum(so.gmv) <> 0
             ),
             sog AS (SELECT sales_date, store_name, goods_no, sum(gmv) goods_gmv FROM so GROUP BY 1, 2, 3)"""
-    _cols_base = """so.sales_date, so.store_name, so.business_type, so.brand_nm,
-                   so.cat_top, so.cat_large, so.cat_medium, so.goods_no, so.goods_nm, so.option_nm,
-                   so.qty, so.gmv, so.normal_amt, so.pay"""
-    # 1차: settlement_option 조인(순이익/CP 배분). 없으면(뷰 미존재/에러) 2차: sales_option만(순이익/CP 공란).
-    q_full = f"""{_so_cte},
-            stg AS (SELECT sales_date, store_name, goods_no, sum(net_take) nt, sum(cp) cp FROM settlement_option GROUP BY 1, 2, 3)
-            SELECT {_cols_base},
-                   CAST(stg.nt * (so.gmv / NULLIF(sog.goods_gmv, 0)) AS DOUBLE) net_take,
-                   CAST(stg.cp * (so.gmv / NULLIF(sog.goods_gmv, 0)) AS DOUBLE) cp
-            FROM so
-            JOIN sog ON sog.sales_date = so.sales_date AND sog.store_name = so.store_name AND sog.goods_no = so.goods_no
-            LEFT JOIN stg ON stg.sales_date = so.sales_date AND stg.store_name = so.store_name AND stg.goods_no = so.goods_no
-            ORDER BY so.sales_date, so.store_name, so.gmv DESC"""
-    q_bare = f"""{_so_cte}
-            SELECT {_cols_base}, CAST(NULL AS DOUBLE) net_take, CAST(NULL AS DOUBLE) cp
-            FROM so JOIN sog ON sog.sales_date = so.sales_date AND sog.store_name = so.store_name AND sog.goods_no = so.goods_no
-            ORDER BY so.sales_date, so.store_name, so.gmv DESC"""
+
+    def _q(fg: bool, settlement: bool) -> str:
+        if settlement:
+            return f"""{_so_cte(fg)},
+                stg AS (SELECT sales_date, store_name, goods_no, sum(net_take) nt, sum(cp) cp FROM settlement_option GROUP BY 1, 2, 3)
+                SELECT {_cols_base},
+                       CAST(stg.nt * (so.gmv / NULLIF(sog.goods_gmv, 0)) AS DOUBLE) net_take,
+                       CAST(stg.cp * (so.gmv / NULLIF(sog.goods_gmv, 0)) AS DOUBLE) cp
+                FROM so
+                JOIN sog ON sog.sales_date = so.sales_date AND sog.store_name = so.store_name AND sog.goods_no = so.goods_no
+                LEFT JOIN stg ON stg.sales_date = so.sales_date AND stg.store_name = so.store_name AND stg.goods_no = so.goods_no
+                ORDER BY so.sales_date, so.store_name, so.gmv DESC"""
+        return f"""{_so_cte(fg)}
+                SELECT {_cols_base}, CAST(NULL AS DOUBLE) net_take, CAST(NULL AS DOUBLE) cp
+                FROM so JOIN sog ON sog.sales_date = so.sales_date AND sog.store_name = so.store_name AND sog.goods_no = so.goods_no
+                ORDER BY so.sales_date, so.store_name, so.gmv DESC"""
+
     df = None
-    for q in (q_full, q_bare):
+    for fg, stl in ((True, True), (True, False), (False, True), (False, False)):
         try:
-            df = store.query(q, params)
+            df = store.query(_q(fg, stl), params)
             break
         except Exception:
             df = None
@@ -1098,16 +1106,18 @@ def _sales_goods_csv_impl(f: dict, io, csv):
     if df is not None and not df.empty:
         cat = prodmeta.goods_catalog([int(x) for x in df["goods_no"].unique().tolist()])
         w.writerow(["매출일자", "매장", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명", "옵션",
-                    "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV", "정상가매출", "실결제",
-                    "순이익(NetTake)", "공헌이익(CP)", "점재고"])
+                    "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV", "외국인GMV", "내국인GMV",
+                    "정상가매출", "실결제", "순이익(NetTake)", "공헌이익(CP)", "점재고"])
         for r in df.itertuples():
             c = cat.get(int(r.goods_no), {})
             q = int(_num(r.qty))
+            gmv, fgn = int(_num(r.gmv)), int(_num(getattr(r, "foreign_gmv", 0)))
             w.writerow([str(r.sales_date)[:10], r.store_name, r.cat_large, r.cat_medium, r.brand_nm,
                         int(r.goods_no), c.get("style_no", ""), r.goods_nm, r.option_nm,
                         int(c.get("normal_price", 0)), int(c.get("sale_price", 0)),
                         int(_num(r.gmv) / q) if q else 0,
-                        q, int(_num(r.gmv)), int(_num(r.normal_amt)), int(_num(r.pay)),
+                        q, gmv, fgn, gmv - fgn,   # 외국인(면세 tax_refund) / 내국인 = GMV − 외국인
+                        int(_num(r.normal_amt)), int(_num(r.pay)),
                         int(_num(r.net_take)), int(_num(r.cp)), int(_num(r.stock))])
         fname = "offline_sales_by_date_option.csv"
     else:
