@@ -8,7 +8,10 @@ type Meta = { shop_types: string[]; stores: { store_name: string; shop_type: str
 
 export default function Target({ meta, dark }: { meta: Meta; dark: boolean }) {
   const [d, setD] = useState<any>(null);
+  const [mode, setMode] = useState<"month" | "range">("month");
   const [month, setMonth] = useState<string>("");
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
   const [types, setTypes] = useState<string[]>([]);
   const [stores, setStores] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,23 +30,36 @@ export default function Target({ meta, dark }: { meta: Meta; dark: boolean }) {
     return pool.map((s) => s.store_name);
   }, [meta.stores, types]);
 
+  const range = d?.mode === "range";
   const qs = useMemo(() => {
     const p = new URLSearchParams();
-    if (month) p.set("month", month);
+    if (mode === "range") {
+      if (dateFrom) p.set("date_from", dateFrom);
+      if (dateTo) p.set("date_to", dateTo);
+    } else if (month) p.set("month", month);
     types.forEach((t) => p.append("type", t));
     stores.forEach((s) => p.append("store", s));
     return "?" + p.toString();
-  }, [month, types, stores]);
+  }, [mode, month, dateFrom, dateTo, types, stores]);
 
   useEffect(() => {
     let alive = true;
     setLoading(true); setError("");
     api.target(qs)
-      .then((r) => { if (alive) { setD(r); if (!month && r?.month) setMonth(r.month); } })
+      .then((r) => { if (alive) { setD(r); if (mode === "month" && !month && r?.month) setMonth(r.month); } })
       .catch((e) => alive && setError(e.message))
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
   }, [qs, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const switchMode = (m: "month" | "range") => {
+    if (m === mode) return;
+    if (m === "range" && (!dateFrom || !dateTo)) {   // 기간 진입 시 현재 월 범위로 초기화
+      setDateFrom(d?.m_start || (d?.max_date ? d.max_date.slice(0, 8) + "01" : ""));
+      setDateTo(d?.max_date || d?.m_end || "");
+    }
+    setMode(m);
+  };
 
   const rateCol = (field: string, header: string, w = 92) =>
     colNum(field, header, "num", { minWidth: w, valueFormatter: (p: any) => (p.value == null ? "—" : (p.value).toFixed(1) + "%"), cellStyle: (p: any) => ({ textAlign: "right", fontWeight: 700, color: rc(p.value || 0) }) });
@@ -51,18 +67,18 @@ export default function Target({ meta, dark }: { meta: Meta; dark: boolean }) {
   const cols = useMemo(() => [
     colText("shop_type", "채널", { pinned: "left", minWidth: 92, valueGetter: (p: any) => (p.data?.__muTotal ? "" : p.data?.shop_type) }),
     colText("store_name", "매장명", { pinned: "left", minWidth: 178, cellRenderer: (p: any) => (p.data?.__muTotal ? "합계" : (<span><span style={{ color: rc(p.data?.rate_mtd ?? 0), marginRight: 6 }}>●</span>{p.data?.store_name}</span>)) }),
-    colNum("pm_actual", "전월실적", "compact", { minWidth: 100 }),
-    colNum("goal_full", "월목표", "compact", { minWidth: 100 }),
-    colNum("proj", "예상마감금액", "compact", { minWidth: 112 }),
+    colNum("pm_actual", range ? "직전기간실적" : "전월실적", "compact", { minWidth: 108 }),
+    colNum("goal_full", range ? "기간목표" : "월목표", "compact", { minWidth: 100 }),
+    colNum("proj", range ? "예상금액" : "예상마감금액", "compact", { minWidth: 112 }),
     rateCol("proj_rate", "예상달성율", 100),
-    colNum("goal_mtd", "당월누계목표", "compact", { minWidth: 114 }),
-    colNum("actual_mtd", "당월누계실적", "compact", { minWidth: 114 }),
+    colNum("goal_mtd", range ? "누계목표" : "당월누계목표", "compact", { minWidth: 114 }),
+    colNum("actual_mtd", range ? "누계실적" : "당월누계실적", "compact", { minWidth: 114 }),
     rateCol("rate_mtd", "누계달성율", 100),
     colNum("goal_day", "일목표", "compact", { minWidth: 96 }),
-    colNum("actual_day", "전일실적", "compact", { minWidth: 96 }),
-    rateCol("rate_day", "전일달성율", 100),
-    colNum("py_actual", "전년동월실적", "compact", { minWidth: 112 }),
-  ], [dark]); // eslint-disable-line react-hooks/exhaustive-deps
+    colNum("actual_day", range ? "최근일실적" : "전일실적", "compact", { minWidth: 100 }),
+    rateCol("rate_day", range ? "최근일달성율" : "전일달성율", 104),
+    colNum("py_actual", range ? "전년동기간실적" : "전년동월실적", "compact", { minWidth: 120 }),
+  ], [dark, range]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 합계를 pinned 대신 rowData 최상단 행(__muTotal)으로 — 필터 시 즉시 갱신(pinnedTopRowData 반응성 이슈 회피).
   const gridRows = useMemo(() => {
@@ -80,12 +96,31 @@ export default function Target({ meta, dark }: { meta: Meta; dark: boolean }) {
       {/* 컨트롤: 월 · 채널 · 매장 */}
       <Card><CardBody className="flex flex-wrap items-end gap-x-6 gap-y-3 p-4">
         <div>
-          <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">월</div>
-          <div className="flex flex-wrap gap-1.5">
-            {(d?.months || []).slice(0, 12).map((m: string) => (
-              <Chip key={m} active={(month || d?.month) === m} onClick={() => setMonth(m)}>{m}</Chip>
-            ))}
+          <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">기준</div>
+          <div className="flex gap-1.5">
+            <Chip active={mode === "month"} onClick={() => switchMode("month")}>월</Chip>
+            <Chip active={mode === "range"} onClick={() => switchMode("range")}>기간</Chip>
           </div>
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">{mode === "range" ? "기간(시작 ~ 종료)" : "월"}</div>
+          {mode === "range" ? (
+            <div className="flex items-center gap-1.5">
+              <input type="date" value={dateFrom} min={d?.min_date} max={dateTo || d?.max_date}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:[color-scheme:dark]" />
+              <span className="text-slate-400">~</span>
+              <input type="date" value={dateTo} min={dateFrom || d?.min_date} max={d?.max_date}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:[color-scheme:dark]" />
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {(d?.months || []).slice(0, 12).map((m: string) => (
+                <Chip key={m} active={(month || d?.month) === m} onClick={() => setMonth(m)}>{m}</Chip>
+              ))}
+            </div>
+          )}
         </div>
         <div>
           <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">채널</div>
@@ -111,7 +146,7 @@ export default function Target({ meta, dark }: { meta: Meta; dark: boolean }) {
 
       {d?.month && (
         <p className="-mt-2 text-xs text-slate-400 dark:text-slate-400">
-          {d.month} · 목표(gspread) vs 실판매(MOSS) · 전일 = 최근 완료 실적일({d.last_actual ? String(d.last_actual).slice(5) : "—"}, 진행 중인 당일 제외) ·누계·예상 = MTD({d.elapsed}/{d.total_days}일) · 예상마감 = 당월누계÷경과일×당월일수 · 오프라인 에디토리얼 매장만
+          {d.month} · 목표(gspread) vs 실판매(MOSS) · {range ? "최근일" : "전일"} = 최근 완료 실적일({d.last_actual ? String(d.last_actual).slice(5) : "—"}, 진행 중인 당일 제외) · 누계·예상 = {d.elapsed}/{d.total_days}일 · {range ? "기간예상" : "예상마감"} = 누계÷경과일×{range ? "기간일수" : "당월일수"} · 오프라인 에디토리얼 매장만
         </p>
       )}
 
@@ -147,18 +182,18 @@ export default function Target({ meta, dark }: { meta: Meta; dark: boolean }) {
               right={
                 <div className="flex items-center gap-5">
                   <div className="text-right">
-                    <div className="text-[11px] font-medium text-slate-400 dark:text-slate-400">월 목표</div>
+                    <div className="text-[11px] font-medium text-slate-400 dark:text-slate-400">{range ? "기간 목표" : "월 목표"}</div>
                     <div className="text-lg font-bold tabular-nums text-slate-700 dark:text-slate-200">{num(T.goal_full || 0)}</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-[11px] font-medium text-slate-400 dark:text-slate-400">달성율 (당월누계)</div>
+                    <div className="text-[11px] font-medium text-slate-400 dark:text-slate-400">달성율 ({range ? "기간누계" : "당월누계"})</div>
                     <div className="tabular-nums" style={{ color: rc(T.rate_mtd || 0) }}>
                       <span className="text-sm font-semibold">{num(T.actual_mtd || 0)}</span>
                       <span className="ml-1.5 text-xl font-bold">{(T.rate_mtd || 0).toFixed(1)}%</span>
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-[11px] font-medium text-slate-400 dark:text-slate-400">예상 달성율 (예상마감)</div>
+                    <div className="text-[11px] font-medium text-slate-400 dark:text-slate-400">예상 달성율 ({range ? "기간예상" : "예상마감"})</div>
                     <div className="tabular-nums" style={{ color: rc(T.proj_rate || 0) }}>
                       <span className="text-sm font-semibold">{num(T.proj || 0)}</span>
                       <span className="ml-1.5 text-xl font-bold">{(T.proj_rate || 0).toFixed(1)}%</span>

@@ -584,7 +584,7 @@ def drill_csv_ep(level: str = "shop", f: dict = Depends(get_filters),
 
 
 @app.get("/api/target")
-def target(month: str | None = None,
+def target(month: str | None = None, date_from: str | None = None, date_to: str | None = None,
            stores_f: list[str] = Query(default=[], alias="store"),
            types_f: list[str] = Query(default=[], alias="type"),
            _: str = Depends(require_user), __: None = Depends(require_ready)):
@@ -605,17 +605,40 @@ def target(month: str | None = None,
         months = []
     if not months:
         return {"available": False, "months": [], "month": None, "stores": [], "daily": [], "totals": {}}
-    if not month or month not in months:
-        month = eff_max[:7] if eff_max[:7] in months else months[0]
-    y, mo = int(month[:4]), int(month[5:7])
-    total_days = _cal.monthrange(y, mo)[1]
-    m_start, m_end = f"{month}-01", f"{month}-{total_days:02d}"
-    pm_y, pm_mo = (y, mo - 1) if mo > 1 else (y - 1, 12)
-    pm_start, pm_end = f"{pm_y:04d}-{pm_mo:02d}-01", f"{pm_y:04d}-{pm_mo:02d}-{_cal.monthrange(pm_y, pm_mo)[1]:02d}"
-    py_start, py_end = f"{y-1:04d}-{mo:02d}-01", f"{y-1:04d}-{mo:02d}-{_cal.monthrange(y-1, mo)[1]:02d}"
-    has_actual = eff_max >= m_start
-    last_actual = min(m_end, eff_max) if has_actual else m_start   # 전일=오늘(진행 중) 제외 최근 완료 실적일
-    elapsed = int(last_actual[8:10]) if has_actual else 0          # 당월 경과 완료일수(예상마감 런레이트)
+    def _yr_ago(d):
+        try:
+            return d.replace(year=d.year - 1)
+        except ValueError:
+            return d - _dt.timedelta(days=365)
+    if date_from and date_to:
+        # 기간(일자 범위) 모드 — 월 대신 임의 [from,to]. 하위 집계는 m_start/m_end/last_actual/elapsed/
+        # total_days/pm/py 만 참조하므로 이 변수들만 기간 기준으로 세팅하면 동일 계산 재사용.
+        mode = "range"
+        df_ = _dt.date.fromisoformat(date_from); dt_ = _dt.date.fromisoformat(date_to)
+        if df_ > dt_:
+            df_, dt_ = dt_, df_
+        m_start, m_end = df_.isoformat(), dt_.isoformat()
+        total_days = (dt_ - df_).days + 1
+        has_actual = eff_max >= m_start
+        last_actual = min(m_end, eff_max) if has_actual else m_start
+        elapsed = ((_dt.date.fromisoformat(last_actual) - df_).days + 1) if has_actual else 0
+        pm_e = df_ - _dt.timedelta(days=1); pm_s = pm_e - _dt.timedelta(days=total_days - 1)   # 직전 동일길이
+        pm_start, pm_end = pm_s.isoformat(), pm_e.isoformat()
+        py_start, py_end = _yr_ago(df_).isoformat(), _yr_ago(dt_).isoformat()                  # 전년 동기간
+        month = f"{m_start} ~ {m_end}"
+    else:
+        mode = "month"
+        if not month or month not in months:
+            month = eff_max[:7] if eff_max[:7] in months else months[0]
+        y, mo = int(month[:4]), int(month[5:7])
+        total_days = _cal.monthrange(y, mo)[1]
+        m_start, m_end = f"{month}-01", f"{month}-{total_days:02d}"
+        pm_y, pm_mo = (y, mo - 1) if mo > 1 else (y - 1, 12)
+        pm_start, pm_end = f"{pm_y:04d}-{pm_mo:02d}-01", f"{pm_y:04d}-{pm_mo:02d}-{_cal.monthrange(pm_y, pm_mo)[1]:02d}"
+        py_start, py_end = f"{y-1:04d}-{mo:02d}-01", f"{y-1:04d}-{mo:02d}-{_cal.monthrange(y-1, mo)[1]:02d}"
+        has_actual = eff_max >= m_start
+        last_actual = min(m_end, eff_max) if has_actual else m_start   # 전일=오늘(진행 중) 제외 최근 완료 실적일
+        elapsed = int(last_actual[8:10]) if has_actual else 0          # 당월 경과 완료일수(예상마감 런레이트)
 
     cl, sp = [], []                                             # 매장/채널 필터 (target_daily·sales 공통 컬럼)
     if stores_f:
@@ -683,7 +706,8 @@ def target(month: str | None = None,
               "goal_mtd": tgm, "actual_mtd": tam, "rate_mtd": (tam / tgm * 100) if tgm else 0,
               "proj": tproj, "proj_rate": (tproj / tgf * 100) if tgf else 0,
               "pm_actual": _t("pm_actual"), "py_actual": _t("py_actual")}
-    return {"available": True, "months": months, "month": month, "m_start": m_start, "m_end": m_end,
+    return {"available": True, "mode": mode, "months": months, "month": month, "m_start": m_start, "m_end": m_end,
+            "min_date": (months[-1] + "-01") if months else None, "max_date": eff_max,
             "last_actual": (last_actual if has_actual else None), "elapsed": elapsed, "total_days": total_days,
             "stores": rows, "daily": daily_rows, "totals": totals}
 
