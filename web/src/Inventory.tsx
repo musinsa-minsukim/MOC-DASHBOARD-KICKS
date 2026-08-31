@@ -140,6 +140,17 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     }),
   ], [dark, onPick]);
   const brandGridKey = useMemo(() => `${brandRows.length}|${Math.round(brandTotal[0]?.total || 0)}|${Math.round(brandTotal[0]?.gmv || 0)}`, [brandRows.length, brandTotal]);
+
+  // 상품옵션별 재고 표 합계행(표시 행 합) — 필터 반응(remount key). 재고 수량 컬럼만 합산.
+  const invTotal = useMemo(() => {
+    const rr = d?.rows ?? [];
+    if (!rr.length) return [];
+    const numCols = ["점재고합계", "허브합계", ...storeCols, ...hubcols];
+    const t: any = { brand_nm: "합계", goods_nm: "", goods_no: "", style_no: "", goods_opt: "", business_type: "", cat_top: "", cat_large: "", cat_medium: "" };
+    for (const c of numCols) t[c] = rr.reduce((a: number, r: any) => a + (Number(r[c]) || 0), 0);
+    return [t];
+  }, [d, storeCols, hubcols]);
+  const invGridKey = useMemo(() => `${(d?.rows?.length) || 0}|${Math.round(invTotal[0]?.["점재고합계"] || 0)}|${Math.round(invTotal[0]?.["허브합계"] || 0)}`, [d, invTotal]);
   const onBrandClick = (e: any) => { if (e?.node?.rowPinned || !pickBrand) return; const nm = e?.data?.name; if (nm && nm !== "합계(상위)") pickBrand({ name: nm }); };
 
   return (
@@ -215,7 +226,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
                 <Download size={14} /> CSV (long·매장/창고별)
               </button>
             </div>
-            <DataGrid rows={d.rows} columns={invCols} dark={dark} height={560} />
+            <DataGrid key={invGridKey} rows={d.rows} columns={invCols} dark={dark} height={560} pinnedTop={invTotal} />
           </CardBody></Card>
         </>
       )}

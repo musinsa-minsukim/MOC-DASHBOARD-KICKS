@@ -104,7 +104,7 @@ function CmpTable({ title, sub, table, labelCols, cols, ratioCols, csvName, heig
         <div><h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{title}</h3><p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">{sub} · 합계 고정 · 열 이동/정렬{onRowPick ? " · 첫 칼럼 클릭=필터" : ""}</p></div>
         <button onClick={csv} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"><Download size={14} /> CSV</button>
       </div>
-      <DataGrid rows={table.rows} columns={columns} dark={dark} height={height} pinnedTop={[table.total]} onCellClicked={cellClick} />
+      <DataGrid key={JSON.stringify(table.total)} rows={table.rows} columns={columns} dark={dark} height={height} pinnedTop={[table.total]} onCellClicked={cellClick} />
     </CardBody></Card>
   );
 }

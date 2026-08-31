@@ -173,6 +173,20 @@ export default function Ips({ dark }: { dark: boolean }) {
     ];
   }, [ch]);
 
+  // 상품 드릴 합계행(표시 상품 합) — 재고/판매 합산, 셀스루·예상일수는 합계 재계산. remount key로 반응.
+  const gTotal = useMemo(() => {
+    if (!gRows.length) return [];
+    const t: any = { goods_nm: "합계", product_no: "" };
+    const keys = new Set<string>();
+    for (const r of gRows) for (const k in r) if (typeof r[k] === "number") keys.add(k);
+    keys.forEach((k) => { t[k] = gRows.reduce((a: number, r: any) => a + (Number(r[k]) || 0), 0); });
+    const q = t.qty_tot || 0, tc = t.total_cur || 0;   // 셀스루/예상일수는 상품정의(전체채널) 기준 재계산
+    t.sell_through = q + tc ? +((q / (q + tc)) * 100).toFixed(1) : null;
+    t.days_all = q ? +(tc / (q / 28)).toFixed(1) : null;
+    return [t];
+  }, [gRows]);
+  const gGridKey = useMemo(() => `${drill?.brand_code}|${drill?.gubun}|${ch}|${gRows.length}|${Math.round(gTotal[0]?.total_cur || 0)}`, [drill, ch, gRows.length, gTotal]);
+
   const toggle = (arr: string[], v: string, set: (x: string[]) => void) =>
     set(arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
 
@@ -252,7 +266,7 @@ export default function Ips({ dark }: { dark: boolean }) {
                 <h3 className="mb-2 text-[15px] font-semibold text-slate-800 dark:text-slate-100">
                   {drill.brand_nm} · {drill.gubun} · {ch === "tot" ? "전체" : ch === "on" ? "온라인" : "오프라인"} · {gRows.length}개 상품
                 </h3>
-                <DataGrid key={`g|${drill.brand_code}|${drill.gubun}|${ch}`} rows={gRows} columns={gCols} dark={dark}
+                <DataGrid key={gGridKey} rows={gRows} columns={gCols} dark={dark} pinnedTop={gTotal}
                   height={Math.min(760, 96 + (gRows.length + 1) * 34)} />
               </>
             )
