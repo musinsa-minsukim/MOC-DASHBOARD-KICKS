@@ -64,8 +64,10 @@ jobs:
           DBX_CLOUD_FETCH: "1"          # 프록시 없는 러너 → CloudFetch로 대용량 페치 가속
         run: |
           if [ "${{ inputs.full }}" = "true" ]; then
-            echo "== FULL 재적재 모드 (sales 전량 재조회 → 손상 캐시 복구) =="
-            python refresh.py --full --snapshots
+            echo "== FULL 재적재 모드 (sales/receipts/sales_option 전량 재조회 → 손상 캐시 복구 + 옵션 전이력) =="
+            # 스냅샷은 미손상이라 제외(무거운 settlement/goods_master full 재조회 회피 → 타임아웃 위험↓).
+            # 스냅샷은 정기 daily(--snapshots)가 담당.
+            python refresh.py --full
           else
             python refresh.py --snapshots
           fi

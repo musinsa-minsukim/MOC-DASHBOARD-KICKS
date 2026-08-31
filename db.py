@@ -230,11 +230,15 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
        fetch_sales와 동일 주문원장(order_option+master+claim)·환불귀속, 옵션(option_name) 그레인만 추가.
        goods_nm/option_nm은 원장 값. 순이익/CP는 익일 반영이라 여기 없음(CSV에서 settlement_option 조인).
        → settlement_option이 stale/미반영이어도 CSV가 항상 매출일자×옵션으로 나오게 하는 신선 소스.
-       ⚠️ 히스토리는 최근 60일로 제한(옵션단위라 전이력은 과대 — CSV는 최근 운영 상세용)."""
-    floor = (_dt.date.today() - _dt.timedelta(days=60)).isoformat()
-    since = max(since, floor) if since else floor       # 미지정(첫 적재)도 180일로 바운드
-    ordf = f"AND CAST(COALESCE(om.transaction_at, om.created_at) AS DATE) >= '{since}'"
-    reff = f"AND CAST(created_at AS DATE) >= '{since}'"
+       히스토리: since 주어지면 그 이후만(증분 window), None(full 빌드)이면 전이력(하한 없음).
+       ⚠️ full 빌드는 옵션단위 전이력이라 무겁다(최초 1회) — 이후 증분(window)은 과거를 보존하며
+          최근만 재적재해 가볍다. (하한 제거: 사용자 요청으로 CSV 옵션단위를 전기간 지원)"""
+    if since:
+        ordf = f"AND CAST(COALESCE(om.transaction_at, om.created_at) AS DATE) >= '{since}'"
+        reff = f"AND CAST(created_at AS DATE) >= '{since}'"
+    else:
+        ordf = ""   # 전이력(하한 없음)
+        reff = ""
     q = ("WITH " + DIM_STORE + r""",
         dim_brand AS (
           SELECT cb.com_id, cb.brand AS brand_code, b.brand_nm,
