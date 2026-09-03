@@ -104,6 +104,59 @@ dim_store AS (
 
 
 # ---------------------------------------------------------------------------
+# 카테고리 오탐 보정(상품 카탈로그 원천 오류 대응) — 캐시 생성 시점에 일괄 적용.
+#   규칙: 크록스 지비츠류(브랜드=크록스 AND 정상가<=15900)가 Shoes로 잘못 분류됨 → Acc/기타/기타.
+#   (정상가<=15900 크록스는 전량 지비츠·5,000~9,000원, 진짜 신발은 모두 >15,900 로 확인됨.)
+#   goods_no 기준 집합을 원천에서 산출 → sales/sales_option/inventory 모두 동일하게 반영.
+# ---------------------------------------------------------------------------
+_CAT_OVERRIDE_ACC = ("Acc", "기타", "기타")   # (cat_top, cat_large, cat_medium)
+
+
+def _crocs_acc_goods() -> frozenset:
+    """카테고리를 Acc로 보정할 goods_no 집합 = 크록스(bizest∪editorial 브랜드) AND 정상가<=15900."""
+    q = r"""
+      WITH bz AS (
+        SELECT CAST(g.goods_no AS BIGINT) AS gno
+        FROM musinsa.bizest.goods g
+        LEFT JOIN musinsa.partnerportal.brand b ON b.brand = g.brand
+        WHERE upper(COALESCE(b.brand_nm,'')) LIKE '%CROCS%' OR COALESCE(b.brand_nm,'') LIKE '%크록스%'
+      ),
+      l AS (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary),
+      ed AS (
+        SELECT DISTINCT CAST(s.goods_no AS BIGINT) AS gno
+        FROM team.sales.dsh_d_upt_editorial_stock_summary s JOIN l ON s.ord_state_date = l.d
+        WHERE upper(COALESCE(s.brand_nm,'')) LIKE '%CROCS%' OR COALESCE(s.brand_nm,'') LIKE '%크록스%'
+      ),
+      allc AS (SELECT gno FROM bz UNION SELECT gno FROM ed)
+      SELECT DISTINCT a.gno AS goods_no
+      FROM allc a JOIN musinsa.bizest.goods g ON CAST(g.goods_no AS BIGINT) = a.gno
+      WHERE g.normal_price <= 15900
+    """
+    try:
+        return frozenset(int(x) for x in run_df(q)["goods_no"].tolist())
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("crocs 카테고리 보정 goods 조회 실패(보정 생략): %s", e)
+        return frozenset()
+
+
+def apply_category_override(df):
+    """goods_no + cat_top/cat_large/cat_medium 를 가진 df에 카테고리 보정 적용(크록스 지비츠 → Acc/기타/기타)."""
+    if df is None or "goods_no" not in getattr(df, "columns", []):
+        return df
+    ov = _crocs_acc_goods()
+    if not ov:
+        return df
+    m = df["goods_no"].isin(ov)
+    if not m.any():
+        return df
+    for col, val in zip(("cat_top", "cat_large", "cat_medium"), _CAT_OVERRIDE_ACC):
+        if col in df.columns:
+            df.loc[m, col] = val
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 판매 fact (MOSS) — 외국인 매출 포함
 # ---------------------------------------------------------------------------
 def sales_latest_ts() -> str | None:
@@ -220,6 +273,7 @@ def fetch_sales(since: str | None = None) -> pd.DataFrame:
     for c in ("cat_top", "cat_large", "cat_medium"):
         df[c] = df[c].fillna("미분류")
     df["off_md_id"] = df["off_md_id"].fillna("").astype(str)
+    df = apply_category_override(df)   # 크록스 지비츠(<=15900) Shoes→Acc 등 카탈로그 오탐 보정
     # 쇼핑백(수베니어샵)은 순판매수량에서 제외 — qty=0 처리(매출 gmv·정상가 등은 유지). 전 지표/탭 일관 반영.
     df.loc[df["brand_nm"] == "수베니어샵", "qty"] = 0.0
     return df  # concept는 app에서 load_concept_map으로 매핑(뷰 불안정 분리)
@@ -313,6 +367,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
     for c in ("store_name", "shop_type", "business_type", "brand_nm", "goods_nm", "option_nm",
               "cat_top", "cat_large", "cat_medium", "off_md_id"):
         df[c] = df[c].fillna("")
+    df = apply_category_override(df)   # 크록스 지비츠(<=15900) Shoes→Acc 등 카탈로그 오탐 보정
     df.loc[df["brand_nm"] == "수베니어샵", "qty"] = 0.0
     return df[df["sales_date"].notna()]
 
@@ -1361,6 +1416,7 @@ def load_inventory_pivot() -> pd.DataFrame:
     df["goods_opt"] = df["goods_opt"].fillna("")
     df["company_id"] = df["company_id"].fillna("").astype(str)
     df["brand_id"] = df["brand_id"].fillna("").astype(str)
+    df = apply_category_override(df)   # 크록스 지비츠(<=15900) Shoes→Acc 등 카탈로그 오탐 보정
     _cm = load_concept_map()
     df["concept"] = [_cm.get((c, b), "미지정") for c, b in zip(df["company_id"], df["brand_id"])]
     qty_cols = store_cols + ["점재고합계"] + HUB_COLS + ["허브합계"]
