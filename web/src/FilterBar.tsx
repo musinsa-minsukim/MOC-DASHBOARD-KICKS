@@ -63,10 +63,10 @@ export default function FilterBar({
   const nameOn = f.name_like.trim().length > 0;
   const active =
     f.biz.length || f.type.length || f.store.length || f.brand.length || f.brand_ex.length || f.cat_top.length ||
-    f.cat_large.length || f.cat_medium.length || f.md.length || uidCount || nameOn;
+    f.cat_large.length || f.cat_medium.length || f.md.length || uidCount || nameOn || f.running;
   const activeN =
     f.biz.length + f.type.length + f.store.length + f.brand.length + f.brand_ex.length + f.cat_top.length +
-    f.cat_large.length + f.cat_medium.length + f.md.length + (uidCount ? 1 : 0) + (nameOn ? 1 : 0);
+    f.cat_large.length + f.cat_medium.length + f.md.length + (uidCount ? 1 : 0) + (nameOn ? 1 : 0) + (f.running ? 1 : 0);
 
   return (
     <Card>
@@ -167,6 +167,13 @@ export default function FilterBar({
           </div>
         </div>
 
+        <div>
+          <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">유형</div>
+          <div className="flex items-center gap-1.5">
+            <Chip active={f.running} onClick={() => set({ running: !f.running })}>러닝화</Chip>
+          </div>
+        </div>
+
         {showGran && (
           <div>
             <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">추이 단위</div>
@@ -180,7 +187,7 @@ export default function FilterBar({
 
         {active ? (
           <button
-            onClick={() => set({ biz: [], type: [], store: [], brand: [], brand_ex: [], cat_top: [], cat_large: [], cat_medium: [], md: [], goods: "", name_like: "" })}
+            onClick={() => set({ biz: [], type: [], store: [], brand: [], brand_ex: [], cat_top: [], cat_large: [], cat_medium: [], md: [], goods: "", name_like: "", running: false })}
             className="ml-auto inline-flex items-center gap-1.5 self-end rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
           >
             <RotateCcw size={13} /> 필터 초기화

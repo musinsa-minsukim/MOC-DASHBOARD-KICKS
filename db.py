@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 import datetime as _dt
 
 try:
@@ -157,6 +158,63 @@ def apply_category_override(df):
 
 
 # ---------------------------------------------------------------------------
+# 러닝화 태그 — '무신사 런(RUN, shop_no=90)' 매장 취급 신발 = 러닝화(고정밀·자동유지).
+#   RUN은 러닝 전문점이라 거기 취급된 신발이면 러닝화로 본다(예: 젤-1130 라이프스타일은 RUN 미취급 → 제외).
+#   RUN '신발(cat_top=Shoes)' 중 카탈로그 오탐으로 섞인 의류/잡화 이름은 제외. 신규 RUN 입고분은 자동 반영.
+# ---------------------------------------------------------------------------
+_RUN_APPAREL_RE = re.compile(
+    r"티셔츠|티셔트|반팔|긴팔|재킷|자켓|후디|후드|쇼츠|쇼트|팬츠|바지|레깅스|타이츠|양말|삭스|sock|"
+    r"모자|비니|헤어\s*밴드|헤어밴드|장갑|가방|백팩|\bbag\b|벨트|탱크|집업|조끼|베스트|스카프|반다나|"
+    r"우산|보틀|물통|파우치|암워머|넥워머|셔츠|슬리브|팬티|드로즈|싱글렛|캡\b|\b캡|크롭|\b탑\b|"
+    r"베이스레이어|스포츠\s*브라|브라\b|헤드\s*밴드|헤드밴드|스커트|우븐|워머", re.I)
+
+
+def _running_shoe_goods() -> frozenset:
+    """러닝화 goods_no 집합 = RUN(shop_no=90) 취급 신발(cat_top=Shoes) − 의류/잡화 이름."""
+    q = r"""
+      WITH runsold AS (
+        SELECT DISTINCT CAST(oo.goods_no AS BIGINT) gno
+        FROM ocmp.moss.order_option oo
+        JOIN ocmp.moss.order_master om ON om.order_id = oo.order_id
+        WHERE om.shop_no = 90 AND om.dummy_order = 0
+      ),
+      l AS (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary),
+      runstock AS (
+        SELECT DISTINCT CAST(goods_no AS BIGINT) gno
+        FROM team.sales.dsh_d_upt_editorial_stock_summary s JOIN l ON s.ord_state_date = l.d
+        WHERE s.shop_no = 90
+      ),
+      runall AS (SELECT gno FROM runsold UNION SELECT gno FROM runstock),
+      cat AS (
+        SELECT CAST(goods_no AS BIGINT) gno, ANY_VALUE(final_large_nm_off) cat_top
+        FROM team.sales.dsh_d_upt_editorial_stock_summary s2 JOIN l ON s2.ord_state_date = l.d GROUP BY 1
+      )
+      SELECT r.gno AS goods_no, g.goods_nm
+      FROM runall r JOIN cat c ON c.gno = r.gno
+      LEFT JOIN musinsa.bizest.goods g ON CAST(g.goods_no AS BIGINT) = r.gno
+      WHERE c.cat_top = 'Shoes'
+    """
+    try:
+        df = run_df(q)
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("RUN 러닝화 goods 조회 실패(러닝 태그 생략): %s", e)
+        return frozenset()
+    nm = df["goods_nm"].fillna("").astype(str)
+    keep = df[~nm.str.contains(_RUN_APPAREL_RE)]
+    return frozenset(int(x) for x in keep["goods_no"].tolist())
+
+
+def apply_running_flag(df):
+    """goods_no 가진 df에 is_running(러닝화=1) 컬럼 부여. (RUN 매장 기반 러닝화 집합 기준)"""
+    if df is None or "goods_no" not in getattr(df, "columns", []):
+        return df
+    rs = _running_shoe_goods()
+    df["is_running"] = df["goods_no"].isin(rs).astype("int64") if rs else 0
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 판매 fact (MOSS) — 외국인 매출 포함
 # ---------------------------------------------------------------------------
 def sales_latest_ts() -> str | None:
@@ -274,6 +332,7 @@ def fetch_sales(since: str | None = None) -> pd.DataFrame:
         df[c] = df[c].fillna("미분류")
     df["off_md_id"] = df["off_md_id"].fillna("").astype(str)
     df = apply_category_override(df)   # 크록스 지비츠(정상가 0~25900) Shoes→Acc 등 카탈로그 오탐 보정
+    df = apply_running_flag(df)        # is_running: RUN 매장 취급 신발=러닝화
     # 쇼핑백(수베니어샵)은 순판매수량에서 제외 — qty=0 처리(매출 gmv·정상가 등은 유지). 전 지표/탭 일관 반영.
     df.loc[df["brand_nm"] == "수베니어샵", "qty"] = 0.0
     return df  # concept는 app에서 load_concept_map으로 매핑(뷰 불안정 분리)
@@ -368,6 +427,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
               "cat_top", "cat_large", "cat_medium", "off_md_id"):
         df[c] = df[c].fillna("")
     df = apply_category_override(df)   # 크록스 지비츠(정상가 0~25900) Shoes→Acc 등 카탈로그 오탐 보정
+    df = apply_running_flag(df)        # is_running: RUN 매장 취급 신발=러닝화
     df.loc[df["brand_nm"] == "수베니어샵", "qty"] = 0.0
     return df[df["sales_date"].notna()]
 
@@ -1417,6 +1477,7 @@ def load_inventory_pivot() -> pd.DataFrame:
     df["company_id"] = df["company_id"].fillna("").astype(str)
     df["brand_id"] = df["brand_id"].fillna("").astype(str)
     df = apply_category_override(df)   # 크록스 지비츠(정상가 0~25900) Shoes→Acc 등 카탈로그 오탐 보정
+    df = apply_running_flag(df)        # is_running: RUN 매장 취급 신발=러닝화
     _cm = load_concept_map()
     df["concept"] = [_cm.get((c, b), "미지정") for c, b in zip(df["company_id"], df["brand_id"])]
     qty_cols = store_cols + ["점재고합계"] + HUB_COLS + ["허브합계"]
@@ -1438,7 +1499,7 @@ def load_inventory_goods() -> pd.DataFrame:
     """재고 피벗을 상품(goods_no) 단위로 합산 — 판매 상세에 매장별/허브 재고를 붙이기 위함."""
     inv = load_inventory_pivot()
     meta = {"barcode", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
-            "cat_top", "cat_large", "cat_medium", "off_md_id", "concept",
+            "cat_top", "cat_large", "cat_medium", "off_md_id", "concept", "is_running",
             "company_id", "brand_id", "점재고합계", "허브합계", *HUB_COLS}
     store_cols = [c for c in inv.columns if c not in meta]
     cols = store_cols + ["점재고합계", "허브합계"] + HUB_COLS

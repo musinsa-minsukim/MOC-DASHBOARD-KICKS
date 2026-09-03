@@ -14,7 +14,8 @@ import pandas as pd
 import store
 
 _META_ASCII = {"barcode", "goods_no", "goods_opt", "brand_nm", "goods_nm", "cat_top", "cat_large",
-               "cat_medium", "off_md_id", "company_id", "brand_id", "business_type", "concept"}
+               "cat_medium", "off_md_id", "company_id", "brand_id", "business_type", "concept",
+               "is_running"}
 
 # 옵션 문자열에서 컬러/사이즈 분리 규칙(원천 goods_opt 실측 기반):
 #  - '^' 있으면 → 앞=컬러, 뒤=사이즈 (예: '블랙^M', '화이트/그레이^L' — '/'는 컬러명 일부)
@@ -109,6 +110,8 @@ def _prep(f):
         nl = str(f["name_like"]).strip().lower()
         if nl:
             df = df[df["goods_nm"].astype(str).str.lower().str.contains(nl, na=False, regex=False)]
+    if f.get("running") and "is_running" in df.columns:   # 러닝화만(RUN 매장 취급 신발)
+        df = df[df["is_running"] == 1]
     df = df[df["goods_nm"].astype(str).str.strip() != ""].copy()
     df["__jaego"] = df[vis].sum(axis=1) if vis else 0
     df["__hub"] = df[hcol].fillna(0) if hcol else 0

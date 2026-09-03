@@ -120,12 +120,12 @@ def get_filters(
     cat_top: list[str] = Query(default=[]), cat_large: list[str] = Query(default=[]),
     cat_medium: list[str] = Query(default=[]), md: list[str] = Query(default=[]),
     goods: list[int] = Query(default=[]), name_like: str | None = None,
-    brand_ex: list[str] = Query(default=[]),
+    brand_ex: list[str] = Query(default=[]), running: int | None = None,
 ) -> dict:
     return {"date_from": date_from, "date_to": date_to, "biz": biz, "type": type,
             "store": store, "brand": brand, "cat_top": cat_top, "cat_large": cat_large,
             "cat_medium": cat_medium, "md": md, "goods": goods, "name_like": name_like,
-            "brand_ex": brand_ex}
+            "brand_ex": brand_ex, "running": running}
 
 
 def build_where(f: dict):
@@ -152,6 +152,8 @@ def build_where(f: dict):
     if f.get("brand_ex"):   # 브랜드 제외
         clauses.append(f"brand_nm NOT IN ({','.join(['?'] * len(f['brand_ex']))})")
         params += list(f["brand_ex"])
+    if f.get("running"):    # 러닝화만 (RUN 매장 취급 신발) — sales에 is_running 존재
+        clauses.append("is_running = 1")
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
@@ -1018,6 +1020,8 @@ def _sales_option_where(f: dict):
         cl.append("lower(so.goods_nm) LIKE ?"); pr.append("%" + str(f["name_like"]).lower() + "%")
     if f.get("brand_ex"):
         cl.append(f"so.brand_nm NOT IN ({','.join(['?'] * len(f['brand_ex']))})"); pr += list(f["brand_ex"])
+    if f.get("running"):
+        cl.append("so.is_running = 1")
     return (" WHERE " + " AND ".join(cl)) if cl else "", pr
 
 
