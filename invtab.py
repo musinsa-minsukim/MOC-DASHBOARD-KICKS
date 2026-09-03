@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 import pandas as pd
 
@@ -14,6 +15,38 @@ import store
 
 _META_ASCII = {"barcode", "goods_no", "goods_opt", "brand_nm", "goods_nm", "cat_top", "cat_large",
                "cat_medium", "off_md_id", "company_id", "brand_id", "business_type", "concept"}
+
+# 옵션 문자열에서 컬러/사이즈 분리 규칙(원천 goods_opt 실측 기반):
+#  - '^' 있으면 → 앞=컬러, 뒤=사이즈 (예: '블랙^M', '화이트/그레이^L' — '/'는 컬러명 일부)
+#  - '^'없고 '/'있는데 앞 토큰이 '사이즈'가 아니면 → 컬러/사이즈 (예: 'black/free', 'NAVY/OS')
+#  - 그 외(M, 250, O/S, 240/M5W7 등 사이즈만) → 컬러는 UID 레벨(1 UID = 1 컬러)
+# → 컬러SKU = distinct (goods_no × 컬러), 바코드SKU = distinct barcode(컬러×사이즈)
+_SIZE_RE = re.compile(
+    r'^([0-9]+|xxs|xs|s|m|l|xl|xxl|[234]xl|f|free|os|one|onesize|o|w[0-9]+|m[0-9].*|[0-9]+호.*)$',
+    re.IGNORECASE)
+
+
+def _color_of(opt) -> str | None:
+    """옵션 문자열 → 컬러(없으면 None=사이즈만 → 컬러는 UID 레벨)."""
+    if not opt or not isinstance(opt, str):
+        return None
+    if "^" in opt:
+        c = opt.split("^", 1)[0].strip()
+        return c or None
+    if "/" in opt:
+        left = opt.split("/", 1)[0].strip()
+        if left and not _SIZE_RE.match(left):
+            return left
+    return None
+
+
+def _add_color_keys(df):
+    """df(barcode 단위)에 __color_key(=goods_no|컬러 또는 UID:goods_no)와 __opt_color(옵션에 컬러有=1) 부여."""
+    gn = df["goods_no"].fillna(0).astype("int64")
+    colors = df["goods_opt"].map(_color_of)
+    df["__color_key"] = [f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors)]
+    df["__opt_color"] = colors.notna().astype(int)
+    return df
 
 
 def _f(v) -> float:
@@ -80,6 +113,7 @@ def _prep(f):
     df["__jaego"] = df[vis].sum(axis=1) if vis else 0
     df["__hub"] = df[hcol].fillna(0) if hcol else 0
     df = df[(df["__jaego"] > 0) | (df["__hub"] > 0)]
+    df = _add_color_keys(df)
     return df, vis, hubcols, hcol
 
 
@@ -107,11 +141,15 @@ def _cat_pies(df, top_n=8):
 
 def _brand_stock(df, vis, top_n=20):
     """브랜드별 점재고(선택 매장) — 사업구분(위탁/매입/기타) 스택 + 전체 대비 비중. 상위 top_n.
-       매장별 재고수량 차트와 동일 스키마({name,위탁,매입,기타,total}) + share."""
+       매장별 재고수량 차트와 동일 스키마({name,위탁,매입,기타,total}) + share + 컬러SKU/바코드SKU."""
     if not vis or df.empty:
         return []
     grand = float(df["__jaego"].sum()) or 0.0
     piv = df.groupby(["brand_nm", "business_type"])["__jaego"].sum().unstack(fill_value=0.0)
+    ins = df[df["__jaego"] > 0]               # 컬러/바코드 SKU는 점재고 보유(매장 내) 기준
+    sku = ins.groupby("brand_nm").agg(color_sku=("__color_key", "nunique"),
+                                      barcode_sku=("barcode", "nunique"),
+                                      uid=("goods_no", "nunique"))
     rows = []
     for brand, row in piv.iterrows():
         wt = float(row.get("위탁", 0.0)); mi = float(row.get("매입", 0.0))
@@ -119,20 +157,69 @@ def _brand_stock(df, vis, top_n=20):
         total = wt + mi + etc
         if total <= 0:
             continue
+        s = sku.loc[brand] if brand in sku.index else None
         rows.append({"name": (str(brand) or "(미매칭)"), "위탁": _f(wt), "매입": _f(mi), "기타": _f(etc),
-                     "total": _f(total), "share": round(total / grand * 100, 1) if grand else 0.0})
+                     "total": _f(total), "share": round(total / grand * 100, 1) if grand else 0.0,
+                     "color_sku": int(s["color_sku"]) if s is not None else 0,
+                     "barcode_sku": int(s["barcode_sku"]) if s is not None else 0,
+                     "uid": int(s["uid"]) if s is not None else 0})
     rows.sort(key=lambda x: -x["total"])
     return rows[:top_n]
+
+
+def _cat_sku(df, top_n=12):
+    """카테고리별(최상위/대/중) **점재고 매장 내** 컬러SKU/바코드SKU — 표용. 상위 top_n + '기타'."""
+    ins = df[df["__jaego"] > 0]
+    out = {}
+    for key in ("cat_top", "cat_large", "cat_medium"):
+        if key not in ins.columns or ins.empty:
+            out[key] = []
+            continue
+        cat = ins[key].astype(str).str.strip().replace("", "(미분류)").fillna("(미분류)")
+        g = ins.assign(_c=cat).groupby("_c").agg(color_sku=("__color_key", "nunique"),
+                                                 barcode_sku=("barcode", "nunique"),
+                                                 uid=("goods_no", "nunique"))
+        g = g.sort_values("color_sku", ascending=False)
+        items = [{"name": str(k), "color_sku": int(r.color_sku), "barcode_sku": int(r.barcode_sku),
+                  "uid": int(r.uid)} for k, r in g.iterrows()]
+        if len(items) > top_n:
+            head, tail = items[:top_n], items[top_n:]
+            head.append({"name": f"기타 {len(tail)}종",
+                         "color_sku": sum(x["color_sku"] for x in tail),
+                         "barcode_sku": sum(x["barcode_sku"] for x in tail),
+                         "uid": sum(x["uid"] for x in tail)})
+            items = head
+        out[key] = items
+    return out
+
+
+def _store_sku(df, vis):
+    """매장별 컬러SKU/바코드SKU/UID — 각 매장 컬럼>0(그 매장 점재고 보유)인 행 기준 distinct."""
+    rows = []
+    for s in vis:
+        sub = df[df[s].fillna(0) > 0]
+        if sub.empty:
+            continue
+        rows.append({"name": s,
+                     "color_sku": int(sub["__color_key"].nunique()),
+                     "barcode_sku": int(sub["barcode"].nunique()),
+                     "uid": int(sub["goods_no"].nunique())})
+    rows.sort(key=lambda r: -r["color_sku"])
+    return rows
 
 
 def compute(f=None, limit=300):
     df, vis, hubcols, hcol = _prep(f)
     if df.empty:
-        return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "options": 0, "goods": 0},
-                "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols, "cats": {}, "brand_stock": []}
+        return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "options": 0, "goods": 0, "color_sku": 0},
+                "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols, "cats": {},
+                "brand_stock": [], "store_sku": [], "cat_sku": {}}
 
+    # KPI 카운트는 goods/options와 같은 base(재고 보유=점 or 허브)로 통일 → goods ≤ 컬러SKU ≤ barcode 계층 일관.
+    # (매장별/브랜드/카테 표의 SKU는 '점재고 보유' 기준 — _store_sku/_brand_stock/_cat_sku 참고)
     kpis = {"jaego": _f(df["__jaego"].sum()), "hub": _f(df["__hub"].sum()),
-            "options": int(len(df)), "goods": int(df["goods_no"].nunique())}
+            "options": int(len(df)), "goods": int(df["goods_no"].nunique()),
+            "color_sku": int(df["__color_key"].nunique())}
     cats = _cat_pies(df)
 
     # 매장별 재고 (위탁/매입) — store × business_type
@@ -165,7 +252,8 @@ def compute(f=None, limit=300):
     rows = sub.to_dict(orient="records")
     return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows,
             "store_cols": vis, "hubcols": hubcols, "cats": cats,
-            "brand_stock": _brand_stock(df, vis)}
+            "brand_stock": _brand_stock(df, vis),
+            "store_sku": _store_sku(df, vis), "cat_sku": _cat_sku(df)}
 
 
 def csv_rows(f=None):

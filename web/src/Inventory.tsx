@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList, Cell, PieChart, Pie } from "recharts";
-import { Boxes, Warehouse, Package, Tags, Download } from "lucide-react";
+import { Boxes, Warehouse, Package, Tags, Download, Palette, Grid2x2 } from "lucide-react";
 import { api, num, getToken, toQuery, type Filters } from "./lib";
 import { Card, CardBody, SectionTitle, Spinner, FitText } from "./ui";
 import DataGrid, { colText, colNum } from "./Grid";
@@ -61,6 +61,39 @@ function CatPie({ title, data, C }: { title: string; data: { name: string; value
             <Legend wrapperStyle={{ fontSize: 11 }} iconSize={9} />
           </PieChart>
         </ResponsiveContainer>
+      )}
+    </CardBody></Card>
+  );
+}
+
+// 카테고리별 SKU 수(컬러/바코드) 표 — 점재고(선택 매장) 기준
+function CatSkuTable({ title, rows }: { title: string; rows: { name: string; color_sku: number; barcode_sku: number }[] }) {
+  return (
+    <Card><CardBody>
+      <SectionTitle title={title} sub="컬러SKU / 바코드SKU · 점재고 기준" />
+      {!rows.length ? (
+        <div className="flex h-[200px] items-center justify-center text-sm text-slate-400">데이터 없음</div>
+      ) : (
+        <div className="max-h-[320px] overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-white dark:bg-slate-900">
+              <tr className="border-b border-slate-200 text-xs text-slate-400 dark:border-slate-700">
+                <th className="py-1.5 pr-2 text-left font-medium">카테고리</th>
+                <th className="py-1.5 px-2 text-right font-medium">컬러SKU</th>
+                <th className="py-1.5 pl-2 text-right font-medium">바코드SKU</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i} className="border-b border-slate-100 dark:border-slate-800">
+                  <td className="max-w-[140px] truncate py-1.5 pr-2 text-slate-700 dark:text-slate-200" title={r.name}>{r.name}</td>
+                  <td className="py-1.5 px-2 text-right font-semibold tabular-nums text-slate-800 dark:text-slate-100">{num(r.color_sku)}</td>
+                  <td className="py-1.5 pl-2 text-right tabular-nums text-slate-400">{num(r.barcode_sku)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </CardBody></Card>
   );
@@ -130,6 +163,8 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
       cellStyle: (p: any): any => (p.data?.name && p.data?.name !== "합계(상위)" && onPick ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : { fontWeight: 700 }),
     }),
     colNum("total", "점재고", "num", { minWidth: 90 }),
+    colNum("color_sku", "컬러SKU", "int", { minWidth: 84, headerTooltip: "distinct(UID×컬러) · 점재고 보유 기준" }),
+    colNum("barcode_sku", "바코드SKU", "int", { minWidth: 94, headerTooltip: "distinct barcode(컬러×사이즈) · 점재고 보유 기준" }),
     colNum("share", "재고비중", "num", { minWidth: 86, valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%" }),
     colNum("gmv", "GMV(28일)", "compact", { minWidth: 100 }),
     colNum("gmv_share", "SOB", "num", { minWidth: 82, headerTooltip: "Share of Business = 매출비중(최근28일 전체 GMV 대비)", valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%" }),
@@ -140,6 +175,19 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     }),
   ], [dark, onPick]);
   const brandGridKey = useMemo(() => `${brandRows.length}|${Math.round(brandTotal[0]?.total || 0)}|${Math.round(brandTotal[0]?.gmv || 0)}`, [brandRows.length, brandTotal]);
+
+  // 매장별 SKU 수(컬러/바코드) 표 — 각 매장 점재고 보유 기준 distinct
+  const storeSkuRows: any[] = d?.store_sku ?? [];
+  const storeSkuCols = useMemo(() => [
+    colText("name", "매장", {
+      pinned: "left", minWidth: 150,
+      cellStyle: (p: any): any => (p.data?.name && onPick ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : undefined),
+    }),
+    colNum("uid", "UID수(상품)", "int", { minWidth: 100 }),
+    colNum("color_sku", "컬러SKU", "int", { minWidth: 100, headerTooltip: "distinct(UID×컬러)" }),
+    colNum("barcode_sku", "바코드SKU", "int", { minWidth: 106, headerTooltip: "distinct barcode(컬러×사이즈)" }),
+  ], [dark, onPick]);
+  const onStoreSkuClick = (e: any) => { if (e?.node?.rowPinned || !pickStore) return; const nm = e?.data?.name; if (nm) pickStore({ name: nm }); };
 
   // 상품옵션별 재고 표 합계행(표시 행 합) — 필터 반응(remount key). 재고 수량 컬럼만 합산.
   const invTotal = useMemo(() => {
@@ -168,11 +216,12 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
         <div className="p-10 text-center text-sm text-slate-400">조건에 해당하는 재고가 없습니다.</div>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
             <Kpi icon={<Boxes size={16} />} label="점재고 합계 (선택 매장)" value={num(d.kpis.jaego)} />
             <Kpi icon={<Warehouse size={16} />} label="창고(허브) 합계" value={num(d.kpis.hub)} />
-            <Kpi icon={<Package size={16} />} label="옵션 수 (barcode)" value={num(d.kpis.options)} />
-            <Kpi icon={<Tags size={16} />} label="상품 수 (goods)" value={num(d.kpis.goods)} />
+            <Kpi icon={<Palette size={16} />} label="컬러 SKU 수 (UID×컬러)" value={num(d.kpis.color_sku ?? 0)} />
+            <Kpi icon={<Grid2x2 size={16} />} label="바코드 SKU (옵션·barcode)" value={num(d.kpis.options)} />
+            <Kpi icon={<Tags size={16} />} label="상품 수 (UID·goods)" value={num(d.kpis.goods)} />
           </div>
 
           {(d.cats?.cat_top?.length || d.cats?.cat_large?.length || d.cats?.cat_medium?.length) ? (
@@ -180,6 +229,14 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
               <CatPie title="최상위카테고리 점재고 구성" data={d.cats?.cat_top ?? []} C={C} />
               <CatPie title="대카테고리 점재고 구성" data={d.cats?.cat_large ?? []} C={C} />
               <CatPie title="중카테고리 점재고 구성" data={d.cats?.cat_medium ?? []} C={C} />
+            </div>
+          ) : null}
+
+          {(d.cat_sku?.cat_top?.length || d.cat_sku?.cat_large?.length || d.cat_sku?.cat_medium?.length) ? (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <CatSkuTable title="최상위카테고리 SKU 수" rows={d.cat_sku?.cat_top ?? []} />
+              <CatSkuTable title="대카테고리 SKU 수" rows={d.cat_sku?.cat_large ?? []} />
+              <CatSkuTable title="중카테고리 SKU 수" rows={d.cat_sku?.cat_medium ?? []} />
             </div>
           ) : null}
 
@@ -205,6 +262,14 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
+            )}
+          </CardBody></Card>
+
+          <Card><CardBody>
+            <SectionTitle title="매장별 SKU 수 (컬러/바코드)" sub={`컬러SKU=distinct(UID×컬러) · 바코드SKU=distinct barcode(컬러×사이즈) · 점재고 보유 기준${onPick ? " · 행 클릭=매장 필터" : ""}`} />
+            {storeSkuRows.length === 0 ? <div className="flex h-[200px] items-center justify-center text-sm text-slate-400">표시할 매장 SKU가 없습니다.</div> : (
+              <DataGrid key={`ssku-${storeSkuRows.length}`} rows={storeSkuRows} columns={storeSkuCols} dark={dark}
+                onCellClicked={onStoreSkuClick} height={Math.min(720, 96 + (storeSkuRows.length + 1) * 34)} />
             )}
           </CardBody></Card>
 
