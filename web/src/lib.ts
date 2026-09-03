@@ -46,6 +46,7 @@ export type Filters = {
   cat_top: string[];
   cat_large: string[];
   cat_medium: string[];
+  concept: string[]; // 마케팅 컨셉(걸즈/영/포멀/킥스/뷰티/잡화/포우먼/기타)
   md: string[];
   goods: string; // UID 다중 입력(원문) — 쉼표/공백/줄바꿈 구분
   name_like: string; // 상품명 부분일치(대소문자 무시). 예: ACG
@@ -77,6 +78,7 @@ export function toQuery(f: Filters, opts: { withDate?: boolean } = {}): string {
   multi("cat_top", f.cat_top);
   multi("cat_large", f.cat_large);
   multi("cat_medium", f.cat_medium);
+  multi("concept", f.concept);
   multi("md", f.md);
   parseUids(f.goods).forEach((g) => p.append("goods", String(g)));
   if (f.name_like && f.name_like.trim()) p.append("name_like", f.name_like.trim());
@@ -87,7 +89,7 @@ export function toQuery(f: Filters, opts: { withDate?: boolean } = {}): string {
 // 빈 필터 기본값
 export function emptyFilters(dateFrom: string, dateTo: string): Filters {
   return { date_from: dateFrom, date_to: dateTo, biz: [], type: [], store: [], brand: [], brand_ex: [],
-    cat_top: [], cat_large: [], cat_medium: [], md: [], goods: "", name_like: "", running: false, gran: "day" };
+    cat_top: [], cat_large: [], cat_medium: [], concept: [], md: [], goods: "", name_like: "", running: false, gran: "day" };
 }
 
 export const api = {

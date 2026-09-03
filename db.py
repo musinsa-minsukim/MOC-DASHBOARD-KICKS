@@ -215,6 +215,41 @@ def apply_running_flag(df):
 
 
 # ---------------------------------------------------------------------------
+# 컨셉(concept) — team.marketing.offline_page0_dim_concept (goods_no→concept, 1:1).
+#   값: 걸즈/영/포멀/킥스/뷰티/잡화/포우먼/기타. 판매·재고 전 탭 필터 및 비중 차원.
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def _concept_by_goods() -> dict:
+    """goods_no → concept. 오프라인 판매 이력 goods로 한정(메모리 절약)."""
+    try:
+        d = run_df(r"""
+          WITH sold AS (
+            SELECT DISTINCT CAST(oo.goods_no AS BIGINT) gno
+            FROM ocmp.moss.order_option oo JOIN ocmp.moss.order_master om ON om.order_id = oo.order_id
+            WHERE om.dummy_order = 0
+          )
+          SELECT CAST(c.goods_no AS BIGINT) AS goods_no, c.concept
+          FROM team.marketing.offline_page0_dim_concept c
+          JOIN sold s ON s.gno = CAST(c.goods_no AS BIGINT)
+          WHERE c.concept IS NOT NULL AND c.concept <> ''
+        """)
+        return {int(g): str(v) for g, v in zip(d["goods_no"], d["concept"])}
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("concept 매핑 조회 실패(concept 생략): %s", e)
+        return {}
+
+
+def apply_concept(df):
+    """goods_no 가진 df에 concept 컬럼 부여(마케팅 컨셉 dim). 미매핑은 '미매핑'."""
+    if df is None or "goods_no" not in getattr(df, "columns", []):
+        return df
+    cm = _concept_by_goods()
+    df["concept"] = df["goods_no"].map(cm).fillna("미매핑") if cm else "미매핑"
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 판매 fact (MOSS) — 외국인 매출 포함
 # ---------------------------------------------------------------------------
 def sales_latest_ts() -> str | None:
@@ -333,6 +368,7 @@ def fetch_sales(since: str | None = None) -> pd.DataFrame:
     df["off_md_id"] = df["off_md_id"].fillna("").astype(str)
     df = apply_category_override(df)   # 크록스 지비츠(정상가 0~25900) Shoes→Acc 등 카탈로그 오탐 보정
     df = apply_running_flag(df)        # is_running: RUN 매장 취급 신발=러닝화
+    df = apply_concept(df)             # concept: 마케팅 컨셉 dim(걸즈/영/포멀/킥스/뷰티/잡화/포우먼/기타)
     # 쇼핑백(수베니어샵)은 순판매수량에서 제외 — qty=0 처리(매출 gmv·정상가 등은 유지). 전 지표/탭 일관 반영.
     df.loc[df["brand_nm"] == "수베니어샵", "qty"] = 0.0
     return df  # concept는 app에서 load_concept_map으로 매핑(뷰 불안정 분리)
@@ -428,6 +464,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
         df[c] = df[c].fillna("")
     df = apply_category_override(df)   # 크록스 지비츠(정상가 0~25900) Shoes→Acc 등 카탈로그 오탐 보정
     df = apply_running_flag(df)        # is_running: RUN 매장 취급 신발=러닝화
+    df = apply_concept(df)             # concept: 마케팅 컨셉 dim(걸즈/영/포멀/킥스/뷰티/잡화/포우먼/기타)
     df.loc[df["brand_nm"] == "수베니어샵", "qty"] = 0.0
     return df[df["sales_date"].notna()]
 
@@ -1478,8 +1515,7 @@ def load_inventory_pivot() -> pd.DataFrame:
     df["brand_id"] = df["brand_id"].fillna("").astype(str)
     df = apply_category_override(df)   # 크록스 지비츠(정상가 0~25900) Shoes→Acc 등 카탈로그 오탐 보정
     df = apply_running_flag(df)        # is_running: RUN 매장 취급 신발=러닝화
-    _cm = load_concept_map()
-    df["concept"] = [_cm.get((c, b), "미지정") for c, b in zip(df["company_id"], df["brand_id"])]
+    df = apply_concept(df)             # concept: 마케팅 컨셉 dim(걸즈/영/포멀/킥스/뷰티/잡화/포우먼/기타)
     qty_cols = store_cols + ["점재고합계"] + HUB_COLS + ["허브합계"]
     for c in qty_cols:
         df[c] = pd.to_numeric(df[c]).fillna(0.0)

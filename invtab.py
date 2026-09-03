@@ -101,6 +101,8 @@ def _prep(f):
     for col in ("cat_top", "cat_large", "cat_medium"):
         if f.get(col) and col in df.columns:
             df = df[df[col].isin(f[col])]
+    if f.get("concept") and "concept" in df.columns:   # 마케팅 컨셉 필터
+        df = df[df["concept"].isin(f["concept"])]
     if f.get("md") and "off_md_id" in df.columns:
         df = df[df["off_md_id"].isin(f["md"])]
     if f.get("goods"):

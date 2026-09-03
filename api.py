@@ -110,6 +110,7 @@ class LoginBody(BaseModel):
 _IN_COLS = {
     "biz": "business_type", "type": "shop_type", "store": "store_name", "brand": "brand_nm",
     "cat_top": "cat_top", "cat_large": "cat_large", "cat_medium": "cat_medium", "md": "off_md_id",
+    "concept": "concept",
 }
 
 
@@ -121,11 +122,12 @@ def get_filters(
     cat_medium: list[str] = Query(default=[]), md: list[str] = Query(default=[]),
     goods: list[int] = Query(default=[]), name_like: str | None = None,
     brand_ex: list[str] = Query(default=[]), running: int | None = None,
+    concept: list[str] = Query(default=[]),
 ) -> dict:
     return {"date_from": date_from, "date_to": date_to, "biz": biz, "type": type,
             "store": store, "brand": brand, "cat_top": cat_top, "cat_large": cat_large,
             "cat_medium": cat_medium, "md": md, "goods": goods, "name_like": name_like,
-            "brand_ex": brand_ex, "running": running}
+            "brand_ex": brand_ex, "running": running, "concept": concept}
 
 
 def build_where(f: dict):
@@ -447,6 +449,10 @@ def meta(_: str = Depends(require_user), __: None = Depends(require_ready)):
                           UNION ALL SELECT 'cat_large', cat_large FROM sales WHERE cat_large IS NOT NULL GROUP BY 1,2
                           UNION ALL SELECT 'cat_medium', cat_medium FROM sales WHERE cat_medium IS NOT NULL GROUP BY 1,2""")
     md = store.query("SELECT DISTINCT off_md_id FROM sales WHERE off_md_id <> '' ORDER BY 1")
+    try:
+        concepts = store.query("SELECT DISTINCT concept FROM sales WHERE concept IS NOT NULL AND concept <> '' ORDER BY 1")["concept"].tolist()
+    except Exception:
+        concepts = []   # 캐시에 concept 열이 아직 없으면(재적재 전) 빈 목록 → 필터 UI 미표시
     return {
         "date_min": str(rng["lo"].iloc[0]), "date_max": str(rng["hi"].iloc[0]),
         "stores": stores.to_dict(orient="records"),
@@ -457,6 +463,7 @@ def meta(_: str = Depends(require_user), __: None = Depends(require_ready)):
         "cat_large": sorted(cats[cats.k == "cat_large"]["v"].tolist()),
         "cat_medium": sorted(cats[cats.k == "cat_medium"]["v"].tolist()),
         "md": md["off_md_id"].tolist(),
+        "concepts": concepts,
     }
 
 
@@ -552,7 +559,8 @@ def trend(f: dict = Depends(get_filters), gran: str = "day", split: str | None =
 def by_dim(dim: str, f: dict = Depends(get_filters), limit: int = 100,
            _: str = Depends(require_user), __: None = Depends(require_ready)):
     col = {"store": "store_name", "brand": "brand_nm", "cat_top": "cat_top",
-           "cat_large": "cat_large", "cat_medium": "cat_medium", "business": "business_type"}.get(dim)
+           "cat_large": "cat_large", "cat_medium": "cat_medium", "business": "business_type",
+           "concept": "concept"}.get(dim)
     if not col:
         raise HTTPException(status_code=400, detail=f"unknown dim: {dim}")
     where, params = build_where(f)
@@ -1009,7 +1017,7 @@ def _sales_option_where(f: dict):
         cl.append("so.sales_date < CAST(? AS DATE) + INTERVAL 1 DAY"); pr.append(f["date_to"])
     for key, col in (("biz", "business_type"), ("type", "shop_type"), ("store", "store_name"),
                      ("brand", "brand_nm"), ("cat_top", "cat_top"), ("cat_large", "cat_large"),
-                     ("cat_medium", "cat_medium"), ("md", "off_md_id")):
+                     ("cat_medium", "cat_medium"), ("md", "off_md_id"), ("concept", "concept")):
         vals = f.get(key)
         if vals:
             cl.append(f"so.{col} IN ({','.join(['?'] * len(vals))})"); pr += list(vals)

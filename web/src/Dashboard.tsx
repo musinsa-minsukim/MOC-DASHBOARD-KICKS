@@ -344,6 +344,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   const [byBrand, setByBrand] = useState<any[]>([]);
   const [catTop, setCatTop] = useState<any[]>([]);
   const [catMed, setCatMed] = useState<any[]>([]);
+  const [conceptRows, setConcept] = useState<any[]>([]);
   const [brands, setBrands] = useState<any[]>([]);
   const [brandSC, setBrandSC] = useState<string[]>([]);
   const [goods, setGoods] = useState<any[]>([]);
@@ -376,6 +377,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
     const qNoStore = toQuery({ ...f, store: [] });
     const qNoBrand = toQuery({ ...f, brand: [] });
     const qNoCat = toQuery({ ...f, cat_top: [] });
+    const qNoConcept = toQuery({ ...f, concept: [] });
     Promise.allSettled([
       api.summary(qs), api.summary(prevQs), api.trend(tq),
       api.by("store", qNoStore, 100), api.by("business", qs), api.by("brand", qNoBrand, 30),
@@ -384,6 +386,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       api.aov(qs), api.aov(prevQs),
       api.hourly(qs),
       api.footfall(qs),
+      api.by("concept", qNoConcept, 100),
     ]).then((res) => {
       if (!alive) return;
       const val = (i: number) => (res[i].status === "fulfilled" ? (res[i] as any).value : undefined);
@@ -395,6 +398,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       setAov(val(10) ?? null); setAovPrev(val(11) ?? null);
       setHourly(val(12) ?? []);
       setFootfall(val(13) ?? null);
+      setConcept(val(14) ?? []);
       const failed = res.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
       if (failed) setError(failed.reason?.message || "일부 데이터를 불러오지 못했습니다");
     }).finally(() => alive && setLoading(false));
@@ -438,6 +442,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
     return top;
   }, [catMed]);
   const catTopPie = useMemo(() => catTop.filter((c) => c.gmv > 0).map((c) => ({ name: c.name, value: c.gmv })), [catTop]);
+  const conceptPie = useMemo(() => conceptRows.filter((c) => c.gmv > 0).map((c) => ({ name: c.name, value: c.gmv })), [conceptRows]);
   const hourlyData = useMemo(
     () => hourly.map((h: any) => ({ hour: h.hour, dom: Math.max(0, (h.gmv || 0) - (h.foreign_gmv || 0)), fgn: Math.max(0, h.foreign_gmv || 0), gmv: h.gmv || 0, receipts: h.receipts || 0 })),
     [hourly]
@@ -643,6 +648,13 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
         <Donut title="최상위 카테 비중" sub="GMV" rows={catTopPie} C={C} pickKey="cat_top" onPick={onPick} active={f.cat_top} right={<SectionStat cur={cur} byBiz={byBiz} />} />
         <Donut title="중카테 비중" sub="GMV · Top 10 + 기타" rows={catMedTop} C={C} right={<SectionStat cur={cur} byBiz={byBiz} />} />
       </div>
+
+      {/* ── 컨셉 ── */}
+      {conceptPie.length > 0 && (
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          <Donut title="컨셉 비중" sub="GMV · 걸즈/영/포멀/킥스/뷰티/잡화/포우먼" rows={conceptPie} C={C} pickKey="concept" onPick={onPick} active={f.concept} right={<SectionStat cur={cur} byBiz={byBiz} />} />
+        </div>
+      )}
 
       {/* ── 상품 ── */}
       <Card>
