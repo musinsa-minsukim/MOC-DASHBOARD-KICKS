@@ -176,8 +176,9 @@ def _cat_pies(df, top_n=8):
     return out
 
 
-def _store_move_skus(vis) -> dict:
-    """선택 매장 store_moves(STO 이동중) → {brand_nm: {'in': 입고예정SKU, 'out': 출고예정SKU}} (컬러-SKU distinct).
+def _store_move_skus(vis, instore_keys=None) -> dict:
+    """선택 매장 store_moves(STO 이동중) → {brand_nm: {'in': 신규입고SKU, 'fillup': 필업SKU, 'out': 출고예정SKU}}.
+       입고예정은 '신규'(현재 매장에 없는 컬러-SKU)만 산정 — 이미 있는 SKU 보충(필업)은 제외.
        color_key = option 파싱(_color_of; 매입 size-only→UID:goods). 브랜드는 goods_master 매핑."""
     try:
         mv = store.get_store_moves()
@@ -188,6 +189,7 @@ def _store_move_skus(vis) -> dict:
     mv = mv[mv["store_name"].isin(vis)]
     if mv.empty:
         return {}
+    instore_keys = instore_keys or set()
     gn = mv["goods_no"].astype("int64")
     colors = mv["option"].map(_color_of)
     ck = [f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors)]
@@ -198,11 +200,15 @@ def _store_move_skus(vis) -> dict:
         bmap = {}
     brands = [bmap.get(int(g), "(미상)") or "(미상)" for g in gn]
     m = mv.assign(__ck=ck, __brand=brands)
-    inb = m[m["in_qty"] > 0].groupby("__brand")["__ck"].nunique()
+    inrows = m[m["in_qty"] > 0]
+    newin = inrows[~inrows["__ck"].isin(instore_keys)]      # 신규(현 매장 미보유)
+    fill = inrows[inrows["__ck"].isin(instore_keys)]        # 필업(기존 보유 보충)
+    newb = newin.groupby("__brand")["__ck"].nunique()
+    fillb = fill.groupby("__brand")["__ck"].nunique()
     otb = m[m["out_qty"] > 0].groupby("__brand")["__ck"].nunique()
     out = {}
-    for b in set(inb.index) | set(otb.index):
-        out[b] = {"in": int(inb.get(b, 0)), "out": int(otb.get(b, 0))}
+    for b in set(newb.index) | set(fillb.index) | set(otb.index):
+        out[b] = {"in": int(newb.get(b, 0)), "fillup": int(fillb.get(b, 0)), "out": int(otb.get(b, 0))}
     return out
 
 
@@ -219,7 +225,8 @@ def _brand_stock(df, vis, top_n=None):
                                       uid=("goods_no", "nunique"))
     bkeys = _broken_keys(df, df["__jaego"] > 0)   # 선택매장 점재고 기준 브로큰 컬러-SKU
     brk = ins[ins["__color_key"].isin(bkeys)].groupby("brand_nm")["__color_key"].nunique()
-    moves = _store_move_skus(vis)                 # 브랜드별 입고예정/출고예정(STO 이동중)
+    instore_keys = set(ins["__color_key"])        # 현재 매장 보유 컬러-SKU(필업 판정용)
+    moves = _store_move_skus(vis, instore_keys)   # 브랜드별 입고(신규)/필업/출고예정(STO 이동중)
     rows = []
     for brand, row in piv.iterrows():
         wt = float(row.get("위탁", 0.0)); mi = float(row.get("매입", 0.0))
@@ -231,14 +238,14 @@ def _brand_stock(df, vis, top_n=None):
         color_sku = int(s["color_sku"]) if s is not None else 0
         broken_sku = int(brk.get(brand, 0))
         mv = moves.get(brand, {})
-        in_sku = int(mv.get("in", 0)); out_sku = int(mv.get("out", 0))
+        in_sku = int(mv.get("in", 0)); fillup_sku = int(mv.get("fillup", 0)); out_sku = int(mv.get("out", 0))
         rows.append({"name": (str(brand) or "(미매칭)"), "위탁": _f(wt), "매입": _f(mi), "기타": _f(etc),
                      "total": _f(total), "share": round(total / grand * 100, 1) if grand else 0.0,
                      "color_sku": color_sku,
                      "barcode_sku": int(s["barcode_sku"]) if s is not None else 0,
                      "uid": int(s["uid"]) if s is not None else 0,
-                     "broken_sku": broken_sku, "in_sku": in_sku, "out_sku": out_sku,
-                     # TTL = 마감정상(컬러SKU) + 입고예정 − 출고예정 − 브로큰
+                     "broken_sku": broken_sku, "in_sku": in_sku, "fillup_sku": fillup_sku, "out_sku": out_sku,
+                     # TTL = 마감정상(컬러SKU) + 신규입고예정 − 출고예정 − 브로큰 (필업은 신규 아님 → 제외)
                      "ttl_sku": color_sku + in_sku - out_sku - broken_sku})
     rows.sort(key=lambda x: -x["total"])
     return rows if top_n is None else rows[:top_n]
