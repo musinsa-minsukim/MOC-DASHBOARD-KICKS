@@ -144,8 +144,8 @@ def _cat_pies(df, top_n=8):
     return out
 
 
-def _brand_stock(df, vis, top_n=20):
-    """브랜드별 점재고(선택 매장) — 사업구분(위탁/매입/기타) 스택 + 전체 대비 비중. 상위 top_n.
+def _brand_stock(df, vis, top_n=None):
+    """브랜드별 점재고(선택 매장) — 사업구분(위탁/매입/기타) 스택 + 전체 대비 비중. 전체 브랜드(top_n=None).
        매장별 재고수량 차트와 동일 스키마({name,위탁,매입,기타,total}) + share + 컬러SKU/바코드SKU."""
     if not vis or df.empty:
         return []
@@ -169,7 +169,32 @@ def _brand_stock(df, vis, top_n=20):
                      "barcode_sku": int(s["barcode_sku"]) if s is not None else 0,
                      "uid": int(s["uid"]) if s is not None else 0})
     rows.sort(key=lambda x: -x["total"])
-    return rows[:top_n]
+    return rows if top_n is None else rows[:top_n]
+
+
+def brand_csv_rows(f=None):
+    """브랜드별 점재고 CSV — **매장 분리(long)**: (브랜드 × 매장)당 1행.
+       열 = 브랜드·사업구분·매장 + 점재고수량·UID수·컬러SKU·바코드SKU. 재고 0인 (브랜드×매장)은 제외."""
+    df, vis, hubcols, hcol = _prep(f)
+    header = ["브랜드", "사업구분", "매장", "점재고수량", "UID수", "컬러SKU", "바코드SKU"]
+    if df.empty or not vis:
+        return header, []
+    out = []
+    for s in vis:                                   # 각 매장 컬럼(그 매장 점재고 보유 행)별 브랜드 집계
+        sub = df[df[s].fillna(0) > 0]
+        if sub.empty:
+            continue
+        agg = sub.groupby(["brand_nm", "business_type"]).agg(
+            qty=(s, "sum"), uid=("goods_no", "nunique"),
+            color=("__color_key", "nunique"), bc=("barcode", "nunique"))
+        for (brand, biz), r in agg.iterrows():
+            q = int(_f(r["qty"]))
+            if q <= 0:
+                continue
+            out.append([str(brand) or "(미매칭)", str(biz), s, q,
+                        int(r["uid"]), int(r["color"]), int(r["bc"])])
+    out.sort(key=lambda x: (x[0], -x[3]))            # 브랜드명, 매장 점재고 내림차순
+    return header, out
 
 
 def _cat_sku(df, top_n=12):

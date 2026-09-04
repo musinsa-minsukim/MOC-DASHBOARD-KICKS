@@ -811,6 +811,21 @@ def inventory_csv(f: dict = Depends(get_filters),
                     headers={"Content-Disposition": 'attachment; filename="offline_inventory_long.csv"'})
 
 
+@app.get("/api/inventory/brands.csv")
+def inventory_brands_csv(f: dict = Depends(get_filters),
+                         _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """브랜드별 점재고 CSV — 매장 분리(long): (브랜드 × 매장)당 점재고수량·UID·컬러SKU·바코드SKU."""
+    import io, csv
+    header, rows = invtab.brand_csv_rows(f)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header)
+    w.writerows(rows)
+    data = ("﻿" + buf.getvalue()).encode("utf-8")
+    return Response(content=data, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="inventory_by_brand_store.csv"'})
+
+
 @app.get("/api/customer")
 def customer(date_from: str | None = None, date_to: str | None = None,
              stores: list[str] = Query(default=[], alias="store"), type: list[str] = Query(default=[]),

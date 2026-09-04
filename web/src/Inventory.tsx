@@ -106,6 +106,13 @@ async function invCsv(qs: string) {
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "offline_inventory_long.csv"; a.click(); URL.revokeObjectURL(a.href);
 }
 
+async function brandCsv(qs: string) {
+  const r = await fetch("/api/inventory/brands.csv" + qs, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (!r.ok) { alert("CSV 실패 (" + r.status + ")"); return; }
+  const blob = await r.blob();
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "inventory_by_brand_store.csv"; a.click(); URL.revokeObjectURL(a.href);
+}
+
 export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta; dark: boolean; filters: Filters; onPick?: (k: keyof Filters, v: string) => void }) {
   void meta;
   const activeStores = filters.store || [];
@@ -155,12 +162,15 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     if (!brandRows.length) return [];
     const s = (k: string) => brandRows.reduce((a: number, r: any) => a + (Number(r[k]) || 0), 0);
     const ss = s("share"), gs = s("gmv_share");
-    return [{ name: "합계(상위)", total: s("total"), share: ss, gmv: s("gmv"), gmv_share: gs, over_index: gs ? +(ss / gs).toFixed(2) : null }];
+    // 컬러/바코드 SKU는 goods_no가 브랜드에 1:1이라 브랜드 간 겹침 없음 → 합산이 곧 전체 distinct.
+    return [{ name: "합계", total: s("total"), share: ss, gmv: s("gmv"), gmv_share: gs,
+              over_index: gs ? +(ss / gs).toFixed(2) : null,
+              color_sku: s("color_sku"), barcode_sku: s("barcode_sku"), uid: s("uid") }];
   }, [brandRows]);
   const brandTblCols = useMemo(() => [
     colText("name", "브랜드", {
       pinned: "left", minWidth: 150,
-      cellStyle: (p: any): any => (p.data?.name && p.data?.name !== "합계(상위)" && onPick ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : { fontWeight: 700 }),
+      cellStyle: (p: any): any => (p.data?.name && p.data?.name !== "합계" && onPick ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : { fontWeight: 700 }),
     }),
     colNum("total", "점재고", "num", { minWidth: 90 }),
     colNum("color_sku", "컬러SKU", "int", { minWidth: 84, headerTooltip: "distinct(UID×컬러) · 점재고 보유 기준" }),
@@ -199,7 +209,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     return [t];
   }, [d, storeCols, hubcols]);
   const invGridKey = useMemo(() => `${(d?.rows?.length) || 0}|${Math.round(invTotal[0]?.["점재고합계"] || 0)}|${Math.round(invTotal[0]?.["허브합계"] || 0)}`, [d, invTotal]);
-  const onBrandClick = (e: any) => { if (e?.node?.rowPinned || !pickBrand) return; const nm = e?.data?.name; if (nm && nm !== "합계(상위)") pickBrand({ name: nm }); };
+  const onBrandClick = (e: any) => { if (e?.node?.rowPinned || !pickBrand) return; const nm = e?.data?.name; if (nm && nm !== "합계") pickBrand({ name: nm }); };
 
   return (
     <div className="space-y-5">
@@ -274,7 +284,8 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
           </CardBody></Card>
 
           <Card><CardBody>
-            <SectionTitle title="브랜드별 점재고 · GMV · 재고 과다" sub={`상위 ${num(brandRows.length)}개 · 재고=현재 점재고(선택 매장) · GMV/SOB=최근 28일${d.brand_gmv_window ? ` (${d.brand_gmv_window})` : ""} · 재고/매출배수>1=재고과다${onPick ? " · 행 클릭=브랜드 필터" : ""}`} />
+            <SectionTitle title="브랜드별 점재고 · GMV · 재고 과다" sub={`전체 ${num(brandRows.length)}개 브랜드 · 재고=현재 점재고(선택 매장) · GMV/SOB=최근 28일${d.brand_gmv_window ? ` (${d.brand_gmv_window})` : ""} · 재고/매출배수>1=재고과다${onPick ? " · 행 클릭=브랜드 필터" : ""}`}
+              right={<button onClick={() => brandCsv(qs)} className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-500"><Download size={14} /> CSV (매장 분리)</button>} />
             {brandRows.length === 0 ? <div className="flex h-[200px] items-center justify-center text-sm text-slate-400">표시할 브랜드 점재고가 없습니다.</div> : (
               <DataGrid key={brandGridKey} rows={brandRows} columns={brandTblCols} dark={dark} pinnedTop={brandTotal}
                 onCellClicked={onBrandClick} height={Math.min(720, 96 + (brandRows.length + 1) * 34)} />

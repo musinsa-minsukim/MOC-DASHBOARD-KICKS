@@ -649,12 +649,10 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
         <Donut title="중카테 비중" sub="GMV · Top 10 + 기타" rows={catMedTop} C={C} right={<SectionStat cur={cur} byBiz={byBiz} />} />
       </div>
 
-      {/* ── 컨셉 ── */}
-      {conceptPie.length > 0 && (
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-          <Donut title="컨셉 비중" sub="GMV · 걸즈/영/포멀/킥스/뷰티/잡화/포우먼" rows={conceptPie} C={C} pickKey="concept" onPick={onPick} active={f.concept} right={<SectionStat cur={cur} byBiz={byBiz} />} />
-        </div>
-      )}
+      {/* ── 컨셉 ── (항상 렌더: 데이터 없으면 '데이터 없음' 표시 → 일시적 오류에도 카드가 사라지지 않음) */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <Donut title="컨셉 비중" sub="GMV · 걸즈/영/포멀/킥스/뷰티/잡화/포우먼" rows={conceptPie} C={C} pickKey="concept" onPick={onPick} active={f.concept} right={<SectionStat cur={cur} byBiz={byBiz} />} />
+      </div>
 
       {/* ── 상품 ── */}
       <Card>
