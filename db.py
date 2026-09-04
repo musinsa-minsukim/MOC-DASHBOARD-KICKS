@@ -113,6 +113,7 @@ dim_store AS (
 _CAT_OVERRIDE_ACC = ("Acc", "기타", "기타")   # (cat_top, cat_large, cat_medium)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def _crocs_acc_goods() -> frozenset:
     """카테고리를 Acc로 보정할 goods_no 집합 = 크록스(bizest∪editorial 브랜드) AND 정상가 0~25,900."""
     q = r"""
@@ -169,6 +170,7 @@ _RUN_APPAREL_RE = re.compile(
     r"베이스레이어|스포츠\s*브라|브라\b|헤드\s*밴드|헤드밴드|스커트|우븐|워머", re.I)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def _running_shoe_goods() -> frozenset:
     """러닝화 goods_no 집합 = RUN(shop_no=90) 취급 신발(cat_top=Shoes) − 의류/잡화 이름."""
     q = r"""

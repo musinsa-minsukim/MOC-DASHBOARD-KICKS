@@ -27,7 +27,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 50        # 상한(실제 시간 아님). goods_master(6M) 등 스냅샷 다수 — 콜드 여유
+    timeout-minutes: 120       # 상한. full(sales_option 옵션단위 전이력 포함)은 1회성 무거운 빌드 — 넉넉히
     steps:
       - name: Checkout
         uses: actions/checkout@v4
