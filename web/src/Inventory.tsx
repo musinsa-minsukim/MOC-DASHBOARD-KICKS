@@ -146,6 +146,10 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     colNum("goods_no", "상품번호", "int", { minWidth: 90, valueFormatter: (p: any) => String(p.value ?? "") }),
     colText("style_no", "스타일넘버", { minWidth: 118 }),
     colText("goods_opt", "옵션", { minWidth: 80 }),
+    colText("브로큰", "브로큰", {
+      minWidth: 72, headerTooltip: "이 상품컬러(컬러-SKU)가 사이즈 브로큰이면 Y · 사이즈 3+ 중 구색률<50%",
+      cellStyle: (p: any): any => (p.value === "Y" ? { color: dark ? "#f87171" : "#dc2626", fontWeight: 700, textAlign: "center" } : { textAlign: "center" }),
+    }),
     colText("business_type", "사업구분", { minWidth: 78 }),
     colText("cat_top", "최상위카테", { minWidth: 92 }),
     colText("cat_large", "대카테", { minWidth: 92 }),
@@ -156,7 +160,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     ...storeCols.map((s) => colNum(s, s, "num", { minWidth: 86 })),   // 점별(매장) 컬럼
     ...hubcols.map((h) => colNum(h, h, "num")),
     colNum("허브합계", "허브합계", "num"),
-  ], [storeCols.join(","), hubcols.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [storeCols.join(","), hubcols.join(","), dark]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 브랜드별 점재고·GMV·SOB 표 (그래프 대체) — 재고 과다 판단
   const brandRows: any[] = d?.brand_stock ?? [];
@@ -236,6 +240,12 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
             <Kpi icon={<Palette size={16} />} label="컬러 SKU 수 (UID×컬러)" value={num(d.kpis.color_sku ?? 0)} />
             <Kpi icon={<Grid2x2 size={16} />} label="바코드 SKU (옵션·barcode)" value={num(d.kpis.options)} />
             <Kpi icon={<Tags size={16} />} label="상품 수 (UID·goods)" value={num(d.kpis.goods)} />
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs leading-relaxed text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-400">
+            <span className="font-semibold text-slate-600 dark:text-slate-300">SKU 산정 기준</span> · <b>컬러SKU</b> = distinct(UID × 컬러) · <b>바코드SKU</b> = distinct 바코드(컬러 × 사이즈) · 옵션명 파싱은 <code className="rounded bg-slate-200/60 px-1 dark:bg-slate-700/60">컬러^사이즈</code>(예: 블랙^M), 사이즈만이면 UID=1컬러로 간주. 컬러/바코드/브로큰 SKU는 모두 <b>점재고 보유(선택 매장)</b> 기준.
+            <br />
+            <span className="font-semibold text-rose-600 dark:text-rose-400">브로큰 SKU 기준</span> · 사이즈 <b>3개 이상</b> 보유한 컬러-SKU 중 <b>구색률(매장 잔존 사이즈 ÷ 전체 보유 사이즈) &lt; 50%</b> 인 것 (사이즈 절반 이상 빠짐). 단일·2사이즈 상품(FREE·액세서리 등)은 제외. 상품옵션별 재고 표의 <b>브로큰=Y</b>는 그 상품컬러가 브로큰임을 뜻함.
           </div>
 
           {(d.cats?.cat_top?.length || d.cats?.cat_large?.length || d.cats?.cat_medium?.length) ? (

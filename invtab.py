@@ -316,8 +316,11 @@ def compute(f=None, limit=300):
 
     # 상품·옵션 표 (재고순 상위 limit) — ⚠️ to_dict로 실제 컬럼명(한글 매장명 포함) 보존
     # (itertuples는 밑줄/한글/공백 컬럼명을 _0..으로 renames → 점재고/허브/매장값이 0으로 깨짐)
+    # 브로큰 여부(컬러-SKU 단위, 선택매장 점재고 기준) — 옵션 행마다 그 상품컬러가 브로큰이면 'Y'.
+    _bkeys = _broken_keys(df, df["__jaego"] > 0)
+    df["브로큰"] = ["Y" if k in _bkeys else "" for k in df["__color_key"]]
     idcols = [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
-                          "cat_top", "cat_large", "cat_medium") if c in df.columns]
+                          "cat_top", "cat_large", "cat_medium", "브로큰") if c in df.columns]
     numcols = vis + hubcols + ["__jaego", "__hub"]
     # 점재고합계 → 허브합계 순 내림차순
     disp = df.sort_values(["__jaego", "__hub"], ascending=[False, False]).head(limit)
