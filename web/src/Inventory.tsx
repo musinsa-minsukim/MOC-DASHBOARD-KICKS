@@ -171,7 +171,8 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     // 컬러/바코드 SKU는 goods_no가 브랜드에 1:1이라 브랜드 간 겹침 없음 → 합산이 곧 전체 distinct.
     return [{ name: "합계", total: s("total"), share: ss, gmv: s("gmv"), gmv_share: gs,
               over_index: gs ? +(ss / gs).toFixed(2) : null,
-              color_sku: s("color_sku"), barcode_sku: s("barcode_sku"), uid: s("uid"), broken_sku: s("broken_sku") }];
+              color_sku: s("color_sku"), barcode_sku: s("barcode_sku"), uid: s("uid"), broken_sku: s("broken_sku"),
+              in_sku: s("in_sku"), out_sku: s("out_sku"), ttl_sku: s("ttl_sku") }];
   }, [brandRows]);
   const brandTblCols = useMemo(() => [
     colText("name", "브랜드", {
@@ -182,6 +183,9 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     colNum("color_sku", "컬러SKU", "int", { minWidth: 84, headerTooltip: "distinct(UID×컬러) · 점재고 보유 기준" }),
     colNum("barcode_sku", "바코드SKU", "int", { minWidth: 94, headerTooltip: "distinct barcode(컬러×사이즈) · 점재고 보유 기준" }),
     colNum("broken_sku", "브로큰SKU", "int", { minWidth: 92, headerTooltip: "사이즈 3+ 컬러-SKU 중 구색률<50%(매장 잔존 사이즈 ÷ 전체 보유 사이즈)" }),
+    colNum("in_sku", "입고예정", "int", { minWidth: 82, headerTooltip: "STO 창고→매장 이동중(입고 예정) 컬러-SKU" }),
+    colNum("out_sku", "출고예정", "int", { minWidth: 82, headerTooltip: "STO 매장→창고 반품 이동중(출고 예정) 컬러-SKU" }),
+    colNum("ttl_sku", "TTL SKU", "int", { minWidth: 88, headerTooltip: "마감정상(컬러SKU) + 입고예정 − 출고예정 − 브로큰" }),
     colNum("share", "재고비중", "num", { minWidth: 86, valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%" }),
     colNum("gmv", "GMV(28일)", "compact", { minWidth: 100 }),
     colNum("gmv_share", "SOB", "num", { minWidth: 82, headerTooltip: "Share of Business = 매출비중(최근28일 전체 GMV 대비)", valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%" }),
@@ -246,6 +250,8 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
             <span className="font-semibold text-slate-600 dark:text-slate-300">SKU 산정 기준</span> · <b>컬러SKU</b> = distinct(UID × 컬러) · <b>바코드SKU</b> = distinct 바코드(컬러 × 사이즈) · 옵션명 파싱은 <code className="rounded bg-slate-200/60 px-1 dark:bg-slate-700/60">컬러^사이즈</code>(예: 블랙^M), 사이즈만이면 UID=1컬러로 간주. 컬러/바코드/브로큰 SKU는 모두 <b>점재고 보유(선택 매장)</b> 기준.
             <br />
             <span className="font-semibold text-rose-600 dark:text-rose-400">브로큰 SKU 기준</span> · 사이즈 <b>3개 이상</b> 보유한 컬러-SKU 중 <b>구색률(매장 잔존 사이즈 ÷ 전체 보유 사이즈) &lt; 50%</b> 인 것 (사이즈 절반 이상 빠짐). 단일·2사이즈 상품(FREE·액세서리 등)은 제외. 상품옵션별 재고 표의 <b>브로큰=Y</b>는 그 상품컬러가 브로큰임을 뜻함.
+            <br />
+            <span className="font-semibold text-slate-600 dark:text-slate-300">브랜드 표 수급</span> · <b>입고예정</b>=STO 창고→매장 이동중(출고됐으나 매장 미입고), <b>출고예정</b>=매장→창고 반품 이동중 (매입 ERP + 위탁 SCM). <b>TTL SKU = 마감정상(컬러SKU) + 입고예정 − 출고예정 − 브로큰</b>. (누적·과대 방지 위해 '출고확정前'은 제외, 이동중만 반영)
           </div>
 
           {(d.cats?.cat_top?.length || d.cats?.cat_large?.length || d.cats?.cat_medium?.length) ? (

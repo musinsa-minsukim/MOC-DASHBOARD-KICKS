@@ -1559,3 +1559,103 @@ def load_inventory_store_long() -> pd.DataFrame:
     store_cols = [c for c in g.columns
                   if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계"} | set(HUB_COLS))]
     return g.melt(id_vars="goods_no", value_vars=store_cols, var_name="store_name", value_name="점재고")
+
+
+# ---------------------------------------------------------------------------
+# 매장 STO '이동중'(입고예정=창고→매장, 출고예정=매장→창고 반품) — 매입(ERP)+위탁(SCM).
+#   입고예정 = 이동중(출고확정 shipped − 매장입고확정 received, 양수). 출고예정 = 반품 이동중.
+#   ※ '출고확정前(요청)'은 누적값이라 제외(실측: 미출고 아닌 누적까지 잡혀 과대) — 이동중만 신뢰.
+#   매장코드: store-codes 스킬 매핑(shop_no→ERP (plant-lgort)쌍 + SCM storage_id).
+# ---------------------------------------------------------------------------
+# shop_no: (ERP (plant-lgort) pairs, ERP lgorts(=erp_inout_bound용), SCM storage_id 또는 None)
+STORE_MOVE_CODES = {
+    7:  ("'1000-3040','1700-3040'", "'3040'", 51),
+    8:  ("'1000-3050','1700-3045'", "'3050','3045'", 52),
+    25: ("'1000-3360','1700-3042'", "'3360','3042'", 53),
+    55: ("'1000-3160','1700-3039'", "'3160','3039'", 105),
+    67: ("'1000-3520','1700-3046'", "'3520','3046'", 130),
+    68: ("'1000-3530','1700-3043'", "'3530','3043'", 131),
+    82: ("'1000-3590','1700-3044'", "'3590','3044'", 137),
+    83: ("'1000-3580','1700-3041'", "'3580','3041'", 138),
+    88: ("'1000-3532','1700-3049'", "'3532','3049'", 146),
+    91: ("'1000-3650','1700-3050'", "'3650','3050'", 148),
+    98: ("'1000-3170','1700-3390'", "'3170','3390'", 154),
+    79: ("'1000-3055','1700-3038'", "'3055','3038'", 135),
+    89: ("'1000-3057','1700-3048'", "'3057','3048'", 147),
+    136:("'1000-3058','1700-3053'", "'3058','3053'", 197),
+    19: ("'1000-3134'", "'3134'", None),
+    86: ("'1000-3600','1700-3047'", "'3600','3047'", 145),
+}
+
+
+def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
+    """한 매장 이동중(입고예정 in_qty / 출고예정 out_qty)을 goods_no×option 단위로."""
+    scm_cte = ""
+    scm_union = ""
+    if scm is not None:
+        scm_cte = f"""
+        , spo AS (SELECT fk_sku_id, fk_product_option_id FROM (
+            SELECT fk_sku_id, fk_product_option_id, ROW_NUMBER() OVER (PARTITION BY fk_sku_id
+              ORDER BY CASE WHEN mapping_type='ACTIVE' THEN 0 ELSE 1 END, updated_at DESC) rn
+            FROM ocmp.scm_hub.sku_product_option) WHERE rn=1)
+        , scm AS (
+            SELECT CAST(p.product_no AS STRING) g, po.option_name o,
+              SUM(CASE WHEN sm.fk_destination_storage_id={scm} THEN GREATEST(smi.shipped_quantity-smi.received_quantity,0) ELSE 0 END) inq,
+              SUM(CASE WHEN sm.fk_source_storage_id={scm}      THEN GREATEST(smi.shipped_quantity-smi.received_quantity,0) ELSE 0 END) outq
+            FROM ocmp.scm_hub.stock_movement sm
+            JOIN ocmp.scm_hub.stock_movement_item smi ON smi.fk_stock_movement_id=sm._id AND smi.stock_movement_status<>'CANCELED'
+            LEFT JOIN spo ON spo.fk_sku_id=smi.fk_sku_id
+            LEFT JOIN ocmp.scm_hub.product_option po ON po._id=spo.fk_product_option_id
+            LEFT JOIN ocmp.scm_hub.product p ON p._id=po.fk_product_id
+            WHERE sm.fk_destination_storage_id={scm} OR sm.fk_source_storage_id={scm}
+            GROUP BY 1,2)"""
+        scm_union = "UNION ALL SELECT g, o, inq, outq FROM scm WHERE inq>0 OR outq>0"
+    return f"""
+    WITH oif_in AS (SELECT NULLIF(S_MATNR,'') g, OPTION o, SUM(CAST(MENGE AS DOUBLE)) shp
+        FROM pbo.moms.oif_sap_str WHERE CONCAT(WERKS,'-',GR_LGORT) IN ({pairs}) AND BWART='313'
+          AND (CANC IS NULL OR CANC='') GROUP BY 1,2),
+    rcv_in AS (SELECT NULLIF(zz_smatnr,'') g, zz_option o, SUM(CAST(menge AS DOUBLE)) rc
+        FROM musinsa.stock.erp_inout_bound WHERE lgort IN ({lgorts}) AND bwart='315' AND shkzg='S' GROUP BY 1,2),
+    erp_in AS (SELECT COALESCE(a.g,b.g) g, COALESCE(a.o,b.o) o,
+        GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc,0),0) inq, CAST(0 AS DOUBLE) outq
+        FROM oif_in a FULL OUTER JOIN rcv_in b ON a.g=b.g AND a.o=b.o),
+    erp_out AS (SELECT NULLIF(S_MATNR,'') g, OPTION o, CAST(0 AS DOUBLE) inq, GREATEST(SUM(CAST(MENGE AS DOUBLE)),0) outq
+        FROM pbo.moms.oif_sap_str WHERE CONCAT(WERKS,'-',GI_LGORT) IN ({pairs}) AND BWART='313'
+          AND (CANC IS NULL OR CANC='') GROUP BY 1,2){scm_cte}
+    SELECT g AS goods_no, o AS option, CAST(inq AS DOUBLE) AS in_qty, CAST(outq AS DOUBLE) AS out_qty FROM (
+        SELECT g, o, inq, outq FROM erp_in WHERE inq>0
+        UNION ALL SELECT g, o, inq, outq FROM erp_out WHERE outq>0
+        {scm_union}
+    ) WHERE g IS NOT NULL
+    """
+
+
+def fetch_store_moves() -> pd.DataFrame:
+    """전 매장 STO 이동중 → store_name × goods_no × color_key 별 입고예정(in_qty)·출고예정(out_qty).
+       색상=option 파싱(_running 없이 apply_category용 로직 재사용은 invtab에 있으므로 여기선 옵션 원본 유지)."""
+    import logging as _lg
+    sm = run_df("WITH " + DIM_STORE + " SELECT shop_no, store_name FROM dim_store")
+    name_by_shop = {int(r.shop_no): r.store_name for r in sm.itertuples()}
+    frames = []
+    for shop, (pairs, lgorts, scm) in STORE_MOVE_CODES.items():
+        nm = name_by_shop.get(shop)
+        if not nm:
+            continue
+        try:
+            d = run_df(_store_move_sql(pairs, lgorts, scm))
+        except Exception as e:
+            _lg.warning("store_moves %s(%s) 조회 실패: %s", nm, shop, str(e)[:150])
+            continue
+        if d is None or d.empty:
+            continue
+        d["store_name"] = nm
+        frames.append(d)
+    cols = ["store_name", "goods_no", "option", "in_qty", "out_qty"]
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    df = pd.concat(frames, ignore_index=True)
+    df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
+    df["option"] = df["option"].fillna("").astype(str)
+    for c in ("in_qty", "out_qty"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    return df[cols]
