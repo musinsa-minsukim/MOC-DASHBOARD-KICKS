@@ -876,6 +876,23 @@ def footfall(date_from: str | None = None, date_to: str | None = None,
                        "conversion": (tr / tv * 100) if tv else 0, "aov": (tg / tr) if tr else 0}}
 
 
+@app.get("/api/footfall/trend")
+def footfall_trend(date_from: str | None = None, date_to: str | None = None,
+                   stores: list[str] = Query(default=[], alias="store"), type: list[str] = Query(default=[]),
+                   gran: str = "day", _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """입객수 추이 — 일/주/월 버킷. 기간·매장·매장타입 필터(트래픽 기준). footfall 캐시 없으면 available=False."""
+    w, p = _traffic_where(date_from, date_to, stores, type)
+    bucket = {"week": "CAST(date_trunc('week', sales_date) AS DATE)",
+              "month": "CAST(date_trunc('month', sales_date) AS DATE)"}.get(gran, "CAST(sales_date AS DATE)")
+    try:
+        df = store.query(f"SELECT {bucket} AS bucket, CAST(sum(visitors) AS DOUBLE) visitors "
+                         f"FROM footfall{w} GROUP BY 1 ORDER BY 1", p)
+    except Exception:
+        return {"available": False, "rows": []}
+    return {"available": True,
+            "rows": [{"bucket": str(r.bucket)[:10], "visitors": _num(r.visitors)} for r in df.itertuples()]}
+
+
 @app.get("/api/customer/country")
 def customer_country(date_from: str | None = None, date_to: str | None = None,
                      stores: list[str] = Query(default=[], alias="store"), type: list[str] = Query(default=[]),

@@ -109,6 +109,7 @@ export const api = {
     req("/drill" + qs + (qs ? "&" : "?") + `level=${level}&limit=${limit}`),
   customer: (qs: string) => req("/customer" + qs),
   footfall: (qs: string) => req("/footfall" + qs),
+  footfallTrend: (qs: string) => req("/footfall/trend" + qs),
   customerCountry: (qs: string, limit = 20) =>
     req("/customer/country" + qs + (qs ? "&" : "?") + `limit=${limit}`),
   inventory: (qs: string) => req("/inventory" + qs),

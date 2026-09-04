@@ -75,6 +75,7 @@ export default function Customer({ meta, dark, filters, onPick }: { meta: Meta; 
   const [aov, setAov] = useState<any>(null);
   const [aovPrev, setAovPrev] = useState<any>(null);
   const [footfall, setFootfall] = useState<any>(null);
+  const [footTrend, setFootTrend] = useState<any>(null);
   const [country, setCountry] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -100,12 +101,13 @@ export default function Customer({ meta, dark, filters, onPick }: { meta: Meta; 
       api.by("store", qs, 100), api.customer(custQs),
       api.aov(qs), api.aov(prevQs),
       api.footfall(custQs), api.customerCountry(custQs, 15),
+      api.footfallTrend(custQs + (custQs ? "&" : "?") + "gran=" + f.gran),
     ]).then((res) => {
       if (!alive) return;
       const val = (i: number) => (res[i].status === "fulfilled" ? (res[i] as any).value : undefined);
       setCur(val(0) ?? null); setPrev(val(1) ?? null); setTrend(val(2) ?? []); setByStore(val(3) ?? []); setDemo(val(4) ?? null);
       setAov(val(5) ?? null); setAovPrev(val(6) ?? null);
-      setFootfall(val(7) ?? null); setCountry(val(8) ?? null);
+      setFootfall(val(7) ?? null); setCountry(val(8) ?? null); setFootTrend(val(9) ?? null);
       const failed = res.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
       if (failed) setError(failed.reason?.message || "일부 데이터를 불러오지 못했습니다");
     }).finally(() => alive && setLoading(false));
@@ -145,6 +147,26 @@ export default function Customer({ meta, dark, filters, onPick }: { meta: Meta; 
       <p className="-mt-2 text-[11px] text-slate-400 dark:text-slate-400">
         ※ 객단가 = 판매가 합 ÷ 영수증 수(주문 건수, 중복 제거). 기간·매장·매장타입·사업구분·브랜드·카테·내외국인 반영(상품 UID·MD 제외){aov ? ` · 내국인 ${num(aov.domestic.receipts)}건 / 외국인 ${num(aov.foreign.receipts)}건` : ""}
       </p>
+
+      <Card><CardBody>
+        <SectionTitle title="입객 추이" sub={`${granLabel} 단위 · 매장 입객수(footfall) · 기간·매장·매장타입 반영`} />
+        {!footTrend?.available || (footTrend.rows ?? []).length === 0 ? (
+          <div className="flex h-[280px] items-center justify-center text-sm text-slate-400">{footTrend && !footTrend.available ? "입객 데이터 준비 중 (다음 갱신 후 표시)" : "데이터 없음"}</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={280}>
+            <AreaChart data={footTrend.rows} margin={{ left: 8, right: 8, top: 4 }}>
+              <defs><linearGradient id="ff" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.bar} stopOpacity={0.35} /><stop offset="100%" stopColor={C.bar} stopOpacity={0} /></linearGradient></defs>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.grid} vertical={false} />
+              <XAxis dataKey="bucket" tick={<HolidayTick axisColor={C.axis} day={f.gran === "day"} format={(v: string) => String(v).slice(5)} />} tickLine={false} axisLine={false} minTickGap={24} />
+              <YAxis tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} width={48} />
+              <Tooltip formatter={(v: any) => [num(v as number), "입객수"]} labelStyle={{ color: C.ttFg }} contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }} />
+              <Area type="monotone" dataKey="visitors" stroke={C.bar} strokeWidth={2} fill="url(#ff)">
+                <LabelList position="top" content={trendLabel(footTrend.rows.length, compact, C.ttFg)} />
+              </Area>
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
+      </CardBody></Card>
 
       <Card><CardBody>
         <SectionTitle title="외국인(면세) 매출 추이" sub={`${granLabel} 단위`} />
