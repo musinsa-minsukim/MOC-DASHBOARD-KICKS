@@ -212,6 +212,22 @@ def _store_move_skus(vis, instore_keys=None) -> dict:
     return out
 
 
+def _move_incoming_keys(vis) -> set:
+    """선택 매장 store_moves 입고 이동중(in_qty>0) 컬러-SKU key 집합 (상품옵션 표 입고구분 태깅용)."""
+    try:
+        mv = store.get_store_moves()
+    except Exception:
+        return set()
+    if mv is None or mv.empty or not vis:
+        return set()
+    mv = mv[(mv["store_name"].isin(vis)) & (mv["in_qty"] > 0)]
+    if mv.empty:
+        return set()
+    gn = mv["goods_no"].astype("int64")
+    colors = mv["option"].map(_color_of)
+    return set(f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors))
+
+
 def _brand_stock(df, vis, top_n=None):
     """브랜드별 점재고(선택 매장) — 사업구분(위탁/매입/기타) 스택 + 전체 대비 비중. 전체 브랜드(top_n=None).
        매장별 재고수량 차트와 동일 스키마({name,위탁,매입,기타,total}) + share + 컬러SKU/바코드SKU."""
@@ -363,8 +379,13 @@ def compute(f=None, limit=300):
     # 브로큰 여부(컬러-SKU 단위, 선택매장 점재고 기준) — 옵션 행마다 그 상품컬러가 브로큰이면 'Y'.
     _bkeys = _broken_keys(df, df["__jaego"] > 0)
     df["브로큰"] = ["Y" if k in _bkeys else "" for k in df["__color_key"]]
+    # 입고구분(컬러-SKU 단위): 이동중 입고 있으면 매장 보유여부로 신규입고/필업, 없으면 공란(=필업X).
+    _inkeys = _move_incoming_keys(vis)
+    _instore = set(df.loc[df["__jaego"] > 0, "__color_key"])
+    df["입고구분"] = ["신규입고" if (k in _inkeys and k not in _instore)
+                     else ("필업" if k in _inkeys else "") for k in df["__color_key"]]
     idcols = [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
-                          "cat_top", "cat_large", "cat_medium", "브로큰") if c in df.columns]
+                          "cat_top", "cat_large", "cat_medium", "브로큰", "입고구분") if c in df.columns]
     numcols = vis + hubcols + ["__jaego", "__hub"]
     # 점재고합계 → 허브합계 순 내림차순
     disp = df.sort_values(["__jaego", "__hub"], ascending=[False, False]).head(limit)

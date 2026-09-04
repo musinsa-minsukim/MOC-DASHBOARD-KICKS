@@ -150,6 +150,12 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
       minWidth: 72, headerTooltip: "이 상품컬러(컬러-SKU)가 사이즈 브로큰이면 Y · 사이즈 3+ 중 구색률<50%",
       cellStyle: (p: any): any => (p.value === "Y" ? { color: dark ? "#f87171" : "#dc2626", fontWeight: 700, textAlign: "center" } : { textAlign: "center" }),
     }),
+    colText("입고구분", "입고구분", {
+      minWidth: 84, headerTooltip: "이동중 입고 기준 · 신규입고=매장에 없던 SKU가 들어옴 / 필업=기존 SKU 보충 / (공란)=입고 없음(필업X)",
+      cellStyle: (p: any): any => (p.value === "신규입고" ? { color: dark ? "#4ade80" : "#16a34a", fontWeight: 700, textAlign: "center" }
+        : p.value === "필업" ? { color: dark ? "#fbbf24" : "#d97706", fontWeight: 600, textAlign: "center" }
+        : { textAlign: "center" }),
+    }),
     colText("business_type", "사업구분", { minWidth: 78 }),
     colText("cat_top", "최상위카테", { minWidth: 92 }),
     colText("cat_large", "대카테", { minWidth: 92 }),
@@ -253,6 +259,8 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
             <span className="font-semibold text-rose-600 dark:text-rose-400">브로큰 SKU 기준</span> · 사이즈 <b>3개 이상</b> 보유한 컬러-SKU 중 <b>구색률(매장 잔존 사이즈 ÷ 전체 보유 사이즈) &lt; 50%</b> 인 것 (사이즈 절반 이상 빠짐). 단일·2사이즈 상품(FREE·액세서리 등)은 제외. 상품옵션별 재고 표의 <b>브로큰=Y</b>는 그 상품컬러가 브로큰임을 뜻함.
             <br />
             <span className="font-semibold text-slate-600 dark:text-slate-300">브랜드 표 수급</span> · <b>입고예정</b>=창고→매장 이동중 중 <b>신규(현재 매장 미보유)</b> 컬러-SKU만 (이미 있는 SKU 보충=<b>필업</b>은 별도 열·신규 아님), <b>출고예정</b>=매장→창고 반품 이동중 (매입 ERP + 위탁 SCM). <b>TTL SKU = 마감정상 + 신규입고예정 − 출고예정 − 브로큰</b>. (누적·과대 방지 위해 '출고확정前'은 제외, 이동중만 반영)
+            <br />
+            <span className="font-semibold text-amber-600 dark:text-amber-400">입고구분(상품옵션별)</span> · <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=이번 이동중 물량이 매장에 없던 컬러-SKU / <b className="text-amber-600 dark:text-amber-400">필업</b>=이미 있는 SKU 보충 / <b>(공란)</b>=이동중 입고 없음(필업X). 이 표는 점재고 보유 옵션만 표시되므로 완전 신규는 브랜드 표의 입고예정 열로 집계.
           </div>
 
           {(d.cats?.cat_top?.length || d.cats?.cat_large?.length || d.cats?.cat_medium?.length) ? (
