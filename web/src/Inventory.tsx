@@ -67,10 +67,10 @@ function CatPie({ title, data, C }: { title: string; data: { name: string; value
 }
 
 // 카테고리별 SKU 수(컬러/바코드) 표 — 점재고(선택 매장) 기준
-function CatSkuTable({ title, rows }: { title: string; rows: { name: string; color_sku: number; barcode_sku: number }[] }) {
+function CatSkuTable({ title, rows }: { title: string; rows: { name: string; color_sku: number; barcode_sku: number; broken_sku?: number }[] }) {
   return (
     <Card><CardBody>
-      <SectionTitle title={title} sub="컬러SKU / 바코드SKU · 점재고 기준" />
+      <SectionTitle title={title} sub="컬러SKU / 바코드SKU / 브로큰SKU · 점재고 기준" />
       {!rows.length ? (
         <div className="flex h-[200px] items-center justify-center text-sm text-slate-400">데이터 없음</div>
       ) : (
@@ -80,15 +80,17 @@ function CatSkuTable({ title, rows }: { title: string; rows: { name: string; col
               <tr className="border-b border-slate-200 text-xs text-slate-400 dark:border-slate-700">
                 <th className="py-1.5 pr-2 text-left font-medium">카테고리</th>
                 <th className="py-1.5 px-2 text-right font-medium">컬러SKU</th>
-                <th className="py-1.5 pl-2 text-right font-medium">바코드SKU</th>
+                <th className="py-1.5 px-2 text-right font-medium">바코드SKU</th>
+                <th className="py-1.5 pl-2 text-right font-medium">브로큰SKU</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r, i) => (
                 <tr key={i} className="border-b border-slate-100 dark:border-slate-800">
-                  <td className="max-w-[140px] truncate py-1.5 pr-2 text-slate-700 dark:text-slate-200" title={r.name}>{r.name}</td>
+                  <td className="max-w-[130px] truncate py-1.5 pr-2 text-slate-700 dark:text-slate-200" title={r.name}>{r.name}</td>
                   <td className="py-1.5 px-2 text-right font-semibold tabular-nums text-slate-800 dark:text-slate-100">{num(r.color_sku)}</td>
-                  <td className="py-1.5 pl-2 text-right tabular-nums text-slate-400">{num(r.barcode_sku)}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums text-slate-400">{num(r.barcode_sku)}</td>
+                  <td className="py-1.5 pl-2 text-right tabular-nums text-rose-500 dark:text-rose-400">{num(r.broken_sku ?? 0)}</td>
                 </tr>
               ))}
             </tbody>
@@ -165,7 +167,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     // 컬러/바코드 SKU는 goods_no가 브랜드에 1:1이라 브랜드 간 겹침 없음 → 합산이 곧 전체 distinct.
     return [{ name: "합계", total: s("total"), share: ss, gmv: s("gmv"), gmv_share: gs,
               over_index: gs ? +(ss / gs).toFixed(2) : null,
-              color_sku: s("color_sku"), barcode_sku: s("barcode_sku"), uid: s("uid") }];
+              color_sku: s("color_sku"), barcode_sku: s("barcode_sku"), uid: s("uid"), broken_sku: s("broken_sku") }];
   }, [brandRows]);
   const brandTblCols = useMemo(() => [
     colText("name", "브랜드", {
@@ -175,6 +177,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     colNum("total", "점재고", "num", { minWidth: 90 }),
     colNum("color_sku", "컬러SKU", "int", { minWidth: 84, headerTooltip: "distinct(UID×컬러) · 점재고 보유 기준" }),
     colNum("barcode_sku", "바코드SKU", "int", { minWidth: 94, headerTooltip: "distinct barcode(컬러×사이즈) · 점재고 보유 기준" }),
+    colNum("broken_sku", "브로큰SKU", "int", { minWidth: 92, headerTooltip: "사이즈 3+ 컬러-SKU 중 구색률<50%(매장 잔존 사이즈 ÷ 전체 보유 사이즈)" }),
     colNum("share", "재고비중", "num", { minWidth: 86, valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%" }),
     colNum("gmv", "GMV(28일)", "compact", { minWidth: 100 }),
     colNum("gmv_share", "SOB", "num", { minWidth: 82, headerTooltip: "Share of Business = 매출비중(최근28일 전체 GMV 대비)", valueFormatter: (p: any) => (p.value ?? 0).toFixed(1) + "%" }),
@@ -196,6 +199,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     colNum("uid", "UID수(상품)", "int", { minWidth: 100 }),
     colNum("color_sku", "컬러SKU", "int", { minWidth: 100, headerTooltip: "distinct(UID×컬러)" }),
     colNum("barcode_sku", "바코드SKU", "int", { minWidth: 106, headerTooltip: "distinct barcode(컬러×사이즈)" }),
+    colNum("broken_sku", "브로큰SKU", "int", { minWidth: 100, headerTooltip: "사이즈 3+ 중 구색률<50%(매장 잔존 사이즈 ÷ 전체 보유 사이즈)" }),
   ], [dark, onPick]);
   const onStoreSkuClick = (e: any) => { if (e?.node?.rowPinned || !pickStore) return; const nm = e?.data?.name; if (nm) pickStore({ name: nm }); };
 

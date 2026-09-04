@@ -41,13 +41,45 @@ def _color_of(opt) -> str | None:
     return None
 
 
+def _size_of(opt) -> str:
+    """옵션 문자열 → 사이즈(컬러의 반대편). '^'뒤 / (컬러/사이즈면)'/'뒤 / 그 외 전체(사이즈만)."""
+    if not opt or not isinstance(opt, str):
+        return "(무옵션)"
+    if "^" in opt:
+        return opt.split("^", 1)[1].strip() or "(무옵션)"
+    if "/" in opt:
+        left = opt.split("/", 1)[0].strip()
+        if left and not _SIZE_RE.match(left):
+            return opt.split("/", 1)[1].strip() or "(무옵션)"
+    return opt.strip() or "(무옵션)"
+
+
 def _add_color_keys(df):
-    """df(barcode 단위)에 __color_key(=goods_no|컬러 또는 UID:goods_no)와 __opt_color(옵션에 컬러有=1) 부여."""
+    """df(barcode 단위)에 __color_key(=goods_no|컬러 또는 UID:goods_no)·__opt_color·__size 부여."""
     gn = df["goods_no"].fillna(0).astype("int64")
     colors = df["goods_opt"].map(_color_of)
     df["__color_key"] = [f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors)]
     df["__opt_color"] = colors.notna().astype(int)
+    df["__size"] = df["goods_opt"].map(_size_of)
     return df
+
+
+# 브로큰 SKU 정의: 사이즈 3개 이상 보유한 컬러-SKU 중, 구색률(해당 stock 사이즈수 ÷ 전체 보유 사이즈수) < 임계.
+_BROKEN_FILL = 0.5
+_BROKEN_MIN_SIZES = 3
+
+
+def _broken_keys(df, stock_mask) -> set:
+    """stock_mask(그 위치 점재고>0 bool)에서 '브로큰'인 컬러-SKU key 집합.
+       n_all = df 전체(재고 어디든) 그 컬러의 distinct 사이즈, n_stk = stock_mask 사이즈. n_all>=3 & n_stk/n_all<임계."""
+    n_all = df.groupby("__color_key")["__size"].nunique()
+    sub = df[stock_mask]
+    if sub.empty:
+        return set()
+    n_stk = sub.groupby("__color_key")["__size"].nunique()
+    j = pd.DataFrame({"n_all": n_all, "n_stk": n_stk}).dropna(subset=["n_stk"])
+    br = j[(j["n_all"] >= _BROKEN_MIN_SIZES) & (j["n_stk"] / j["n_all"] < _BROKEN_FILL)]
+    return set(br.index)
 
 
 def _f(v) -> float:
@@ -155,6 +187,8 @@ def _brand_stock(df, vis, top_n=None):
     sku = ins.groupby("brand_nm").agg(color_sku=("__color_key", "nunique"),
                                       barcode_sku=("barcode", "nunique"),
                                       uid=("goods_no", "nunique"))
+    bkeys = _broken_keys(df, df["__jaego"] > 0)   # 선택매장 점재고 기준 브로큰 컬러-SKU
+    brk = ins[ins["__color_key"].isin(bkeys)].groupby("brand_nm")["__color_key"].nunique()
     rows = []
     for brand, row in piv.iterrows():
         wt = float(row.get("위탁", 0.0)); mi = float(row.get("매입", 0.0))
@@ -167,7 +201,8 @@ def _brand_stock(df, vis, top_n=None):
                      "total": _f(total), "share": round(total / grand * 100, 1) if grand else 0.0,
                      "color_sku": int(s["color_sku"]) if s is not None else 0,
                      "barcode_sku": int(s["barcode_sku"]) if s is not None else 0,
-                     "uid": int(s["uid"]) if s is not None else 0})
+                     "uid": int(s["uid"]) if s is not None else 0,
+                     "broken_sku": int(brk.get(brand, 0))})
     rows.sort(key=lambda x: -x["total"])
     return rows if top_n is None else rows[:top_n]
 
@@ -176,23 +211,27 @@ def brand_csv_rows(f=None):
     """브랜드별 점재고 CSV — **매장 분리(long)**: (브랜드 × 매장)당 1행.
        열 = 브랜드·사업구분·매장 + 점재고수량·UID수·컬러SKU·바코드SKU. 재고 0인 (브랜드×매장)은 제외."""
     df, vis, hubcols, hcol = _prep(f)
-    header = ["브랜드", "사업구분", "매장", "점재고수량", "UID수", "컬러SKU", "바코드SKU"]
+    header = ["브랜드", "사업구분", "매장", "점재고수량", "UID수", "컬러SKU", "바코드SKU", "브로큰SKU"]
     if df.empty or not vis:
         return header, []
     out = []
     for s in vis:                                   # 각 매장 컬럼(그 매장 점재고 보유 행)별 브랜드 집계
-        sub = df[df[s].fillna(0) > 0]
+        m = df[s].fillna(0) > 0
+        sub = df[m]
         if sub.empty:
             continue
-        agg = sub.groupby(["brand_nm", "business_type"]).agg(
+        bkeys = _broken_keys(df, m)                  # 그 매장 구색률 기준 브로큰 컬러-SKU
+        subb = sub.assign(__broken=sub["__color_key"].isin(bkeys))
+        agg = subb.groupby(["brand_nm", "business_type"]).agg(
             qty=(s, "sum"), uid=("goods_no", "nunique"),
             color=("__color_key", "nunique"), bc=("barcode", "nunique"))
+        brk = subb[subb["__broken"]].groupby(["brand_nm", "business_type"])["__color_key"].nunique()
         for (brand, biz), r in agg.iterrows():
             q = int(_f(r["qty"]))
             if q <= 0:
                 continue
             out.append([str(brand) or "(미매칭)", str(biz), s, q,
-                        int(r["uid"]), int(r["color"]), int(r["bc"])])
+                        int(r["uid"]), int(r["color"]), int(r["bc"]), int(brk.get((brand, biz), 0))])
     out.sort(key=lambda x: (x[0], -x[3]))            # 브랜드명, 매장 점재고 내림차순
     return header, out
 
@@ -200,40 +239,50 @@ def brand_csv_rows(f=None):
 def _cat_sku(df, top_n=12):
     """카테고리별(최상위/대/중) **점재고 매장 내** 컬러SKU/바코드SKU — 표용. 상위 top_n + '기타'."""
     ins = df[df["__jaego"] > 0]
+    bkeys = _broken_keys(df, df["__jaego"] > 0)      # 선택매장 점재고 기준 브로큰 컬러-SKU
+    ins = ins.assign(__broken=ins["__color_key"].isin(bkeys))
     out = {}
     for key in ("cat_top", "cat_large", "cat_medium"):
         if key not in ins.columns or ins.empty:
             out[key] = []
             continue
         cat = ins[key].astype(str).str.strip().replace("", "(미분류)").fillna("(미분류)")
-        g = ins.assign(_c=cat).groupby("_c").agg(color_sku=("__color_key", "nunique"),
-                                                 barcode_sku=("barcode", "nunique"),
-                                                 uid=("goods_no", "nunique"))
+        tmp = ins.assign(_c=cat)
+        g = tmp.groupby("_c").agg(color_sku=("__color_key", "nunique"),
+                                  barcode_sku=("barcode", "nunique"),
+                                  uid=("goods_no", "nunique"))
+        brk = tmp[tmp["__broken"]].groupby("_c")["__color_key"].nunique()
+        g["broken_sku"] = [int(brk.get(k, 0)) for k in g.index]
         g = g.sort_values("color_sku", ascending=False)
         items = [{"name": str(k), "color_sku": int(r.color_sku), "barcode_sku": int(r.barcode_sku),
-                  "uid": int(r.uid)} for k, r in g.iterrows()]
+                  "uid": int(r.uid), "broken_sku": int(r.broken_sku)} for k, r in g.iterrows()]
         if len(items) > top_n:
             head, tail = items[:top_n], items[top_n:]
             head.append({"name": f"기타 {len(tail)}종",
                          "color_sku": sum(x["color_sku"] for x in tail),
                          "barcode_sku": sum(x["barcode_sku"] for x in tail),
-                         "uid": sum(x["uid"] for x in tail)})
+                         "uid": sum(x["uid"] for x in tail),
+                         "broken_sku": sum(x["broken_sku"] for x in tail)})
             items = head
         out[key] = items
     return out
 
 
 def _store_sku(df, vis):
-    """매장별 컬러SKU/바코드SKU/UID — 각 매장 컬럼>0(그 매장 점재고 보유)인 행 기준 distinct."""
+    """매장별 컬러SKU/바코드SKU/UID/브로큰SKU — 각 매장 컬럼>0(그 매장 점재고 보유)인 행 기준.
+       브로큰은 그 매장 내 구색률 기준(사이즈 3+ & 매장 사이즈/전체 사이즈<임계)."""
     rows = []
     for s in vis:
-        sub = df[df[s].fillna(0) > 0]
+        m = df[s].fillna(0) > 0
+        sub = df[m]
         if sub.empty:
             continue
+        bkeys = _broken_keys(df, m)
         rows.append({"name": s,
                      "color_sku": int(sub["__color_key"].nunique()),
                      "barcode_sku": int(sub["barcode"].nunique()),
-                     "uid": int(sub["goods_no"].nunique())})
+                     "uid": int(sub["goods_no"].nunique()),
+                     "broken_sku": int(len(bkeys))})
     rows.sort(key=lambda r: -r["color_sku"])
     return rows
 
