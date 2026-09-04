@@ -578,12 +578,18 @@ def load_goods_master() -> pd.DataFrame:
        goods_sale_price_changes(온라인 1차세일가). bizest 누락 판매 goods도 통째 빠지지 않고 엔트리 생성.
        판매가 = 온라인 1차세일가(폴백 bizest→itgg→정상가). brand_nm은 brand코드→partnerportal.brand 조인."""
     q = "WITH " + DIM_STORE + r""",
-        sold AS (   -- 오프라인 매장에서 주문된 적 있는 goods (환불 goods 포함 위해 order_status 미필터, dummy 제외)
+        sold AS (   -- 오프라인 '판매된' ∪ '현재고 보유' goods (재고만 있고 미판매 상품도 스타일/가격 보강 위해 포함)
           SELECT DISTINCT CAST(oo.goods_no AS BIGINT) AS goods_no
           FROM ocmp.moss.order_option oo
           JOIN ocmp.moss.order_master om ON om.order_id = oo.order_id
           JOIN dim_store st ON st.shop_no = om.shop_no
           WHERE om.dummy_order = 0
+          UNION   -- 재고 스냅샷 최신 보유 goods(오프라인 매장·창고) — 미판매 재고상품 누락 방지
+          SELECT DISTINCT CAST(s.goods_no AS BIGINT) AS goods_no
+          FROM team.sales.dsh_d_upt_editorial_stock_summary s
+          JOIN (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary) le
+            ON s.ord_state_date = le.d
+          WHERE s.goods_no IS NOT NULL
         ),
         bad_px AS (   -- 손상 방어: 원천에 '한 시각에 판매가가 2개 이상 충돌하는 (goods,시각)' 배치가 존재
                       -- (예 goods 5943429, 2026-08-08 14:56에 91·155·2385000… 13행). 최신이 이 배치면 엉뚱값 선택 →
