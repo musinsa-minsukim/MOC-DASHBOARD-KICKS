@@ -1,14 +1,15 @@
 name: Refresh sales (hourly)
 
 # 가벼운 "매시 판매 갱신"(판매·영수증 증분만)을 GitHub Actions 16GB 러너에서 실행 — 시간대별 매출·객단가 최신화.
-# full(재고·상품·고객·국가별)은 별도 워크플로(refresh.yml, 매일 07:00). 여기선 sales+receipts만.
+# full(재고·상품·고객·국가별)은 별도 워크플로(refresh.yml, 매일 08:00). 여기선 sales+receipts만.
 # ⏱️ 정시성: GitHub schedule cron은 큐 지연·스킵으로 부정확 → 제거함. 대신 Cloud Scheduler(mok-refresh-sales-gh,
-#    tz Asia/Seoul "25 11-23")가 매시 :25에 이 워크플로를 workflow_dispatch로 트리거(이벤트 즉시 실행 = 정시).
+#    tz Asia/Seoul "27 0,10-23" = 매시 :27, 10시~00시)가 이 워크플로를 workflow_dispatch로 트리거(이벤트 즉시 실행 = 정시).
+#    ⚠️ 실제 시각은 GCP Cloud Scheduler에 있음 — 변경 시 gcloud로 잡 수정 필요(이 파일 주석만 바꿔선 안 바뀜).
 #    → 정시성(Scheduler) + 견고함(GitHub 16GB, Cloud Run 4Gi OOM 무관) 둘 다 확보. 수동 실행도 아래 dispatch로.
 # 성능: 전체 캐시 대신 sales/receipts/_meta 3개 파일만 동기화 → 빠르고 Actions 분 절약.
 
 on:
-  workflow_dispatch: {}      # Cloud Scheduler(:25)가 GitHub API로 dispatch + 수동 실행. (schedule cron은 부정확해 제거)
+  workflow_dispatch: {}      # Cloud Scheduler(:27, 10~00시)가 GitHub API로 dispatch + 수동 실행. (schedule cron은 부정확해 제거)
 
 permissions:
   contents: read
