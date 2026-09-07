@@ -139,34 +139,36 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
   }, [qs, reloadKey]);
 
   const hubcols: string[] = d?.hubcols ?? [];
-  const storeCols: string[] = d?.store_cols ?? [];
   const invCols = useMemo(() => [
     colText("brand_nm", "브랜드", { pinned: "left", minWidth: 110 }),
-    colText("goods_nm", "상품", { pinned: "left", minWidth: 200 }),
-    colNum("goods_no", "상품번호", "int", { minWidth: 90, valueFormatter: (p: any) => String(p.value ?? "") }),
-    colText("style_no", "스타일넘버", { minWidth: 118 }),
-    colText("goods_opt", "옵션", { minWidth: 80 }),
+    colText("goods_nm", "상품", { pinned: "left", minWidth: 190 }),
+    colText("매장명", "매장명", {
+      pinned: "left", minWidth: 118, headerTooltip: "매장별 행 · '(창고 대기)'=선택 매장 재고 없이 허브에만 있는 상품",
+      cellStyle: (p: any): any => (p.value === "(창고 대기)" ? { color: dark ? "#94a3b8" : "#94a3b8", fontStyle: "italic" } : { fontWeight: 600 }),
+    }),
+    colNum("점재고", "점재고", "num", { pinned: "left", minWidth: 82, headerTooltip: "그 매장의 점재고(옵션·barcode 단위)" }),
     colText("브로큰", "브로큰", {
-      minWidth: 72, headerTooltip: "이 상품컬러(컬러-SKU)가 사이즈 브로큰이면 Y · 사이즈 3+ 중 구색률<50%",
+      minWidth: 72, headerTooltip: "이 상품컬러가 그 매장에서 사이즈 브로큰이면 Y · 사이즈 3+ 중 구색률<50%(매장별 판정)",
       cellStyle: (p: any): any => (p.value === "Y" ? { color: dark ? "#f87171" : "#dc2626", fontWeight: 700, textAlign: "center" } : { textAlign: "center" }),
     }),
     colText("입고구분", "입고구분", {
-      minWidth: 84, headerTooltip: "이동중 입고 기준 · 신규입고=매장에 없던 SKU가 들어옴 / 필업=기존 SKU 보충 / (공란)=입고 없음(필업X)",
+      minWidth: 84, headerTooltip: "그 매장의 이동중 입고 기준 · 필업=기존 SKU 보충 / (공란)=입고 없음. 완전 신규는 브랜드 표 입고예정 참조",
       cellStyle: (p: any): any => (p.value === "신규입고" ? { color: dark ? "#4ade80" : "#16a34a", fontWeight: 700, textAlign: "center" }
         : p.value === "필업" ? { color: dark ? "#fbbf24" : "#d97706", fontWeight: 600, textAlign: "center" }
         : { textAlign: "center" }),
     }),
+    colNum("goods_no", "상품번호", "int", { minWidth: 90, valueFormatter: (p: any) => String(p.value ?? "") }),
+    colText("style_no", "스타일넘버", { minWidth: 118 }),
+    colText("goods_opt", "옵션", { minWidth: 80 }),
     colText("business_type", "사업구분", { minWidth: 78 }),
     colText("cat_top", "최상위카테", { minWidth: 92 }),
     colText("cat_large", "대카테", { minWidth: 92 }),
     colText("cat_medium", "중카테", { minWidth: 92 }),
     colNum("normal_price", "정상가", "num", { minWidth: 84 }),
     colNum("sale_price", "판매가", "num", { minWidth: 84 }),
-    colNum("점재고합계", "점재고합계", "num", { pinned: "left", minWidth: 92 }),
-    ...storeCols.map((s) => colNum(s, s, "num", { minWidth: 86 })),   // 점별(매장) 컬럼
-    ...hubcols.map((h) => colNum(h, h, "num")),
-    colNum("허브합계", "허브합계", "num"),
-  ], [storeCols.join(","), hubcols.join(","), dark]); // eslint-disable-line react-hooks/exhaustive-deps
+    ...hubcols.map((h) => colNum(h, h, "num", { headerTooltip: "창고(허브) 재고 · 매장 무관(그 상품 barcode 기준) · 합계는 상품 중복 없이 1회만 반영" })),
+    colNum("허브합계", "허브합계", "num", { headerTooltip: "MFS+허브1000+허브1700 · 매장행마다 반복 표시(합계는 barcode당 1회만)" }),
+  ], [hubcols.join(","), dark]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 브랜드별 점재고·GMV·SOB 표 (그래프 대체) — 재고 과다 판단
   const brandRows: any[] = d?.brand_stock ?? [];
@@ -218,16 +220,26 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
   ], [dark, onPick]);
   const onStoreSkuClick = (e: any) => { if (e?.node?.rowPinned || !pickStore) return; const nm = e?.data?.name; if (nm) pickStore({ name: nm }); };
 
-  // 상품옵션별 재고 표 합계행(표시 행 합) — 필터 반응(remount key). 재고 수량 컬럼만 합산.
+  // 상품옵션별 재고 표 합계행(표시 행 합) — 필터 반응(remount key).
+  // 매장=행 구조: 점재고는 모든 행 합산(각 매장 distinct). 허브는 barcode(__bc)당 1회만(매장행마다 반복이라 중복 제거).
   const invTotal = useMemo(() => {
     const rr = d?.rows ?? [];
     if (!rr.length) return [];
-    const numCols = ["점재고합계", "허브합계", ...storeCols, ...hubcols];
-    const t: any = { brand_nm: "합계", goods_nm: "", goods_no: "", style_no: "", goods_opt: "", business_type: "", cat_top: "", cat_large: "", cat_medium: "" };
-    for (const c of numCols) t[c] = rr.reduce((a: number, r: any) => a + (Number(r[c]) || 0), 0);
+    const t: any = { brand_nm: "합계", goods_nm: "", 매장명: "", goods_no: "", style_no: "", goods_opt: "", business_type: "", cat_top: "", cat_large: "", cat_medium: "" };
+    const hubCols = ["허브합계", ...hubcols];
+    let jaego = 0; for (const c of hubCols) t[c] = 0;
+    const seen = new Set<string>();
+    for (const r of rr) {
+      jaego += Number(r["점재고"]) || 0;
+      const bc = String(r.__bc ?? "");
+      if (bc && seen.has(bc)) continue;   // 허브는 barcode당 1회
+      if (bc) seen.add(bc);
+      for (const c of hubCols) t[c] += Number(r[c]) || 0;
+    }
+    t["점재고"] = jaego;
     return [t];
-  }, [d, storeCols, hubcols]);
-  const invGridKey = useMemo(() => `${(d?.rows?.length) || 0}|${Math.round(invTotal[0]?.["점재고합계"] || 0)}|${Math.round(invTotal[0]?.["허브합계"] || 0)}`, [d, invTotal]);
+  }, [d, hubcols]);
+  const invGridKey = useMemo(() => `${(d?.rows?.length) || 0}|${Math.round(invTotal[0]?.["점재고"] || 0)}|${Math.round(invTotal[0]?.["허브합계"] || 0)}`, [d, invTotal]);
   const onBrandClick = (e: any) => { if (e?.node?.rowPinned || !pickBrand) return; const nm = e?.data?.name; if (nm && nm !== "합계") pickBrand({ name: nm }); };
 
   return (
@@ -325,7 +337,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">상품옵션별 재고</h3>
-                <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">총 {num(d.kpis.options)}개 옵션 · 화면 상위 {num(d.rows.length)}개(점재고합계↓ 허브합계↓) · 브랜드/상품/점재고합계 좌측 고정 · 점별 매장 {num(storeCols.length)}개 컬럼 · 전체는 CSV</p>
+                <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">총 {num(d.kpis.options)}개 옵션 · <b>매장=행</b>(옵션×매장) · 화면 상위 {num(d.rows.length)}행(점재고↓) · 브랜드/상품/매장명/점재고 좌측 고정 · 허브({num(hubcols.length)})는 열 유지 · 브로큰은 매장별 판정 · 전체는 CSV</p>
               </div>
               <button onClick={() => invCsv(qs)} className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-500">
                 <Download size={14} /> CSV (long·매장/창고별)

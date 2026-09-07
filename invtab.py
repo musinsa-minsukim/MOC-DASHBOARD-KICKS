@@ -251,6 +251,27 @@ def _move_incoming_keys(vis) -> set:
     return set(f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors))
 
 
+def _move_incoming_by_store(vis) -> dict:
+    """매장별 이동중 입고(in_qty>0) 컬러-SKU key 집합 → {store_name: set(color_key)}.
+       매장을 행으로 분리한 상품옵션 표에서 그 매장의 입고구분 태깅용."""
+    try:
+        mv = store.get_store_moves()
+    except Exception:
+        return {}
+    if mv is None or mv.empty or not vis:
+        return {}
+    mv = mv[(mv["store_name"].isin(vis)) & (mv["in_qty"] > 0)]
+    if mv.empty:
+        return {}
+    gn = mv["goods_no"].astype("int64")
+    colors = mv["option"].map(_color_of)
+    ck = [f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors)]
+    out: dict = {}
+    for s, k in zip(mv["store_name"].astype(str), ck):
+        out.setdefault(s, set()).add(k)
+    return out
+
+
 def _brand_stock(df, vis, top_n=None):
     """브랜드별 점재고(선택 매장) — 사업구분(위탁/매입/기타) 스택 + 전체 대비 비중. 전체 브랜드(top_n=None).
        매장별 재고수량 차트와 동일 스키마({name,위탁,매입,기타,total}) + share + 컬러SKU/바코드SKU."""
@@ -397,47 +418,80 @@ def compute(f=None, limit=300):
                 stores.append(row)
         stores.sort(key=lambda r: r["total"])
 
-    # 상품·옵션 표 (재고순 상위 limit) — ⚠️ to_dict로 실제 컬럼명(한글 매장명 포함) 보존
-    # (itertuples는 밑줄/한글/공백 컬럼명을 _0..으로 renames → 점재고/허브/매장값이 0으로 깨짐)
-    # 브로큰 여부(컬러-SKU 단위, **매장별 판정** — 선택매장 중 한 곳이라도 브로큰이면 'Y').
-    _bkeys = _broken_store_keys(df, vis)
-    df["브로큰"] = ["Y" if k in _bkeys else "" for k in df["__color_key"]]
-    # 입고구분(컬러-SKU 단위): 이동중 입고 있으면 매장 보유여부로 신규입고/필업, 없으면 공란(=필업X).
-    _inkeys = _move_incoming_keys(vis)
-    _instore = set(df.loc[df["__jaego"] > 0, "__color_key"])
-    df["입고구분"] = ["신규입고" if (k in _inkeys and k not in _instore)
-                     else ("필업" if k in _inkeys else "") for k in df["__color_key"]]
-    idcols = [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
-                          "cat_top", "cat_large", "cat_medium", "브로큰", "입고구분") if c in df.columns]
-    numcols = vis + hubcols + ["__jaego", "__hub"]
-    # 점재고합계 → 허브합계 순 내림차순
-    disp = df.sort_values(["__jaego", "__hub"], ascending=[False, False]).head(limit)
-    sub = disp[idcols + numcols].copy()
-    sub[numcols] = sub[numcols].fillna(0).round().astype("int64")
-    for c in idcols:
-        if sub[c].dtype == object:
-            sub[c] = sub[c].fillna("")
-    sub["goods_no"] = sub["goods_no"].astype("int64")
-    sub = sub.rename(columns={"__jaego": "점재고합계", "__hub": "허브합계"})
-    rows = sub.to_dict(orient="records")
+    rows = _option_rows(df, vis, hubcols, limit)
     return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows,
             "store_cols": vis, "hubcols": hubcols, "cats": cats,
             "brand_stock": _brand_stock(df, vis),
             "store_sku": _store_sku(df, vis), "cat_sku": _cat_sku(df, vis)}
 
 
+def _option_rows(df, vis, hubcols, limit):
+    """상품옵션별 재고 — **매장을 '행'으로 분리**(매장명 열). 허브(MFS/1000/1700)는 열 유지.
+       각 (barcode × 매장)당 1행: 그 매장 점재고>0 인 곳만. 브로큰·입고구분은 **그 매장 기준**(정확).
+       매장 재고가 전혀 없고 허브만 있는 barcode는 매장명='(창고 대기)' 1행으로 보존(허브 열만 채움).
+       허브 값은 매장행마다 반복 표시(그 barcode의 창고 맥락) — 합계 중복은 __bc로 프론트에서 dedup.
+       성능: 전체 melt 대신 매장별 nlargest(limit)로 후보만 모아 정렬·상위 limit (Cloud Run 메모리 보호)."""
+    per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
+    incoming = _move_incoming_by_store(vis)                                      # {store: set(color_key)}
+    txt = [c for c in ("brand_nm", "goods_nm", "goods_opt", "business_type",
+                       "cat_top", "cat_large", "cat_medium") if c in df.columns]
+    hubnum = list(hubcols)
+    cols = txt + ["goods_no", "barcode", "__hub", "__jaego", "__color_key"] + hubnum + vis
+
+    def _mk(d0, store_name, jaego, broken, ingu, tot):
+        r = {c: ("" if pd.isna(d0.get(c)) else d0.get(c)) for c in txt}
+        r["goods_no"] = int(d0.get("goods_no") or 0)
+        r["매장명"] = store_name
+        r["점재고"] = int(round(_f(jaego)))
+        r["브로큰"] = broken
+        r["입고구분"] = ingu
+        for h in hubnum:
+            r[h] = int(round(_f(d0.get(h))))
+        r["허브합계"] = int(round(_f(d0.get("__hub"))))
+        r["__bc"] = "" if pd.isna(d0.get("barcode")) else str(d0.get("barcode"))
+        r["__tot"] = int(round(_f(tot)))         # 그 상품(barcode) 선택매장 총 점재고 — 상품 그룹 정렬용
+        return r
+
+    recs = []
+    # 상품 총 점재고(__jaego) 상위 limit개 barcode를 뽑아 → 각 barcode의 매장(점재고>0)을 행으로 전개.
+    # (이전 '점재고합계 순' 의도 유지 + 매장별 브로큰 정확. 최대 매장 독식 방지)
+    havej = df["__jaego"] > 0
+    top = df.loc[havej, cols].nlargest(min(limit, int(havej.sum())), "__jaego") if havej.any() else df.iloc[0:0]
+    for d0 in top.to_dict("records"):
+        ck = d0["__color_key"]; tot = _f(d0.get("__jaego"))
+        for s in vis:
+            q = _f(d0.get(s))
+            if q <= 0:
+                continue
+            # 매장이 그 컬러 보유(행 존재) → 이동중 입고 있으면 '필업', 없으면 공란(신규입고는 정의상 여기 안 나옴)
+            recs.append(_mk(d0, s, q, "Y" if ck in per_store_broken.get(s, set()) else "",
+                            "필업" if ck in incoming.get(s, set()) else "", tot))
+    recs.sort(key=lambda r: (r["__tot"], r["점재고"]), reverse=True)   # 상품 총 점재고↓, 매장 점재고↓
+    recs = recs[:limit]
+    # 허브 only (선택 매장 어디에도 재고 없음) — 남는 예산만큼만 채움(창고대기 과다 방지). 전체는 CSV.
+    budget = limit - len(recs)
+    hoemask = (df["__jaego"] <= 0) & (df["__hub"] > 0)
+    if budget > 0 and hoemask.any():
+        ho = df.loc[hoemask, cols].nlargest(min(budget, int(hoemask.sum())), "__hub")
+        for d0 in ho.to_dict("records"):
+            recs.append(_mk(d0, "(창고 대기)", 0, "", "", 0))
+    return recs
+
+
 def csv_rows(f=None):
     """재고 CSV — **tidy/long**: (상품옵션 × 위치)당 1행. 화면 피벗(매장=열)을 풀어 매장/창고별 행으로.
-       열 = 상품속성 + 위치구분(매장/허브) + 위치(매장·창고명) + 재고수량. 재고 0인 위치는 제외."""
+       열 = 상품속성 + 위치구분(매장/허브) + 위치(매장·창고명) + 재고수량 + 브로큰(매장 위치는 그 매장 기준, 허브는 공란).
+       재고 0인 위치는 제외 → '브로큰=Y'만 필터하면 매장별 브로큰 SKU를 정확히 발라낼 수 있음."""
     df, vis, hubcols, hcol = _prep(f)
     base = [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
                         "cat_top", "cat_large", "cat_medium") if c in df.columns]
-    header = base + ["위치구분", "위치", "재고수량"]
+    header = base + ["위치구분", "위치", "재고수량", "브로큰"]
     if df.empty:
         return header, []
+    per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
     loccols = vis + hubcols                         # 매장 컬럼 + 허브(MFS/1000/1700)
     df = df.sort_values(["__jaego", "__hub"], ascending=[False, False])
-    sub = df[base + loccols].copy()
+    sub = df[base + loccols + ["__color_key"]].copy()
     sub[loccols] = sub[loccols].fillna(0).round().astype("int64")
     if "goods_no" in sub.columns:   # 미매핑 바코드는 goods_no=NaN → astype 예외 방지(빈칸 처리)
         sub["goods_no"] = sub["goods_no"].map(lambda x: "" if pd.isna(x) else int(x))
@@ -448,8 +502,11 @@ def csv_rows(f=None):
     out = []
     for d in sub.to_dict(orient="records"):
         basevals = [d[c] for c in base]
+        ck = d["__color_key"]
         for loc in loccols:                         # 위치(매장/창고) 컬럼을 행으로 melt
             qty = d[loc]
             if qty:                                 # 재고 있는 위치만 (0/NaN 제외)
-                out.append(basevals + ["매장" if loc in storeset else "허브", loc, qty])
+                is_store = loc in storeset
+                brk = "Y" if (is_store and ck in per_store_broken.get(loc, set())) else ""
+                out.append(basevals + ["매장" if is_store else "허브", loc, qty, brk])
     return header, out
