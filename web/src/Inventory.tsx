@@ -256,7 +256,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
           <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs leading-relaxed text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-400">
             <span className="font-semibold text-slate-600 dark:text-slate-300">SKU 산정 기준</span> · <b>컬러SKU</b> = distinct(UID × 컬러) · <b>바코드SKU</b> = distinct 바코드(컬러 × 사이즈) · 옵션명 파싱은 <code className="rounded bg-slate-200/60 px-1 dark:bg-slate-700/60">컬러^사이즈</code>(예: 블랙^M), 사이즈만이면 UID=1컬러로 간주. 컬러/바코드/브로큰 SKU는 모두 <b>점재고 보유(선택 매장)</b> 기준.
             <br />
-            <span className="font-semibold text-rose-600 dark:text-rose-400">브로큰 SKU 기준</span> · 사이즈 <b>3개 이상</b> 보유한 컬러-SKU 중 <b>구색률(매장 잔존 사이즈 ÷ 전체 보유 사이즈) &lt; 50%</b> 인 것 (사이즈 절반 이상 빠짐). 단일·2사이즈 상품(FREE·액세서리 등)은 제외. 상품옵션별 재고 표의 <b>브로큰=Y</b>는 그 상품컬러가 브로큰임을 뜻함.
+            <span className="font-semibold text-rose-600 dark:text-rose-400">브로큰 SKU 기준</span> · 사이즈 <b>3개 이상</b> 보유한 컬러-SKU 중 <b>구색률(매장 잔존 사이즈 ÷ 전체 보유 사이즈) &lt; 50%</b> 인 것 (사이즈 절반 이상 빠짐). 단일·2사이즈 상품(FREE·액세서리 등)은 제외. <b>판정은 매장별</b> — 매장 A는 브로큰이어도 B는 정상일 수 있음. 여러 매장 선택 시 브랜드·카테·상품표의 브로큰은 <b>선택 매장 중 한 곳이라도 브로큰이면</b> 카운트(매장별 표는 그 매장 기준). 상품옵션별 재고 표의 <b>브로큰=Y</b>는 그 상품컬러가 (선택 매장 중 어딘가에서) 브로큰임을 뜻함.
             <br />
             <span className="font-semibold text-slate-600 dark:text-slate-300">브랜드 표 수급</span> · <b>입고예정</b>=창고→매장 이동중 중 <b>신규(현재 매장 미보유)</b> 컬러-SKU만 (이미 있는 SKU 보충=<b>필업</b>은 별도 열·신규 아님), <b>출고예정</b>=매장→창고 반품 이동중 (매입 ERP + 위탁 SCM). <b>TTL SKU = 마감정상 + 신규입고예정 − 출고예정 − 브로큰</b>. (누적·과대 방지 위해 '출고확정前'은 제외, 이동중만 반영)
             <br />

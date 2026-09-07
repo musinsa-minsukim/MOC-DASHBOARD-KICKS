@@ -82,6 +82,29 @@ def _broken_keys(df, stock_mask) -> set:
     return set(br.index)
 
 
+def _broken_store_keys(df, vis) -> set:
+    """**매장별로 판정**한 브로큰 컬러-SKU key 집합 — 선택 매장 중 **한 곳이라도** 브로큰이면 포함.
+       구색률 = 그 매장 잔존 사이즈수 ÷ 컬러 전체 보유 사이즈수(분모는 매장 무관·hub 포함 전체 사이즈).
+       전체 보유 사이즈 3+ & 구색률<임계. (union 합산이 아니라 각 매장 기준으로 봐야 매장별 결품이 드러남)"""
+    if df.empty or not vis:
+        return set()
+    n_all = df.groupby("__color_key")["__size"].nunique()      # 분모: 컬러 전체 보유 사이즈수
+    eligible = n_all >= _BROKEN_MIN_SIZES
+    broken: set = set()
+    for s in vis:
+        if s not in df.columns:
+            continue
+        sub = df[df[s].fillna(0) > 0]                          # 그 매장 점재고 보유 행
+        if sub.empty:
+            continue
+        n_stk = sub.groupby("__color_key")["__size"].nunique()  # 분자: 그 매장 잔존 사이즈수
+        denom = n_all.reindex(n_stk.index)
+        elig = eligible.reindex(n_stk.index).fillna(False)
+        bad = n_stk[elig & (n_stk / denom < _BROKEN_FILL)]
+        broken.update(bad.index)
+    return broken
+
+
 def _f(v) -> float:
     try:
         x = float(v)
@@ -239,7 +262,7 @@ def _brand_stock(df, vis, top_n=None):
     sku = ins.groupby("brand_nm").agg(color_sku=("__color_key", "nunique"),
                                       barcode_sku=("barcode", "nunique"),
                                       uid=("goods_no", "nunique"))
-    bkeys = _broken_keys(df, df["__jaego"] > 0)   # 선택매장 점재고 기준 브로큰 컬러-SKU
+    bkeys = _broken_store_keys(df, vis)           # 매장별 판정 브로큰 컬러-SKU(어느 매장이든 브로큰이면 포함)
     brk = ins[ins["__color_key"].isin(bkeys)].groupby("brand_nm")["__color_key"].nunique()
     instore_keys = set(ins["__color_key"])        # 현재 매장 보유 컬러-SKU(필업 판정용)
     moves = _store_move_skus(vis, instore_keys)   # 브랜드별 입고(신규)/필업/출고예정(STO 이동중)
@@ -296,10 +319,10 @@ def brand_csv_rows(f=None):
     return header, out
 
 
-def _cat_sku(df, top_n=12):
+def _cat_sku(df, vis, top_n=12):
     """카테고리별(최상위/대/중) **점재고 매장 내** 컬러SKU/바코드SKU — 표용. 상위 top_n + '기타'."""
     ins = df[df["__jaego"] > 0]
-    bkeys = _broken_keys(df, df["__jaego"] > 0)      # 선택매장 점재고 기준 브로큰 컬러-SKU
+    bkeys = _broken_store_keys(df, vis)              # 매장별 판정 브로큰 컬러-SKU
     ins = ins.assign(__broken=ins["__color_key"].isin(bkeys))
     out = {}
     for key in ("cat_top", "cat_large", "cat_medium"):
@@ -376,8 +399,8 @@ def compute(f=None, limit=300):
 
     # 상품·옵션 표 (재고순 상위 limit) — ⚠️ to_dict로 실제 컬럼명(한글 매장명 포함) 보존
     # (itertuples는 밑줄/한글/공백 컬럼명을 _0..으로 renames → 점재고/허브/매장값이 0으로 깨짐)
-    # 브로큰 여부(컬러-SKU 단위, 선택매장 점재고 기준) — 옵션 행마다 그 상품컬러가 브로큰이면 'Y'.
-    _bkeys = _broken_keys(df, df["__jaego"] > 0)
+    # 브로큰 여부(컬러-SKU 단위, **매장별 판정** — 선택매장 중 한 곳이라도 브로큰이면 'Y').
+    _bkeys = _broken_store_keys(df, vis)
     df["브로큰"] = ["Y" if k in _bkeys else "" for k in df["__color_key"]]
     # 입고구분(컬러-SKU 단위): 이동중 입고 있으면 매장 보유여부로 신규입고/필업, 없으면 공란(=필업X).
     _inkeys = _move_incoming_keys(vis)
@@ -400,7 +423,7 @@ def compute(f=None, limit=300):
     return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows,
             "store_cols": vis, "hubcols": hubcols, "cats": cats,
             "brand_stock": _brand_stock(df, vis),
-            "store_sku": _store_sku(df, vis), "cat_sku": _cat_sku(df)}
+            "store_sku": _store_sku(df, vis), "cat_sku": _cat_sku(df, vis)}
 
 
 def csv_rows(f=None):
