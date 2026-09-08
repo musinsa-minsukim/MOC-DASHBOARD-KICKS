@@ -113,15 +113,27 @@ def _f(v) -> float:
     return 0.0 if math.isnan(x) or math.isinf(x) else x
 
 
+_HUB1000_ORDER = {"허브1000-온라인": 0, "허브1000-오프라인": 1, "허브1000-반품": 2}
+
+
 def _cols(columns):
+    """창고(허브) 컬럼 탐색. 허브1000은 상세 3열(온라인/오프라인/반품)이 있으면 그걸 표시하고
+       집계 '허브1000'은 표시에서 빼되 매장 컬럼으로 오인되지 않게 skip. 상세가 없는 구(舊) 스냅샷은
+       집계 '허브1000' 단일 표시(하위호환)."""
     cols = [str(c) for c in columns]
     hub_total = next((c for c in cols if c.endswith("합계") and "허브" in c), None)
     jaego_total = next((c for c in cols if c.endswith("합계") and "점재고" in c), None)
     mfs = next((c for c in cols if c == "MFS"), None)
-    h1000 = next((c for c in cols if "1000" in c), None)
     h1700 = next((c for c in cols if "1700" in c), None)
-    hubcols = [c for c in [mfs, h1000, h1700] if c]
-    skip = set(_META_ASCII) | {hub_total, jaego_total} | set(hubcols)
+    parts1000 = sorted((c for c in cols if c.startswith("허브1000-")),
+                       key=lambda c: _HUB1000_ORDER.get(c, 9))
+    agg1000 = next((c for c in cols if c == "허브1000"), None)
+    show1000 = parts1000 if parts1000 else ([agg1000] if agg1000 else [])
+    hubcols = [c for c in ([mfs] + show1000 + [h1700]) if c]
+    # 집계 허브1000은 미표시여도 매장 컬럼 오인 방지 위해 항상 skip
+    skip = (set(_META_ASCII) | {hub_total, jaego_total, agg1000}
+            | set(hubcols) | set(parts1000))
+    skip.discard(None)
     store_cols = [c for c in cols if c not in skip]
     return store_cols, hubcols, jaego_total, hub_total
 

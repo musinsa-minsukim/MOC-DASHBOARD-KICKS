@@ -377,7 +377,7 @@ with tab_sum:
         s_all = s_all[s_all["business_type"] == seg]
     inv_s = _inv_pivot()
     _mh = {"barcode", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
-           "cat_top", "cat_large", "cat_medium", "점재고합계", "허브합계", *db.HUB_COLS}
+           "cat_top", "cat_large", "cat_medium", "점재고합계", "허브합계", *db.HUB_ALL}
     inv_store_cols = [c for c in inv_s.columns if c not in _mh]
 
     day = s_all["sales_date"].dt.normalize()
@@ -676,7 +676,7 @@ with tab_sales:
             g["외국인비중"] = (g["foreign_gmv"] / g["gmv"].where(g["gmv"] != 0)).fillna(0) * 100
             g = g.sort_values("gmv", ascending=False)
             ig = _inv_goods()
-            inv_store_cols = [c for c in ig.columns if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계"} | set(db.HUB_COLS))]
+            inv_store_cols = [c for c in ig.columns if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계"} | set(db.HUB_ALL))]
             g = g.merge(ig.drop(columns=["goods_nm"]), on="goods_no", how="left")   # 상품명은 sales(bizest.goods) 사용
             for c in inv_store_cols + ["점재고합계", "허브합계"] + db.HUB_COLS:
                 g[c] = g[c].fillna(0)
@@ -797,7 +797,7 @@ with tab_inv:
     meta_hub = {"barcode", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
                 "cat_top", "cat_large", "cat_medium", "off_md_id", "concept",
                 "company_id", "brand_id",
-                "점재고합계", "허브합계", *db.HUB_COLS}
+                "점재고합계", "허브합계", *db.HUB_ALL}
     store_cols = [c for c in inv.columns if c not in meta_hub]
     st.caption("최신 스냅샷 · 상품·옵션(barcode) 단위 · 창고: MFS / 허브1000(plant1000 20xx) / "
                "허브1700(plant1700 2000) · 기간 필터 미적용")

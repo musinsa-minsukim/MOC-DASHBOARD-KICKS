@@ -1370,7 +1370,11 @@ def load_customer() -> pd.DataFrame:
 # 정의(전산 일치): 위탁=SCM-HUB(=MFS) / 매입=플랜트1000(창고 2000·2010·2020·2060)+플랜트1700(2000)+오프라인 매장재고.
 # 허브1000은 plant1000의 지정 창고만(LIKE '20%'는 신규 2011~2019/2040/2071 등을 끌어와 과대계상 → IN 목록으로 고정).
 # ---------------------------------------------------------------------------
-HUB_COLS = ["MFS", "허브1000", "허브1700"]
+HUB_COLS = ["MFS", "허브1000", "허브1700"]          # 허브합계·다운스트림 집계용(불변)
+# 허브1000(plant1000)을 lgort로 분해: 2000=온라인창고 / 2020·2060=오프라인창고 / 2010=반품창고.
+# 집계 '허브1000'(=세 파트 합)은 그대로 두고, 상세 3열을 '추가'만 함(재고 탭에서만 상세 표시).
+HUB1000_PARTS = ["허브1000-온라인", "허브1000-오프라인", "허브1000-반품"]
+HUB_ALL = HUB_COLS + HUB1000_PARTS                 # 재고 피벗의 모든 창고 컬럼(스토어 컬럼 판별시 제외용)
 
 
 @st.cache_data(ttl=86400, persist="disk", show_spinner="재고 피벗 로딩 중... (최초 1회만)")
@@ -1434,10 +1438,17 @@ def load_inventory_pivot() -> pd.DataFrame:
             SELECT sku_id, supplier_barcode,
                    ROW_NUMBER() OVER (PARTITION BY sku_id ORDER BY strd_dt DESC) rn
             FROM team.scm.scm_hub_goods_meta WHERE supplier_barcode IS NOT NULL) WHERE rn = 1)
-        SELECT r.barcode AS barcode, '허브1000' AS hub, CAST(SUM(r.wqty) AS DOUBLE) AS qty
+        SELECT r.barcode AS barcode,
+               CASE WHEN r.lgort='2000' THEN '허브1000-온라인'
+                    WHEN r.lgort='2010' THEN '허브1000-반품'
+                    ELSE '허브1000-오프라인' END AS hub,          -- 2020,2060=오프라인
+               CAST(SUM(r.wqty) AS DOUBLE) AS qty
           FROM team.partner.raw_erp_stock r JOIN le ON r.dt = le.d
           WHERE r.store_cd='1000' AND r.lgort IN ('2000','2010','2020','2060') AND r.barcode IN (SELECT barcode FROM bc)
-          GROUP BY r.barcode
+          GROUP BY r.barcode,
+               CASE WHEN r.lgort='2000' THEN '허브1000-온라인'
+                    WHEN r.lgort='2010' THEN '허브1000-반품'
+                    ELSE '허브1000-오프라인' END
         UNION ALL
         SELECT r.barcode, '허브1700', CAST(SUM(r.wqty) AS DOUBLE)
           FROM team.partner.raw_erp_stock r JOIN le ON r.dt = le.d
@@ -1478,10 +1489,12 @@ def load_inventory_pivot() -> pd.DataFrame:
     all_bc = store_piv.index.union(pd.Index(spine_hub, name="barcode"))
     store_piv = store_piv.reindex(all_bc, fill_value=0)
     hub_piv = hub_piv.reindex(all_bc)
-    for hc in HUB_COLS:
+    hub_present = ["MFS"] + HUB1000_PARTS + ["허브1700"]   # hub_long이 내보내는 실제 창고들
+    for hc in hub_present:
         if hc not in hub_piv:
             hub_piv[hc] = 0.0
-    hub_piv = hub_piv[HUB_COLS].fillna(0.0)
+    hub_piv = hub_piv[hub_present].fillna(0.0)
+    hub_piv["허브1000"] = hub_piv[HUB1000_PARTS].sum(axis=1)   # 집계(다운스트림 호환) = 온라인+오프라인+반품
 
     # 메타: 매장(editorial) 우선, 없으면 창고(scm) 보강
     hm = hub_meta.set_index("barcode")
@@ -1524,7 +1537,7 @@ def load_inventory_pivot() -> pd.DataFrame:
     df = apply_category_override(df)   # 크록스 지비츠(정상가 0~25900) Shoes→Acc 등 카탈로그 오탐 보정
     df = apply_running_flag(df)        # is_running: RUN 매장 취급 신발=러닝화
     df = apply_concept(df)             # concept: 마케팅 컨셉 dim(걸즈/영/포멀/킥스/뷰티/잡화/포우먼/기타)
-    qty_cols = store_cols + ["점재고합계"] + HUB_COLS + ["허브합계"]
+    qty_cols = store_cols + ["점재고합계"] + HUB_COLS + ["허브합계"] + HUB1000_PARTS
     for c in qty_cols:
         df[c] = pd.to_numeric(df[c]).fillna(0.0)
     df.attrs["store_cols"] = store_cols
@@ -1544,9 +1557,9 @@ def load_inventory_goods() -> pd.DataFrame:
     inv = load_inventory_pivot()
     meta = {"barcode", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
             "cat_top", "cat_large", "cat_medium", "off_md_id", "concept", "is_running",
-            "company_id", "brand_id", "점재고합계", "허브합계", *HUB_COLS}
+            "company_id", "brand_id", "점재고합계", "허브합계", *HUB_ALL}   # 상세 파트도 store 오인 방지
     store_cols = [c for c in inv.columns if c not in meta]
-    cols = store_cols + ["점재고합계", "허브합계"] + HUB_COLS
+    cols = store_cols + ["점재고합계", "허브합계"] + HUB_COLS   # goods 단위엔 집계 허브1000만(상세 불필요)
     num = inv.groupby("goods_no")[cols].sum()
     nm = inv.groupby("goods_no")["goods_nm"].first()
     return num.join(nm).reset_index()
@@ -1557,7 +1570,7 @@ def load_inventory_store_long() -> pd.DataFrame:
     """(goods_no, store_name, 점재고) 롱포맷 — 요약 탭 재고보충 조인용 (1회 계산·캐시)."""
     g = load_inventory_goods()
     store_cols = [c for c in g.columns
-                  if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계"} | set(HUB_COLS))]
+                  if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계"} | set(HUB_ALL))]
     return g.melt(id_vars="goods_no", value_vars=store_cols, var_name="store_name", value_name="점재고")
 
 

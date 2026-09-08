@@ -167,7 +167,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     colNum("normal_price", "정상가", "num", { minWidth: 84 }),
     colNum("sale_price", "판매가", "num", { minWidth: 84 }),
     ...hubcols.map((h) => colNum(h, h, "num", { headerTooltip: "창고(허브) 재고 · 매장 무관(그 상품 barcode 기준) · 합계는 상품 중복 없이 1회만 반영" })),
-    colNum("허브합계", "허브합계", "num", { headerTooltip: "MFS+허브1000+허브1700 · 매장행마다 반복 표시(합계는 barcode당 1회만)" }),
+    colNum("허브합계", "허브합계", "num", { headerTooltip: "MFS+허브1000(온라인+오프라인+반품)+허브1700 · 매장행마다 반복 표시(합계는 barcode당 1회만)" }),
   ], [hubcols.join(","), dark]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 브랜드별 점재고·GMV·SOB 표 (그래프 대체) — 재고 과다 판단
@@ -245,7 +245,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-slate-400 dark:text-slate-400">최신 스냅샷 · 상품·옵션(barcode) 단위 · 창고: MFS / 허브1000 / 허브1700 · 기간 필터 미적용 (매장타입·매장으로 보이는 점재고 결정)</p>
+        <p className="text-xs text-slate-400 dark:text-slate-400">최신 스냅샷 · 상품·옵션(barcode) 단위 · 창고: MFS / 허브1000(온라인·오프라인·반품) / 허브1700 · 기간 필터 미적용 (매장타입·매장으로 보이는 점재고 결정)</p>
         {loading && <Spinner className="h-4 w-4" />}
       </div>
 
@@ -273,6 +273,8 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
             <span className="font-semibold text-slate-600 dark:text-slate-300">브랜드 표 수급</span> · <b>입고예정</b>=창고→매장 이동중 중 <b>신규(현재 매장 미보유)</b> 컬러-SKU만 (이미 있는 SKU 보충=<b>필업</b>은 별도 열·신규 아님), <b>출고예정</b>=매장→창고 반품 이동중 (매입 ERP + 위탁 SCM). <b>TTL SKU = 마감정상 + 신규입고예정 − 출고예정 − 브로큰</b>. (누적·과대 방지 위해 '출고확정前'은 제외, 이동중만 반영)
             <br />
             <span className="font-semibold text-amber-600 dark:text-amber-400">입고구분(상품옵션별)</span> · <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=이번 이동중 물량이 매장에 없던 컬러-SKU / <b className="text-amber-600 dark:text-amber-400">필업</b>=이미 있는 SKU 보충 / <b>(공란)</b>=이동중 입고 없음(필업X). 이 표는 점재고 보유 옵션만 표시되므로 완전 신규는 브랜드 표의 입고예정 열로 집계.
+            <br />
+            <span className="font-semibold text-slate-600 dark:text-slate-300">허브1000 분해</span> · plant1000 창고를 lgort로 나눔 — <b>온라인</b>(2000) / <b>오프라인</b>(2020·2060) / <b>반품</b>(2010). 세 열의 합 = 기존 허브1000이며 허브합계도 동일(중복 없음).
           </div>
 
           {(d.cats?.cat_top?.length || d.cats?.cat_large?.length || d.cats?.cat_medium?.length) ? (
