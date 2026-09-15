@@ -521,29 +521,21 @@ def _option_rows(df, vis, hubcols, limit):
     recs.sort(key=lambda x: (x["__tot"], x["점재고"] + x["입고예정"]), reverse=True)
     recs = recs[:limit]
     # 2) 신규입고 전용 행: 그 매장이 그 컬러를 미보유한데 이동중 입고가 오는 (매장×옵션). 점재고=0 정확.
-    #    재고행은 df[s]>0에서만 생기므로 신규입고와 겹치지 않음. limit과 별개로 항상 추가(핵심 요청 = 신규입고 노출).
+    #    ⚠️ 필터 존중: df(공통 필터 적용됨)의 goods로 제한 → 브랜드/카테/컨셉 등 필터가 신규입고에도 그대로 반영.
+    #    (필터 통과 goods는 거의 허브/타매장 재고로 df에 존재 → 메타도 df에서 확보. limit과 별개로 항상 추가해 노출 보장.)
     if inc is not None:
+        df_goods = set(int(x) for x in df["goods_no"])
         gmeta = _goods_meta_map(df, txt)
-        # 재고에 없는 신규입고 goods 이름(브랜드/상품명)은 goods_master로 보강
-        miss = {int(r.goods_no) for r in inc.itertuples(index=False)
-                if r.colorkey not in store_color.get(r.store_name, set()) and int(r.goods_no) not in gmeta}
-        gmfb = {}
-        if miss:
-            try:
-                gm = store.get_goods_master()
-                sub = gm[gm["goods_no"].astype("int64").isin(miss)]
-                for t in sub.itertuples():
-                    gmfb[int(t.goods_no)] = {"brand_nm": "" if pd.isna(t.brand_nm) else t.brand_nm,
-                                             "goods_nm": "" if pd.isna(t.goods_nm) else t.goods_nm}
-            except Exception:
-                pass
         new_recs = []
         for r in inc.itertuples(index=False):
+            gno = int(r.goods_no)
+            if gno not in df_goods:                              # 필터 통과 안 한 goods(다른 브랜드 등) 제외
+                continue
             if r.colorkey in store_color.get(r.store_name, set()):
                 continue                                        # 그 컬러 이미 보유 → 신규입고 아님(필업은 재고행에서 표시)
-            d0 = dict(gmeta.get(int(r.goods_no)) or gmfb.get(int(r.goods_no)) or {})
+            d0 = dict(gmeta.get(gno, {}))
             d0["goods_opt"] = r.option; d0["barcode"] = None; d0["__hub"] = 0
-            new_recs.append(_mk(d0, r.store_name, 0, _f(r.in_qty), "", "신규입고", int(r.goods_no)))
+            new_recs.append(_mk(d0, r.store_name, 0, _f(r.in_qty), "", "신규입고", gno))
         new_recs.sort(key=lambda x: x["입고예정"], reverse=True)
         recs += new_recs[:limit]
     # 3) 허브 only (선택 매장 어디에도 재고 없음) — 남는 예산만큼만(창고대기 과다 방지). 전체는 CSV.
