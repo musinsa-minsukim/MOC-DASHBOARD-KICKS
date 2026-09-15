@@ -152,7 +152,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
       cellStyle: (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#4ade80" : "#16a34a", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" }),
     }),
     colNum("출고예정", "출고예정", "num", {
-      pinned: "left", minWidth: 82, headerTooltip: "그 매장에서 창고로 나가는 반품(STO). 위탁=출고요청 단계부터(requested−received) / 매입=매장반품지시(iif MSTAT=7) 누적(미반출+이동중, 물류확정 전까지·창고 입고확정 미차감→과대 가능)",
+      pinned: "left", minWidth: 82, headerTooltip: "그 매장에서 창고로 나가는 반품(STO) · 위탁만(출고요청 단계부터, requested−received). 매입은 제외(물류확정 차감 불가로 누적·과대)",
       cellStyle: (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#f87171" : "#dc2626", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" }),
     }),
     colText("브로큰", "브로큰", {
@@ -282,7 +282,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
             <br />
             <span className="font-semibold text-slate-600 dark:text-slate-300">브랜드 표 수급</span> · <b>입고예정</b>=창고→매장 이동중 중 <b>신규(현재 매장 미보유)</b> 컬러-SKU만 (이미 있는 SKU 보충=<b>필업</b>은 별도 열·신규 아님), <b>출고예정</b>=매장→창고 반품 이동중 (매입 ERP + 위탁 SCM). <b>TTL SKU = 마감정상 + 신규입고예정 − 출고예정 − 브로큰</b>. (누적·과대 방지 위해 '출고확정前'은 제외, 이동중만 반영)
             <br />
-            <span className="font-semibold text-amber-600 dark:text-amber-400">입고예정·출고예정·입고구분(상품옵션별)</span> · <b className="text-emerald-600 dark:text-emerald-400">입고예정</b>=그 매장으로 오는 이동중(STO) 수량 / <b className="text-rose-600 dark:text-rose-400">출고예정</b>=창고로 나가는 반품. <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=매장에 없던 컬러가 들어옴(점재고0 + 입고예정 행) / <b className="text-amber-600 dark:text-amber-400">필업</b>=기존 SKU 보충 / <b>(공란)</b>=입고 없음. ⚠️ <b>출고예정</b> 정의: 위탁=<b>출고요청 단계부터</b>(requested−received), 매입=<b>매장반품지시 누적</b>(iif MSTAT=7, 미반출+이동중). 둘 다 <b>물류확정 전까지</b>이며, 창고 입고확정 신호가 매장별로 없어 미차감(누적·과대 가능).
+            <span className="font-semibold text-amber-600 dark:text-amber-400">입고예정·출고예정·입고구분(상품옵션별)</span> · <b className="text-emerald-600 dark:text-emerald-400">입고예정</b>=그 매장으로 오는 이동중(STO) 수량 / <b className="text-rose-600 dark:text-rose-400">출고예정</b>=창고로 나가는 반품. <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=매장에 없던 컬러가 들어옴(점재고0 + 입고예정 행) / <b className="text-amber-600 dark:text-amber-400">필업</b>=기존 SKU 보충 / <b>(공란)</b>=입고 없음. <b>출고예정</b>=반품 <b>위탁만</b>(출고요청 단계부터, requested−received). <b>매입은 제외</b> — 창고 입고확정을 매장별로 차감할 신호가 없어 누적·과대가 되고 조회도 무거워 반영하지 않음.
             <br />
             <span className="font-semibold text-slate-600 dark:text-slate-300">허브1000 분해</span> · plant1000 창고를 lgort로 나눔 — <b>온라인</b>(2000) / <b>오프라인</b>(2020·2060) / <b>반품</b>(2010). 세 열의 합 = 기존 허브1000이며 허브합계도 동일(중복 없음).
           </div>

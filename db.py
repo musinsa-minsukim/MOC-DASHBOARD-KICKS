@@ -1604,7 +1604,7 @@ STORE_MOVE_CODES = {
 def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
     """한 매장 이동중(입고예정 in_qty / 출고예정 out_qty)을 goods_no×option 단위로.
        입고예정: 매입=이동중(oif313 shipped−erp315 received) / 위탁=이동중(shipped−received).
-       출고예정(반품, 물류확정 전까지): 매입=매장반품지시 iif MSTAT=7 누적 / 위탁=출고요청부터(requested−received)."""
+       출고예정(반품): **위탁만**(requested−received, 출고요청 단계부터). 매입은 제외(물류확정 차감불가·누적과대·조회무거움)."""
     scm_cte = ""
     scm_union = ""
     if scm is not None:
@@ -1635,16 +1635,11 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
         FROM musinsa.stock.erp_inout_bound WHERE lgort IN ({lgorts}) AND bwart='315' AND shkzg='S' GROUP BY 1,2),
     erp_in AS (SELECT COALESCE(a.g,b.g) g, COALESCE(a.o,b.o) o,
         GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc,0),0) inq, CAST(0 AS DOUBLE) outq
-        FROM oif_in a FULL OUTER JOIN rcv_in b ON a.g=b.g AND a.o=b.o),
-    -- 매입 출고예정(반품) = **물류확정 전 단계까지**: 매장반품 지시(iif MSTAT=7) 전량(미반출+반출/이동중 누적).
-    --   창고 입고확정(물류확정) 신호가 매장별로 없어 차감 불가 → 누적(과대 가능). S_MATNR=goods_no, OPTION=사이즈.
-    --   (이전 oif BWART=313은 실 반품(315→허브)을 거의 못 잡아 교체.)
-    erp_out AS (SELECT NULLIF(S_MATNR,'') g, OPTION o, CAST(0 AS DOUBLE) inq, GREATEST(SUM(CAST(MENGE AS DOUBLE)),0) outq
-        FROM pbo.moms.iif_sap_sto WHERE CONCAT(WERKS,'-',GI_LGORT) IN ({pairs}) AND MSTAT='7'
-          AND (CANC IS NULL OR CANC='') GROUP BY 1,2){scm_cte}
+        FROM oif_in a FULL OUTER JOIN rcv_in b ON a.g=b.g AND a.o=b.o){scm_cte}
+    -- 매입 출고예정(반품)은 제외: 창고 입고확정 차감 불가로 누적·과대 + iif MSTAT=7 조회가 무거움(2026-09 사용자 결정).
+    --   출고예정 = **위탁(SCM)만**(requested−received, 출고요청 단계부터). 매입은 입고예정(erp_in)만.
     SELECT g AS goods_no, o AS option, CAST(inq AS DOUBLE) AS in_qty, CAST(outq AS DOUBLE) AS out_qty FROM (
         SELECT g, o, inq, outq FROM erp_in WHERE inq>0
-        UNION ALL SELECT g, o, inq, outq FROM erp_out WHERE outq>0
         {scm_union}
     ) WHERE g IS NOT NULL
     """
