@@ -1612,9 +1612,11 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
               ORDER BY CASE WHEN mapping_type='ACTIVE' THEN 0 ELSE 1 END, updated_at DESC) rn
             FROM ocmp.scm_hub.sku_product_option) WHERE rn=1)
         , scm AS (
+            -- 입고예정(destination=매장) = 이동중(shipped−received). 출고예정(source=매장) = **출고요청 단계부터**(requested−received)
+            --   → CREATED/PENDING(출고요청·미출고) + PARTIALLY_SHIPPED/이동중까지 포함, 창고 입고확정(received) 전 전량.
             SELECT CAST(p.product_no AS STRING) g, po.option_name o,
               SUM(CASE WHEN sm.fk_destination_storage_id={scm} THEN GREATEST(smi.shipped_quantity-smi.received_quantity,0) ELSE 0 END) inq,
-              SUM(CASE WHEN sm.fk_source_storage_id={scm}      THEN GREATEST(smi.shipped_quantity-smi.received_quantity,0) ELSE 0 END) outq
+              SUM(CASE WHEN sm.fk_source_storage_id={scm}      THEN GREATEST(smi.requested_quantity-smi.received_quantity,0) ELSE 0 END) outq
             FROM ocmp.scm_hub.stock_movement sm
             JOIN ocmp.scm_hub.stock_movement_item smi ON smi.fk_stock_movement_id=sm._id AND smi.stock_movement_status<>'CANCELED'
             LEFT JOIN spo ON spo.fk_sku_id=smi.fk_sku_id
