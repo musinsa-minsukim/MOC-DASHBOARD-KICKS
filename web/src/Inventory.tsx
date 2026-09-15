@@ -151,6 +151,10 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
       pinned: "left", minWidth: 82, headerTooltip: "그 매장으로 오는 이동중(STO) 입고 예정 수량 · 점재고 없이 입고예정만 있으면 신규입고 행",
       cellStyle: (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#4ade80" : "#16a34a", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" }),
     }),
+    colNum("출고예정", "출고예정", "num", {
+      pinned: "left", minWidth: 82, headerTooltip: "그 매장에서 창고로 나가는 반품(STO 출고). 위탁=이동중(shipped−received) 정확 / 매입=출고확정(GI) 누적 근사(반품 즉시 확정·창고 입고확정 미차감 → 과대 가능)",
+      cellStyle: (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#f87171" : "#dc2626", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" }),
+    }),
     colText("브로큰", "브로큰", {
       minWidth: 72, headerTooltip: "이 상품컬러가 그 매장에서 사이즈 브로큰이면 Y · 사이즈 3+ 중 구색률<50%(매장별 판정)",
       cellStyle: (p: any): any => (p.value === "Y" ? { color: dark ? "#f87171" : "#dc2626", fontWeight: 700, textAlign: "center" } : { textAlign: "center" }),
@@ -231,17 +235,18 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     if (!rr.length) return [];
     const t: any = { brand_nm: "합계", goods_nm: "", 매장명: "", goods_no: "", style_no: "", goods_opt: "", business_type: "", cat_top: "", cat_large: "", cat_medium: "" };
     const hubCols = ["허브합계", ...hubcols];
-    let jaego = 0, expected = 0; for (const c of hubCols) t[c] = 0;
+    let jaego = 0, expected = 0, outgoing = 0; for (const c of hubCols) t[c] = 0;
     const seen = new Set<string>();
     for (const r of rr) {
-      jaego += Number(r["점재고"]) || 0;          // 점재고·입고예정은 매장×옵션 distinct → 전행 합산
+      jaego += Number(r["점재고"]) || 0;          // 점재고·입고예정·출고예정은 매장×옵션 distinct → 전행 합산
       expected += Number(r["입고예정"]) || 0;
+      outgoing += Number(r["출고예정"]) || 0;
       const bc = String(r.__bc ?? "");
       if (bc && seen.has(bc)) continue;   // 허브는 barcode당 1회
       if (bc) seen.add(bc);
       for (const c of hubCols) t[c] += Number(r[c]) || 0;
     }
-    t["점재고"] = jaego; t["입고예정"] = expected;
+    t["점재고"] = jaego; t["입고예정"] = expected; t["출고예정"] = outgoing;
     return [t];
   }, [d, hubcols]);
   const invGridKey = useMemo(() => `${(d?.rows?.length) || 0}|${Math.round(invTotal[0]?.["점재고"] || 0)}|${Math.round(invTotal[0]?.["허브합계"] || 0)}`, [d, invTotal]);
@@ -277,7 +282,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
             <br />
             <span className="font-semibold text-slate-600 dark:text-slate-300">브랜드 표 수급</span> · <b>입고예정</b>=창고→매장 이동중 중 <b>신규(현재 매장 미보유)</b> 컬러-SKU만 (이미 있는 SKU 보충=<b>필업</b>은 별도 열·신규 아님), <b>출고예정</b>=매장→창고 반품 이동중 (매입 ERP + 위탁 SCM). <b>TTL SKU = 마감정상 + 신규입고예정 − 출고예정 − 브로큰</b>. (누적·과대 방지 위해 '출고확정前'은 제외, 이동중만 반영)
             <br />
-            <span className="font-semibold text-amber-600 dark:text-amber-400">입고예정·입고구분(상품옵션별)</span> · <b>입고예정</b>=그 매장으로 오는 이동중(STO) 수량. <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=매장에 없던 컬러가 들어옴(점재고0 + 입고예정 행으로 별도 표시) / <b className="text-amber-600 dark:text-amber-400">필업</b>=이미 있는 SKU 보충 / <b>(공란)</b>=입고 없음. 입고예정만 있는 건도 이제 행으로 나옵니다.
+            <span className="font-semibold text-amber-600 dark:text-amber-400">입고예정·출고예정·입고구분(상품옵션별)</span> · <b className="text-emerald-600 dark:text-emerald-400">입고예정</b>=그 매장으로 오는 이동중(STO) 수량 / <b className="text-rose-600 dark:text-rose-400">출고예정</b>=창고로 나가는 반품. <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=매장에 없던 컬러가 들어옴(점재고0 + 입고예정 행) / <b className="text-amber-600 dark:text-amber-400">필업</b>=기존 SKU 보충 / <b>(공란)</b>=입고 없음. ⚠️ <b>출고예정</b>은 위탁=이동중(정확), <b>매입=출고확정(GI) 누적 근사</b> — 반품 즉시 출고확정되어 점재고에서 빠지고 창고 입고확정 미차감이라 과대될 수 있음.
             <br />
             <span className="font-semibold text-slate-600 dark:text-slate-300">허브1000 분해</span> · plant1000 창고를 lgort로 나눔 — <b>온라인</b>(2000) / <b>오프라인</b>(2020·2060) / <b>반품</b>(2010). 세 열의 합 = 기존 허브1000이며 허브합계도 동일(중복 없음).
           </div>

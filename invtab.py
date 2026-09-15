@@ -437,21 +437,22 @@ def compute(f=None, limit=300):
             "store_sku": _store_sku(df, vis), "cat_sku": _cat_sku(df, vis)}
 
 
-def _move_incoming_detail(vis):
-    """매장별 이동중 입고 상세 → tidy df[store_name, goods_no, option, in_qty, __color_key] (in_qty>0, 그룹합).
-       상품옵션 표의 '입고예정' 수량 열 + 신규입고/필업 행 생성용."""
+def _move_detail(vis):
+    """매장별 STO 이동중 상세 → tidy df[store_name, goods_no, option, in_qty, out_qty, colorkey] (in|out>0, 그룹합).
+       입고예정(in_qty)/출고예정(out_qty) 수량 열 + 신규입고 행 생성용.
+       ⚠️ out_qty: 위탁=이동중(shipped−received) 정확 / 매입=출고확정(GI) 누적 근사(hub 입고확정 미차감·반품 즉시 확정)."""
     try:
         mv = store.get_store_moves()
     except Exception:
         return None
     if mv is None or mv.empty or not vis:
         return None
-    mv = mv[(mv["store_name"].isin(vis)) & (mv["in_qty"] > 0)].copy()
+    mv = mv[(mv["store_name"].isin(vis)) & ((mv["in_qty"] > 0) | (mv["out_qty"] > 0))].copy()
     if mv.empty:
         return None
     mv["goods_no"] = mv["goods_no"].astype("int64")
     mv["option"] = mv["option"].astype(str)
-    g = mv.groupby(["store_name", "goods_no", "option"], as_index=False)["in_qty"].sum()
+    g = mv.groupby(["store_name", "goods_no", "option"], as_index=False)[["in_qty", "out_qty"]].sum()
     colors = g["option"].map(_color_of)
     g["colorkey"] = [f"{gn}|{c}" if c else f"UID:{gn}" for gn, c in zip(g["goods_no"], colors)]  # itertuples는 __접두 접근 불가
     return g
@@ -473,28 +474,28 @@ def _option_rows(df, vis, hubcols, limit):
        브로큰은 그 매장 기준. 허브 열은 매장행마다 반복(합계는 __bc로 프론트 dedup). 창고만 있는 barcode는 '(창고 대기)'.
        성능: 점재고행은 매장별 nlargest(limit) 후보만. 정렬은 상품 총(점재고+입고예정)↓ → 신규입고도 상위 노출."""
     per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
-    inc = _move_incoming_detail(vis)                                             # tidy df or None
+    inc = _move_detail(vis)                                                      # tidy df(in/out) or None
     store_color = {s: set(df.loc[df[s].fillna(0) > 0, "__color_key"]) for s in vis}   # 매장별 현재 보유 컬러
-    in_qty, in_by_goods = {}, {}                                                 # (store,gno,option)→수량 / gno→합
+    move_by_goods = {}                                                           # gno → 총 이동중(입고+출고), 정렬 가중치
     if inc is not None:
         for r in inc.itertuples(index=False):
-            in_qty[(r.store_name, int(r.goods_no), r.option)] = _f(r.in_qty)
-            in_by_goods[int(r.goods_no)] = in_by_goods.get(int(r.goods_no), 0.0) + _f(r.in_qty)
+            move_by_goods[int(r.goods_no)] = move_by_goods.get(int(r.goods_no), 0.0) + _f(r.in_qty) + _f(r.out_qty)
     jaego_by_goods = df.groupby("goods_no")["__jaego"].sum().to_dict() if not df.empty else {}
     txt = [c for c in ("brand_nm", "goods_nm", "goods_opt", "business_type",
                        "cat_top", "cat_large", "cat_medium") if c in df.columns]
     hubnum = list(hubcols)
     cols = txt + ["goods_no", "barcode", "__hub", "__jaego", "__color_key"] + hubnum + vis
 
-    def _tot(gno):   # 상품 그룹 정렬 키 = 총 점재고 + 총 입고예정(신규입고 상품도 상위로)
-        return _f(jaego_by_goods.get(gno, 0)) + _f(in_by_goods.get(gno, 0))
+    def _tot(gno):   # 상품 그룹 정렬 키 = 총 점재고 + 총 이동중(입고예정+출고예정) → 신규입고·반품 상품도 상위로
+        return _f(jaego_by_goods.get(gno, 0)) + _f(move_by_goods.get(gno, 0))
 
-    def _mk(d0, store_name, jaego, expected, broken, ingu, gno):
+    def _mk(d0, store_name, jaego, expected, outgoing, broken, ingu, gno):
         r = {c: ("" if pd.isna(d0.get(c)) else d0.get(c)) for c in txt}
         r["goods_no"] = int(gno)
         r["매장명"] = store_name
         r["점재고"] = int(round(_f(jaego)))
         r["입고예정"] = int(round(_f(expected)))
+        r["출고예정"] = int(round(_f(outgoing)))
         r["브로큰"] = broken
         r["입고구분"] = ingu
         for h in hubnum:
@@ -504,47 +505,57 @@ def _option_rows(df, vis, hubcols, limit):
         r["__tot"] = int(round(_tot(int(gno))))
         return r
 
-    # 1) 점재고행: 상품 총 점재고 상위 limit개 barcode → 매장(점재고>0)별 전개 + 그 옵션 입고예정 수량.
-    recs = []
+    df_goods = set(int(x) for x in df["goods_no"])
+    gmeta = _goods_meta_map(df, txt)
+    # (goods_no, goods_opt) → df 레코드(그 옵션의 매장별 점재고·메타·허브). 이동행이 실제 점재고를 붙일 수 있게.
+    df_by_key = {}
+    for d0 in df[cols].to_dict("records"):
+        df_by_key[(int(d0.get("goods_no") or 0),
+                   "" if d0.get("goods_opt") is None else str(d0.get("goods_opt")))] = d0
+
+    # 1) 이동행: 입고/출고 이동중이 있는 (매장×옵션)은 점재고 유무와 무관하게 **항상** 행 생성(필터=df_goods 존중).
+    #    - 입고예정>0 & 그 컬러 매장 미보유 → 신규입고(점재고0) / 보유 → 필업. 출고예정만 있으면 반품(공란).
+    move_recs, move_keys = [], set()
+    if inc is not None:
+        for r in inc.itertuples(index=False):
+            gno = int(r.goods_no)
+            if gno not in df_goods:
+                continue
+            opt = str(r.option); s = r.store_name
+            exp = _f(r.in_qty); outg = _f(r.out_qty)
+            d0 = df_by_key.get((gno, opt))
+            stock = _f(d0.get(s)) if (d0 is not None and s in d0) else 0.0
+            held = r.colorkey in store_color.get(s, set())
+            ingu = ("필업" if held else "신규입고") if exp > 0 else ""
+            broken = "Y" if (stock > 0 and r.colorkey in per_store_broken.get(s, set())) else ""
+            base = d0 if d0 is not None else dict(gmeta.get(gno, {}), goods_opt=opt, barcode=None, __hub=0)
+            move_recs.append(_mk(base, s, stock, exp, outg, broken, ingu, gno))
+            move_keys.add((s, gno, opt))
+    move_recs.sort(key=lambda x: (x["입고예정"] + x["출고예정"]), reverse=True)
+    move_recs = move_recs[:limit]
+    # 2) 순수 재고행: 상품 총 점재고 상위 limit barcode → 매장(점재고>0)별 전개. 이동행에서 낸 (매장,옵션)은 제외.
+    recs = list(move_recs)
     havej = df["__jaego"] > 0
     top = df.loc[havej, cols].nlargest(min(limit, int(havej.sum())), "__jaego") if havej.any() else df.iloc[0:0]
+    stock_recs = []
     for d0 in top.to_dict("records"):
         ck = d0["__color_key"]; gno = int(d0.get("goods_no") or 0)
         opt = "" if d0.get("goods_opt") is None else str(d0.get("goods_opt"))
         for s in vis:
             q = _f(d0.get(s))
-            if q <= 0:
+            if q <= 0 or (s, gno, opt) in move_keys:
                 continue
-            exp = in_qty.get((s, gno, opt), 0.0)                # 그 옵션의 이동중 입고 수량
-            recs.append(_mk(d0, s, q, exp, "Y" if ck in per_store_broken.get(s, set()) else "",
-                            "필업" if exp > 0 else "", gno))     # 재고 보유 옵션에 입고 = 필업
-    recs.sort(key=lambda x: (x["__tot"], x["점재고"] + x["입고예정"]), reverse=True)
-    recs = recs[:limit]
-    # 2) 신규입고 전용 행: 그 매장이 그 컬러를 미보유한데 이동중 입고가 오는 (매장×옵션). 점재고=0 정확.
-    #    ⚠️ 필터 존중: df(공통 필터 적용됨)의 goods로 제한 → 브랜드/카테/컨셉 등 필터가 신규입고에도 그대로 반영.
-    #    (필터 통과 goods는 거의 허브/타매장 재고로 df에 존재 → 메타도 df에서 확보. limit과 별개로 항상 추가해 노출 보장.)
-    if inc is not None:
-        df_goods = set(int(x) for x in df["goods_no"])
-        gmeta = _goods_meta_map(df, txt)
-        new_recs = []
-        for r in inc.itertuples(index=False):
-            gno = int(r.goods_no)
-            if gno not in df_goods:                              # 필터 통과 안 한 goods(다른 브랜드 등) 제외
-                continue
-            if r.colorkey in store_color.get(r.store_name, set()):
-                continue                                        # 그 컬러 이미 보유 → 신규입고 아님(필업은 재고행에서 표시)
-            d0 = dict(gmeta.get(gno, {}))
-            d0["goods_opt"] = r.option; d0["barcode"] = None; d0["__hub"] = 0
-            new_recs.append(_mk(d0, r.store_name, 0, _f(r.in_qty), "", "신규입고", gno))
-        new_recs.sort(key=lambda x: x["입고예정"], reverse=True)
-        recs += new_recs[:limit]
+            stock_recs.append(_mk(d0, s, q, 0, 0, "Y" if ck in per_store_broken.get(s, set()) else "", "", gno))
+    stock_recs.sort(key=lambda x: (x["__tot"], x["점재고"]), reverse=True)
+    recs += stock_recs[:limit]
+    recs.sort(key=lambda x: (x["__tot"], x["점재고"] + x["입고예정"] + x["출고예정"]), reverse=True)
     # 3) 허브 only (선택 매장 어디에도 재고 없음) — 남는 예산만큼만(창고대기 과다 방지). 전체는 CSV.
     budget = limit - len(recs)
     hoemask = (df["__jaego"] <= 0) & (df["__hub"] > 0)
     if budget > 0 and hoemask.any():
         ho = df.loc[hoemask, cols].nlargest(min(budget, int(hoemask.sum())), "__hub")
         for d0 in ho.to_dict("records"):
-            recs.append(_mk(d0, "(창고 대기)", 0, 0, "", "", int(d0.get("goods_no") or 0)))
+            recs.append(_mk(d0, "(창고 대기)", 0, 0, 0, "", "", int(d0.get("goods_no") or 0)))
     return recs
 
 
