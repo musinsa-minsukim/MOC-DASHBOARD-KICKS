@@ -308,7 +308,7 @@ def get_store_moves() -> pd.DataFrame:
     try:
         return _read_cached("store_moves")
     except OSError:
-        return pd.DataFrame(columns=["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv"])
+        return pd.DataFrame(columns=["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv", "first_recv_date"])
 
 
 def get_scm_store_stock() -> pd.DataFrame:

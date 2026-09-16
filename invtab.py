@@ -485,11 +485,32 @@ def _move_detail(vis):
     mv["option"] = mv["option"].astype(str)
     if "hist_recv" not in mv.columns:                          # 구 캐시 하위호환
         mv["hist_recv"] = 0.0
+    if "first_recv_date" not in mv.columns:
+        mv["first_recv_date"] = ""
+    mv["first_recv_date"] = mv["first_recv_date"].fillna("").astype(str)
     g = mv.groupby(["store_name", "goods_no", "option"], as_index=False).agg(
-        in_qty=("in_qty", "sum"), out_qty=("out_qty", "sum"), hist_recv=("hist_recv", "max"))
+        in_qty=("in_qty", "sum"), out_qty=("out_qty", "sum"), hist_recv=("hist_recv", "max"),
+        first_recv_date=("first_recv_date", "min"))         # 최초 입고일(min, 빈문자는 정렬상 최소라 실제값 우선하려면 아래 보정)
     colors = g["option"].map(_color_of)
     g["colorkey"] = [f"{gn}|{c}" if c else f"UID:{gn}" for gn, c in zip(g["goods_no"], colors)]  # itertuples는 __접두 접근 불가
     return g
+
+
+def _first_recv_map(vis) -> dict:
+    """(store_name, goods_no, option) → 최초 입고일(YYYY-MM-DD). store_moves(수령이력 hist>0 행 포함)에서."""
+    try:
+        mv = store.get_store_moves()
+    except Exception:
+        return {}
+    if mv is None or mv.empty or "first_recv_date" not in mv.columns:
+        return {}
+    mv = mv[mv["store_name"].isin(vis)]
+    out = {}
+    for r in mv.itertuples(index=False):
+        d = getattr(r, "first_recv_date", "") or ""
+        if d and str(d) not in ("", "None", "NaT"):
+            out[(r.store_name, int(r.goods_no), str(r.option))] = str(d)
+    return out
 
 
 def _goods_meta_map(df, txt):
@@ -509,6 +530,7 @@ def _option_rows(df, vis, hubcols, limit):
        성능: 점재고행은 매장별 nlargest(limit) 후보만. 정렬은 상품 총(점재고+입고예정)↓ → 신규입고도 상위 노출."""
     per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
     inc = _move_detail(vis)                                                      # tidy df(in/out/hist_recv) or None
+    frmap = _first_recv_map(vis)                                                 # (store,goods,option)→최초입고일
     move_by_goods = {}                                                           # gno → 총 이동중(입고+출고), 정렬 가중치
     if inc is not None:
         for r in inc.itertuples(index=False):
@@ -529,6 +551,8 @@ def _option_rows(df, vis, hubcols, limit):
         r["점재고"] = int(round(_f(jaego)))
         r["입고예정"] = int(round(_f(expected)))
         r["출고예정"] = int(round(_f(outgoing)))
+        r["최초입고일"] = frmap.get((store_name, int(gno),
+                                  "" if d0.get("goods_opt") is None else str(d0.get("goods_opt"))), "")
         r["브로큰"] = broken
         r["입고구분"] = ingu
         for h in hubnum:
