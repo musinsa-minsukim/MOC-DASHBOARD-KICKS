@@ -483,7 +483,10 @@ def _move_detail(vis):
         return None
     mv["goods_no"] = mv["goods_no"].astype("int64")
     mv["option"] = mv["option"].astype(str)
-    g = mv.groupby(["store_name", "goods_no", "option"], as_index=False)[["in_qty", "out_qty"]].sum()
+    if "hist_recv" not in mv.columns:                          # 구 캐시 하위호환
+        mv["hist_recv"] = 0.0
+    g = mv.groupby(["store_name", "goods_no", "option"], as_index=False).agg(
+        in_qty=("in_qty", "sum"), out_qty=("out_qty", "sum"), hist_recv=("hist_recv", "max"))
     colors = g["option"].map(_color_of)
     g["colorkey"] = [f"{gn}|{c}" if c else f"UID:{gn}" for gn, c in zip(g["goods_no"], colors)]  # itertuples는 __접두 접근 불가
     return g
@@ -505,8 +508,7 @@ def _option_rows(df, vis, hubcols, limit):
        브로큰은 그 매장 기준. 허브 열은 매장행마다 반복(합계는 __bc로 프론트 dedup). 창고만 있는 barcode는 '(창고 대기)'.
        성능: 점재고행은 매장별 nlargest(limit) 후보만. 정렬은 상품 총(점재고+입고예정)↓ → 신규입고도 상위 노출."""
     per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
-    inc = _move_detail(vis)                                                      # tidy df(in/out) or None
-    store_color = {s: set(df.loc[df[s].fillna(0) > 0, "__color_key"]) for s in vis}   # 매장별 현재 보유 컬러
+    inc = _move_detail(vis)                                                      # tidy df(in/out/hist_recv) or None
     move_by_goods = {}                                                           # gno → 총 이동중(입고+출고), 정렬 가중치
     if inc is not None:
         for r in inc.itertuples(index=False):
@@ -545,7 +547,8 @@ def _option_rows(df, vis, hubcols, limit):
                    "" if d0.get("goods_opt") is None else str(d0.get("goods_opt")))] = d0
 
     # 1) 이동행: 입고/출고 이동중이 있는 (매장×옵션)은 점재고 유무와 무관하게 **항상** 행 생성(필터=df_goods 존중).
-    #    - 입고예정>0 & 그 컬러 매장 미보유 → 신규입고(점재고0) / 보유 → 필업. 출고예정만 있으면 반품(공란).
+    #    - 입고예정>0 & 그 매장 입고 이력 없음(hist_recv=0) → 신규입고 / 이력 있음 → 필업. 출고예정만 있으면 반품(공란).
+    #      ※ '현재 재고 0'이 아니라 '입고 이력'이 기준(완판됐다가 재입고=필업). hist_recv=매장 SKU 누적 입고확정.
     move_recs, move_keys = [], set()
     if inc is not None:
         for r in inc.itertuples(index=False):
@@ -556,8 +559,8 @@ def _option_rows(df, vis, hubcols, limit):
             exp = _f(r.in_qty); outg = _f(r.out_qty)
             d0 = df_by_key.get((gno, opt))
             stock = _f(d0.get(s)) if (d0 is not None and s in d0) else 0.0
-            held = r.colorkey in store_color.get(s, set())
-            ingu = ("필업" if held else "신규입고") if exp > 0 else ""
+            ever = _f(getattr(r, "hist_recv", 0.0)) > 0          # 그 매장에 이 SKU 입고확정 이력 있음
+            ingu = ("필업" if ever else "신규입고") if exp > 0 else ""
             broken = "Y" if (stock > 0 and r.colorkey in per_store_broken.get(s, set())) else ""
             base = d0 if d0 is not None else dict(gmeta.get(gno, {}), goods_opt=opt, barcode=None, __hub=0)
             move_recs.append(_mk(base, s, stock, exp, outg, broken, ingu, gno))

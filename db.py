@@ -1616,9 +1616,11 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
         , scm AS (
             -- 입고예정(destination=매장) = 이동중(shipped−received). 출고예정(source=매장) = **출고요청 단계부터**(requested−received)
             --   → CREATED/PENDING(출고요청·미출고) + PARTIALLY_SHIPPED/이동중까지 포함, 창고 입고확정(received) 전 전량.
+            -- hist = 그 매장(destination) 전체 입고확정 누적(received_quantity) → 신규입고/필업 판정(입고 이력 기준).
             SELECT CAST(p.product_no AS STRING) g, po.option_name o,
               SUM(CASE WHEN sm.fk_destination_storage_id={scm} THEN GREATEST(smi.shipped_quantity-smi.received_quantity,0) ELSE 0 END) inq,
-              SUM(CASE WHEN sm.fk_source_storage_id={scm}      THEN GREATEST(smi.requested_quantity-smi.received_quantity,0) ELSE 0 END) outq
+              SUM(CASE WHEN sm.fk_source_storage_id={scm}      THEN GREATEST(smi.requested_quantity-smi.received_quantity,0) ELSE 0 END) outq,
+              SUM(CASE WHEN sm.fk_destination_storage_id={scm} THEN smi.received_quantity ELSE 0 END) hist
             FROM ocmp.scm_hub.stock_movement sm
             JOIN ocmp.scm_hub.stock_movement_item smi ON smi.fk_stock_movement_id=sm._id AND smi.stock_movement_status<>'CANCELED'
             LEFT JOIN spo ON spo.fk_sku_id=smi.fk_sku_id
@@ -1626,7 +1628,7 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
             LEFT JOIN ocmp.scm_hub.product p ON p._id=po.fk_product_id
             WHERE sm.fk_destination_storage_id={scm} OR sm.fk_source_storage_id={scm}
             GROUP BY 1,2)"""
-        scm_union = "UNION ALL SELECT g, o, inq, outq FROM scm WHERE inq>0 OR outq>0"
+        scm_union = "UNION ALL SELECT g, o, inq, outq, hist FROM scm WHERE inq>0 OR outq>0"
     return f"""
     WITH oif_in AS (SELECT NULLIF(S_MATNR,'') g, OPTION o, SUM(CAST(MENGE AS DOUBLE)) shp
         FROM pbo.moms.oif_sap_str WHERE CONCAT(WERKS,'-',GR_LGORT) IN ({pairs}) AND BWART='313'
@@ -1634,12 +1636,15 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
     rcv_in AS (SELECT NULLIF(zz_smatnr,'') g, zz_option o, SUM(CAST(menge AS DOUBLE)) rc
         FROM musinsa.stock.erp_inout_bound WHERE lgort IN ({lgorts}) AND bwart='315' AND shkzg='S' GROUP BY 1,2),
     erp_in AS (SELECT COALESCE(a.g,b.g) g, COALESCE(a.o,b.o) o,
-        GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc,0),0) inq, CAST(0 AS DOUBLE) outq
+        GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc,0),0) inq, CAST(0 AS DOUBLE) outq,
+        COALESCE(b.rc,0) hist   -- 매입 입고 이력 = 315 매장입고확정 누적
         FROM oif_in a FULL OUTER JOIN rcv_in b ON a.g=b.g AND a.o=b.o){scm_cte}
     -- 매입 출고예정(반품)은 제외: 창고 입고확정 차감 불가로 누적·과대 + iif MSTAT=7 조회가 무거움(2026-09 사용자 결정).
     --   출고예정 = **위탁(SCM)만**(requested−received, 출고요청 단계부터). 매입은 입고예정(erp_in)만.
-    SELECT g AS goods_no, o AS option, CAST(inq AS DOUBLE) AS in_qty, CAST(outq AS DOUBLE) AS out_qty FROM (
-        SELECT g, o, inq, outq FROM erp_in WHERE inq>0
+    --   hist_recv = 그 매장 SKU 입고확정 이력(누적 received) → 신규입고(이력 없음)/필업(이력 있음) 판정용.
+    SELECT g AS goods_no, o AS option, CAST(inq AS DOUBLE) AS in_qty, CAST(outq AS DOUBLE) AS out_qty,
+           CAST(hist AS DOUBLE) AS hist_recv FROM (
+        SELECT g, o, inq, outq, hist FROM erp_in WHERE inq>0
         {scm_union}
     ) WHERE g IS NOT NULL
     """
@@ -1665,13 +1670,15 @@ def fetch_store_moves() -> pd.DataFrame:
             continue
         d["store_name"] = nm
         frames.append(d)
-    cols = ["store_name", "goods_no", "option", "in_qty", "out_qty"]
+    cols = ["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv"]
     if not frames:
         return pd.DataFrame(columns=cols)
     df = pd.concat(frames, ignore_index=True)
     df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
     df["option"] = df["option"].fillna("").astype(str)
-    for c in ("in_qty", "out_qty"):
+    if "hist_recv" not in df.columns:
+        df["hist_recv"] = 0.0
+    for c in ("in_qty", "out_qty", "hist_recv"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     return df[cols]
 
