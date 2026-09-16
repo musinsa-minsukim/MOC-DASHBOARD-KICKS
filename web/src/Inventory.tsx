@@ -167,14 +167,6 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
       pinned: "left", minWidth: 82, headerTooltip: "그 매장에서 창고로 나가는 반품(STO) · 위탁만(출고요청 단계부터, requested−received). 매입은 제외(물류확정 차감 불가로 누적·과대)",
       cellStyle: (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#f87171" : "#dc2626", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" }),
     }),
-    colText("최초입고일", "최초입고일", {
-      minWidth: 100, headerTooltip: "그 매장에 이 SKU가 처음 입고확정된 날(YYYY-MM-DD) · 위탁=SCM 최초 received, 매입=ERP 315 최초 입고. 아직 입고 이력 없으면 공란",
-      cellStyle: (): any => ({ textAlign: "center", color: dark ? "#94a3b8" : "#64748b" }),
-    }),
-    colText("마지막출고확정일", "마지막출고확정일", {
-      minWidth: 120, headerTooltip: "창고(물류)에서 그 매장으로 마지막 출고확정된 날(YYYY-MM-DD) · 매장 입고예정 트래킹용(언제 창고에서 출발했는지). 위탁=SCM 매장도착방향 shipped, 매입=ERP 313 출고확정(BUDAT). 출고확정 이력 없으면 공란",
-      cellStyle: (): any => ({ textAlign: "center", color: dark ? "#94a3b8" : "#64748b" }),
-    }),
     colText("브로큰", "브로큰", {
       minWidth: 72, headerTooltip: "이 상품컬러가 그 매장에서 사이즈 브로큰이면 Y · 사이즈 3+ 중 구색률<50%(매장별 판정)",
       cellStyle: (p: any): any => (p.value === "Y" ? { color: dark ? "#f87171" : "#dc2626", fontWeight: 700, textAlign: "center" } : { textAlign: "center" }),
