@@ -1682,14 +1682,18 @@ def _store_moves_all_sql() -> str:
         date_format(MAX(CASE WHEN oi.BUDAT NOT IN ('','00000000') THEN to_date(oi.BUDAT,'yyyyMMdd') END),'yyyy-MM-dd') lod  -- 창고→매장 출고확정일(전기완료)
         FROM pbo.moms.oif_sap_str oi JOIN pair_map pm ON CONCAT(oi.WERKS,'-',oi.GR_LGORT)=pm.pr
         WHERE oi.BWART='313' AND (oi.CANC IS NULL OR oi.CANC='') GROUP BY 1,2,3),
-    erp315 AS (SELECT lm.shop shop, NULLIF(e.zz_smatnr,'') g, e.zz_option o2, SUM(CAST(e.menge AS DOUBLE)) rc,
+    -- 매장 입고확정: 315(STO 이동 입고) + 561(직납/초기입고, 창고 미경유 직접입고). rc_sto=315만(입고예정 차감용),
+    --   rc_all=315+561(입고 이력·신규입고 판정), frd=둘 중 최초 입고확정일. (한 번 스캔에 조건집계로 둘 다 산출)
+    rcv AS (SELECT lm.shop shop, NULLIF(e.zz_smatnr,'') g, e.zz_option o2,
+        SUM(CASE WHEN e.bwart='315' THEN CAST(e.menge AS DOUBLE) ELSE 0 END) rc_sto,
+        SUM(CAST(e.menge AS DOUBLE)) rc_all,
         date_format(MIN(CAST(e.receive_date AS DATE)),'yyyy-MM-dd') frd
         FROM musinsa.stock.erp_inout_bound e JOIN lgort_map lm ON e.lgort=lm.lg
-        WHERE e.bwart='315' AND e.shkzg='S' GROUP BY 1,2,3),
+        WHERE e.bwart IN ('315','561') AND e.shkzg='S' GROUP BY 1,2,3),
     erp AS (SELECT COALESCE(a.shop,b.shop) shop, COALESCE(a.g,b.g) g, COALESCE(a.o2,b.o2) o2,
-        GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc,0),0) inq, CAST(0 AS DOUBLE) outq, COALESCE(b.rc,0) hist,
-        b.frd, a.lod   -- lod = 창고→매장 출고확정일(oif313 BUDAT), 매장 입고예정 트래킹용
-        FROM oif313 a FULL OUTER JOIN erp315 b ON a.shop=b.shop AND a.g=b.g AND a.o2=b.o2),
+        GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc_sto,0),0) inq, CAST(0 AS DOUBLE) outq, COALESCE(b.rc_all,0) hist,
+        b.frd, a.lod   -- inq=STO 이동중(315만). hist=315+561(직납 포함). lod=창고→매장 출고확정일(oif313 BUDAT)
+        FROM oif313 a FULL OUTER JOIN rcv b ON a.shop=b.shop AND a.g=b.g AND a.o2=b.o2),
     scm_raw AS (
         SELECT dm.shop shop, CAST(p.product_no AS STRING) g, po.option_name o2,
             GREATEST(smi.shipped_quantity-smi.received_quantity,0) inq, CAST(0 AS DOUBLE) outq, smi.received_quantity hist,
