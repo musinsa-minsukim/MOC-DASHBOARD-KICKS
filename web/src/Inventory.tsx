@@ -171,6 +171,10 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
       minWidth: 100, headerTooltip: "그 매장에 이 SKU가 처음 입고확정된 날(YYYY-MM-DD) · 위탁=SCM 최초 received, 매입=ERP 315 최초 입고. 아직 입고 이력 없으면 공란",
       cellStyle: (): any => ({ textAlign: "center", color: dark ? "#94a3b8" : "#64748b" }),
     }),
+    colText("마지막출고확정일", "마지막출고확정일", {
+      minWidth: 116, headerTooltip: "그 매장에서 마지막으로 출고(반품)확정된 날(YYYY-MM-DD) · 위탁 SCM shipped 기준. 매입/출고 이력 없으면 공란",
+      cellStyle: (): any => ({ textAlign: "center", color: dark ? "#94a3b8" : "#64748b" }),
+    }),
     colText("브로큰", "브로큰", {
       minWidth: 72, headerTooltip: "이 상품컬러가 그 매장에서 사이즈 브로큰이면 Y · 사이즈 3+ 중 구색률<50%(매장별 판정)",
       cellStyle: (p: any): any => (p.value === "Y" ? { color: dark ? "#f87171" : "#dc2626", fontWeight: 700, textAlign: "center" } : { textAlign: "center" }),

@@ -1621,7 +1621,8 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
               SUM(CASE WHEN sm.fk_destination_storage_id={scm} THEN GREATEST(smi.shipped_quantity-smi.received_quantity,0) ELSE 0 END) inq,
               SUM(CASE WHEN sm.fk_source_storage_id={scm}      THEN GREATEST(smi.requested_quantity-smi.received_quantity,0) ELSE 0 END) outq,
               SUM(CASE WHEN sm.fk_destination_storage_id={scm} THEN smi.received_quantity ELSE 0 END) hist,
-              date_format(MIN(CASE WHEN sm.fk_destination_storage_id={scm} AND smi.received_quantity>0 THEN CAST(smi.updated_at AS DATE) END),'yyyy-MM-dd') frd
+              date_format(MIN(CASE WHEN sm.fk_destination_storage_id={scm} AND smi.received_quantity>0 THEN CAST(smi.updated_at AS DATE) END),'yyyy-MM-dd') frd,
+              date_format(MAX(CASE WHEN sm.fk_source_storage_id={scm}      AND smi.shipped_quantity>0  THEN CAST(smi.updated_at AS DATE) END),'yyyy-MM-dd') lod
             FROM ocmp.scm_hub.stock_movement sm
             JOIN ocmp.scm_hub.stock_movement_item smi ON smi.fk_stock_movement_id=sm._id AND smi.stock_movement_status<>'CANCELED'
             LEFT JOIN spo ON spo.fk_sku_id=smi.fk_sku_id
@@ -1629,7 +1630,7 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
             LEFT JOIN ocmp.scm_hub.product p ON p._id=po.fk_product_id
             WHERE sm.fk_destination_storage_id={scm} OR sm.fk_source_storage_id={scm}
             GROUP BY 1,2)"""
-        scm_union = "UNION ALL SELECT g, o, inq, outq, hist, frd FROM scm WHERE inq>0 OR outq>0 OR hist>0"
+        scm_union = "UNION ALL SELECT g, o, inq, outq, hist, frd, lod FROM scm WHERE inq>0 OR outq>0 OR hist>0"
     return f"""
     WITH oif_in AS (SELECT NULLIF(S_MATNR,'') g, OPTION o, SUM(CAST(MENGE AS DOUBLE)) shp
         FROM pbo.moms.oif_sap_str WHERE CONCAT(WERKS,'-',GR_LGORT) IN ({pairs}) AND BWART='313'
@@ -1639,14 +1640,14 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
         FROM musinsa.stock.erp_inout_bound WHERE lgort IN ({lgorts}) AND bwart='315' AND shkzg='S' GROUP BY 1,2),
     erp_in AS (SELECT COALESCE(a.g,b.g) g, COALESCE(a.o,b.o) o,
         GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc,0),0) inq, CAST(0 AS DOUBLE) outq,
-        COALESCE(b.rc,0) hist, b.frd   -- 매입 입고 이력 = 315 매장입고확정 누적 + 최초 입고일
+        COALESCE(b.rc,0) hist, b.frd, CAST(NULL AS STRING) lod   -- 매입: 입고 이력·최초입고일만(출고확정일은 위탁만)
         FROM oif_in a FULL OUTER JOIN rcv_in b ON a.g=b.g AND a.o=b.o){scm_cte}
     -- 매입 출고예정(반품)은 제외: 창고 입고확정 차감 불가로 누적·과대 + iif MSTAT=7 조회가 무거움(2026-09 사용자 결정).
     --   출고예정 = **위탁(SCM)만**(requested−received, 출고요청 단계부터). 매입은 입고예정(erp_in)만.
-    --   hist_recv = 그 매장 SKU 입고확정 이력(누적 received) → 신규입고/필업 판정. frd = 최초 입고일(YYYY-MM-DD).
+    --   hist_recv=입고확정 이력(누적) → 신규입고/필업. frd=최초 입고일, lod=마지막 출고확정일(위탁 shipped MAX, 매입 공란).
     SELECT g AS goods_no, o AS option, CAST(inq AS DOUBLE) AS in_qty, CAST(outq AS DOUBLE) AS out_qty,
-           CAST(hist AS DOUBLE) AS hist_recv, frd AS first_recv_date FROM (
-        SELECT g, o, inq, outq, hist, frd FROM erp_in WHERE inq>0 OR hist>0
+           CAST(hist AS DOUBLE) AS hist_recv, frd AS first_recv_date, lod AS last_out_date FROM (
+        SELECT g, o, inq, outq, hist, frd, lod FROM erp_in WHERE inq>0 OR hist>0
         {scm_union}
     ) WHERE g IS NOT NULL
     """
@@ -1672,7 +1673,7 @@ def fetch_store_moves() -> pd.DataFrame:
             continue
         d["store_name"] = nm
         frames.append(d)
-    cols = ["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv", "first_recv_date"]
+    cols = ["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv", "first_recv_date", "last_out_date"]
     if not frames:
         return pd.DataFrame(columns=cols)
     df = pd.concat(frames, ignore_index=True)
@@ -1682,9 +1683,10 @@ def fetch_store_moves() -> pd.DataFrame:
         df["hist_recv"] = 0.0
     for c in ("in_qty", "out_qty", "hist_recv"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    if "first_recv_date" not in df.columns:
-        df["first_recv_date"] = ""
-    df["first_recv_date"] = df["first_recv_date"].fillna("").astype(str).replace({"None": "", "NaT": ""})
+    for c in ("first_recv_date", "last_out_date"):
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].fillna("").astype(str).replace({"None": "", "NaT": ""})
     return df[cols]
 
 

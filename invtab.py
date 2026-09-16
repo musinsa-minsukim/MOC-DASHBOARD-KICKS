@@ -496,20 +496,25 @@ def _move_detail(vis):
     return g
 
 
-def _first_recv_map(vis) -> dict:
-    """(store_name, goods_no, option) → 최초 입고일(YYYY-MM-DD). store_moves(수령이력 hist>0 행 포함)에서."""
+def _recv_out_date_map(vis) -> dict:
+    """(store_name, goods_no, option) → (최초입고일, 마지막출고확정일) YYYY-MM-DD. store_moves(hist>0 행 포함)."""
     try:
         mv = store.get_store_moves()
     except Exception:
         return {}
     if mv is None or mv.empty or "first_recv_date" not in mv.columns:
         return {}
+    has_out = "last_out_date" in mv.columns
     mv = mv[mv["store_name"].isin(vis)]
+    def _cl(v):
+        v = "" if v is None else str(v)
+        return "" if v in ("", "None", "NaT", "nan") else v
     out = {}
     for r in mv.itertuples(index=False):
-        d = getattr(r, "first_recv_date", "") or ""
-        if d and str(d) not in ("", "None", "NaT"):
-            out[(r.store_name, int(r.goods_no), str(r.option))] = str(d)
+        frd = _cl(getattr(r, "first_recv_date", ""))
+        lod = _cl(getattr(r, "last_out_date", "")) if has_out else ""
+        if frd or lod:
+            out[(r.store_name, int(r.goods_no), str(r.option))] = (frd, lod)
     return out
 
 
@@ -530,7 +535,7 @@ def _option_rows(df, vis, hubcols, limit):
        성능: 점재고행은 매장별 nlargest(limit) 후보만. 정렬은 상품 총(점재고+입고예정)↓ → 신규입고도 상위 노출."""
     per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
     inc = _move_detail(vis)                                                      # tidy df(in/out/hist_recv) or None
-    frmap = _first_recv_map(vis)                                                 # (store,goods,option)→최초입고일
+    frmap = _recv_out_date_map(vis)                                              # (store,goods,option)→(최초입고일, 마지막출고확정일)
     move_by_goods = {}                                                           # gno → 총 이동중(입고+출고), 정렬 가중치
     if inc is not None:
         for r in inc.itertuples(index=False):
@@ -551,8 +556,10 @@ def _option_rows(df, vis, hubcols, limit):
         r["점재고"] = int(round(_f(jaego)))
         r["입고예정"] = int(round(_f(expected)))
         r["출고예정"] = int(round(_f(outgoing)))
-        r["최초입고일"] = frmap.get((store_name, int(gno),
-                                  "" if d0.get("goods_opt") is None else str(d0.get("goods_opt"))), "")
+        _dt = frmap.get((store_name, int(gno),
+                         "" if d0.get("goods_opt") is None else str(d0.get("goods_opt"))), ("", ""))
+        r["최초입고일"] = _dt[0]
+        r["마지막출고확정일"] = _dt[1]
         r["브로큰"] = broken
         r["입고구분"] = ingu
         for h in hubnum:
