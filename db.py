@@ -1653,30 +1653,89 @@ def _store_move_sql(pairs: str, lgorts: str, scm) -> str:
     """
 
 
-def fetch_store_moves() -> pd.DataFrame:
-    """전 매장 STO 이동중 → store_name × goods_no × color_key 별 입고예정(in_qty)·출고예정(out_qty).
-       색상=option 파싱(_running 없이 apply_category용 로직 재사용은 invtab에 있으므로 여기선 옵션 원본 유지)."""
-    import logging as _lg
-    sm = run_df("WITH " + DIM_STORE + " SELECT shop_no, store_name FROM dim_store")
-    name_by_shop = {int(r.shop_no): r.store_name for r in sm.itertuples()}
-    frames = []
+def _store_moves_all_sql() -> str:
+    """전 매장 STO 이동을 **단일 쿼리**로 — 매장별 16회 스캔을 매핑 테이블(VALUES) + 통합 스캔으로 대체(효율화).
+       매장 귀속: SCM=storage_id, ERP oif=WERKS-lgort쌍(플랜트 포함 안전), ERP 315=lgort(플랜트 없음 → 충돌 lgort는
+       lgort_map 중복행으로 양쪽 매장에 귀속 = 기존 매장별 루프와 동일 동작). goods_no/option/hist/frd/lod 동일 정의."""
+    import re
+    scm_rows, pair_rows, lgort_rows = [], [], []
     for shop, (pairs, lgorts, scm) in STORE_MOVE_CODES.items():
-        nm = name_by_shop.get(shop)
-        if not nm:
-            continue
-        try:
-            d = run_df(_store_move_sql(pairs, lgorts, scm))
-        except Exception as e:
-            _lg.warning("store_moves %s(%s) 조회 실패: %s", nm, shop, str(e)[:150])
-            continue
-        if d is None or d.empty:
-            continue
-        d["store_name"] = nm
-        frames.append(d)
+        if scm is not None:
+            scm_rows.append(f"({scm},{shop})")
+        for p in re.findall(r"'([^']+)'", pairs):
+            pair_rows.append(f"('{p}',{shop})")
+        for l in re.findall(r"'([^']+)'", lgorts):
+            lgort_rows.append(f"('{l}',{shop})")
+    scm_vals = ",".join(scm_rows) or "(0,0)"
+    pair_vals = ",".join(pair_rows) or "('x',0)"
+    lgort_vals = ",".join(lgort_rows) or "('x',0)"
+    return f"""
+    WITH {DIM_STORE},
+    scm_map(sid,shop)  AS (SELECT * FROM (VALUES {scm_vals}) AS t(sid,shop)),
+    pair_map(pr,shop)  AS (SELECT * FROM (VALUES {pair_vals}) AS t(pr,shop)),
+    lgort_map(lg,shop) AS (SELECT * FROM (VALUES {lgort_vals}) AS t(lg,shop)),
+    spo AS (SELECT fk_sku_id, fk_product_option_id FROM (
+        SELECT fk_sku_id, fk_product_option_id, ROW_NUMBER() OVER (PARTITION BY fk_sku_id
+          ORDER BY CASE WHEN mapping_type='ACTIVE' THEN 0 ELSE 1 END, updated_at DESC) rn
+        FROM ocmp.scm_hub.sku_product_option) WHERE rn=1),
+    oif313 AS (SELECT pm.shop shop, NULLIF(oi.S_MATNR,'') g, oi.`OPTION` o2, SUM(CAST(oi.MENGE AS DOUBLE)) shp
+        FROM pbo.moms.oif_sap_str oi JOIN pair_map pm ON CONCAT(oi.WERKS,'-',oi.GR_LGORT)=pm.pr
+        WHERE oi.BWART='313' AND (oi.CANC IS NULL OR oi.CANC='') GROUP BY 1,2,3),
+    erp315 AS (SELECT lm.shop shop, NULLIF(e.zz_smatnr,'') g, e.zz_option o2, SUM(CAST(e.menge AS DOUBLE)) rc,
+        date_format(MIN(CAST(e.receive_date AS DATE)),'yyyy-MM-dd') frd
+        FROM musinsa.stock.erp_inout_bound e JOIN lgort_map lm ON e.lgort=lm.lg
+        WHERE e.bwart='315' AND e.shkzg='S' GROUP BY 1,2,3),
+    erp AS (SELECT COALESCE(a.shop,b.shop) shop, COALESCE(a.g,b.g) g, COALESCE(a.o2,b.o2) o2,
+        GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc,0),0) inq, CAST(0 AS DOUBLE) outq, COALESCE(b.rc,0) hist,
+        b.frd, CAST(NULL AS STRING) lod
+        FROM oif313 a FULL OUTER JOIN erp315 b ON a.shop=b.shop AND a.g=b.g AND a.o2=b.o2),
+    scm_raw AS (
+        SELECT dm.shop shop, CAST(p.product_no AS STRING) g, po.option_name o2,
+            GREATEST(smi.shipped_quantity-smi.received_quantity,0) inq, CAST(0 AS DOUBLE) outq, smi.received_quantity hist,
+            CASE WHEN smi.received_quantity>0 THEN CAST(smi.updated_at AS DATE) END frd_dt, CAST(NULL AS DATE) lod_dt
+        FROM ocmp.scm_hub.stock_movement sm
+        JOIN ocmp.scm_hub.stock_movement_item smi ON smi.fk_stock_movement_id=sm._id AND smi.stock_movement_status<>'CANCELED'
+        JOIN scm_map dm ON sm.fk_destination_storage_id=dm.sid
+        LEFT JOIN spo ON spo.fk_sku_id=smi.fk_sku_id
+        LEFT JOIN ocmp.scm_hub.product_option po ON po._id=spo.fk_product_option_id
+        LEFT JOIN ocmp.scm_hub.product p ON p._id=po.fk_product_id
+        UNION ALL
+        SELECT sm2.shop shop, g, o2, inq, outq, hist, frd_dt, lod_dt FROM (
+          SELECT smp.shop shop, CAST(p2.product_no AS STRING) g, po2.option_name o2,
+            CAST(0 AS DOUBLE) inq, GREATEST(smi2.requested_quantity-smi2.received_quantity,0) outq, CAST(0 AS DOUBLE) hist,
+            CAST(NULL AS DATE) frd_dt, CASE WHEN smi2.shipped_quantity>0 THEN CAST(smi2.updated_at AS DATE) END lod_dt
+          FROM ocmp.scm_hub.stock_movement sm2b
+          JOIN ocmp.scm_hub.stock_movement_item smi2 ON smi2.fk_stock_movement_id=sm2b._id AND smi2.stock_movement_status<>'CANCELED'
+          JOIN scm_map smp ON sm2b.fk_source_storage_id=smp.sid
+          LEFT JOIN spo ON spo.fk_sku_id=smi2.fk_sku_id
+          LEFT JOIN ocmp.scm_hub.product_option po2 ON po2._id=spo.fk_product_option_id
+          LEFT JOIN ocmp.scm_hub.product p2 ON p2._id=po2.fk_product_id) sm2),
+    scm AS (SELECT shop, g, o2, SUM(inq) inq, SUM(outq) outq, SUM(hist) hist,
+        date_format(MIN(frd_dt),'yyyy-MM-dd') frd, date_format(MAX(lod_dt),'yyyy-MM-dd') lod
+        FROM scm_raw GROUP BY shop, g, o2),
+    allm AS (SELECT shop, g, o2, SUM(inq) inq, SUM(outq) outq, SUM(hist) hist, MIN(frd) frd, MAX(lod) lod FROM (
+        SELECT shop,g,o2,inq,outq,hist,frd,lod FROM erp
+        UNION ALL SELECT shop,g,o2,inq,outq,hist,frd,lod FROM scm) GROUP BY shop,g,o2)
+    SELECT ds.store_name AS store_name, m.g AS goods_no, m.o2 AS option,
+        CAST(m.inq AS DOUBLE) AS in_qty, CAST(m.outq AS DOUBLE) AS out_qty, CAST(m.hist AS DOUBLE) AS hist_recv,
+        m.frd AS first_recv_date, m.lod AS last_out_date
+    FROM allm m JOIN dim_store ds ON ds.shop_no=m.shop
+    WHERE m.g IS NOT NULL AND (m.inq>0 OR m.outq>0 OR m.hist>0)
+    """
+
+
+def fetch_store_moves() -> pd.DataFrame:
+    """전 매장 STO 이동 → store_name × goods_no × option 별 입고예정/출고예정/입고이력/최초입고일/마지막출고확정일.
+       단일 통합 쿼리(_store_moves_all_sql) — 매장별 16회 스캔을 매핑+통합 스캔으로 대체(효율화)."""
     cols = ["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv", "first_recv_date", "last_out_date"]
-    if not frames:
+    try:
+        df = run_df(_store_moves_all_sql())
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("store_moves 통합 조회 실패: %s", str(e)[:200])
         return pd.DataFrame(columns=cols)
-    df = pd.concat(frames, ignore_index=True)
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols)
     df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
     df["option"] = df["option"].fillna("").astype(str)
     if "hist_recv" not in df.columns:
