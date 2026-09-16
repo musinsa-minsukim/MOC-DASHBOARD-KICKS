@@ -337,6 +337,31 @@ def refresh_sales_ep(_: str = Depends(require_user), __: None = Depends(require_
     return {"started": True, "running": True}
 
 
+@app.post("/api/refresh/snapshot")
+def refresh_snapshot_ep(_: str = Depends(require_user)):
+    """재고 REFRESH — GitHub Actions 스냅샷 갱신(refresh.yml) 워크플로를 dispatch로 트리거.
+       Cloud Run 4Gi는 재고(inventory_pivot/scm_store_stock) 재빌드 시 OOM → 16GB 러너에서 재빌드 후
+       GCS 갱신 → 다음 조회부터 반영. 토큰 GH_DISPATCH_TOKEN(actions:write) 필요(Secret Manager)."""
+    import urllib.request
+    import json as _json
+    token = os.environ.get("GH_DISPATCH_TOKEN", "")
+    repo = os.environ.get("GH_REPO", "musinsa-minsukim/MOC-DASHBOARD-KICKS")
+    if not token:
+        raise HTTPException(status_code=503, detail="GH_DISPATCH_TOKEN 미설정 — Cloud Run 시크릿 추가 필요")
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/refresh.yml/dispatches"
+    body = _json.dumps({"ref": "main"}).encode()   # inputs 생략 → full 기본 false = --snapshots(스냅샷 전체 재빌드)
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "mok-dashboard"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            code = resp.status
+        return {"ok": True, "status": code, "message": "재고 갱신 요청됨 — 수 분 후 반영(GitHub Actions)"}
+    except Exception as e:
+        logging.exception("snapshot dispatch failed")
+        raise HTTPException(status_code=502, detail=f"dispatch 실패: {str(e)[:200]}")
+
+
 # ----------------------------------------------------------------- Cron 갱신 (Cloud Scheduler)
 def require_cron(x_cron_token: str = Header(default="")) -> None:
     """Cloud Scheduler 전용 보호. 서비스가 공개(allUsers)라 Cloud Run IAM으로 cron만 게이트할 수

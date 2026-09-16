@@ -34,6 +34,7 @@ _SNAPSHOTS = {
     "ips": db.fetch_ips,                                # 통합 IPS 브랜드×구분(매입/위탁) — IPS 탭 전용
     "ips_goods": db.fetch_ips_goods,                    # 통합 IPS 상품단위(드릴다운) — IPS 탭 상품 드릴
     "store_moves": db.fetch_store_moves,                # 매장 STO 이동중(입고예정/출고예정) — 재고 탭 브랜드 표
+    "scm_store_stock": db.fetch_scm_store_stock,        # 위탁 실시간 매장재고(판매가능/입고예정/출고예정) — 재고 탭 위탁 통일
 }
 # 증분(윈도우) 스냅샷 — {name: (fetch_fn, window_days)}. sales_date 기준 최근 N일만 재적재하고 과거는 보존.
 # editorial_summary_v는 296만행(2023-10~) 전이력이라 매 daily마다 전체 재집계하면 느림 →
@@ -46,7 +47,7 @@ _INCR_SNAPSHOTS = {
 }
 # readiness(=앱 구동 가능)에서 제외하는 선택 스냅샷: 아직 캐시에 없어도 앱은 정상 동작하고,
 # 다음 full 갱신(mode=full/rebuild) 때 생성되면 자동으로 뷰가 잡힌다(receipts와 동일 취급).
-_OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option", "settlement_daily", "ips", "ips_goods", "store_moves"}
+_OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option", "settlement_daily", "ips", "ips_goods", "store_moves", "scm_store_stock"}
 _ALL = ["sales", *_SNAPSHOTS, *_INCR_SNAPSHOTS]
 # DuckDB 뷰 생성 대상(=_ALL + 객단가용 영수증). receipts는 readiness(missing) 게이트에는 넣지 않아
 # 기존 캐시만 있어도 앱이 동작하고, 판매 갱신/빌드 시 생성되면 자동으로 뷰가 잡힌다.
@@ -308,6 +309,14 @@ def get_store_moves() -> pd.DataFrame:
         return _read_cached("store_moves")
     except OSError:
         return pd.DataFrame(columns=["store_name", "goods_no", "option", "in_qty", "out_qty"])
+
+
+def get_scm_store_stock() -> pd.DataFrame:
+    """위탁 실시간 매장재고(판매가능/입고예정/출고예정). 캐시 없으면 빈 df(→ 위탁도 기존 editorial 폴백)."""
+    try:
+        return _read_cached("scm_store_stock")
+    except OSError:
+        return pd.DataFrame(columns=["store_name", "goods_no", "option", "barcode", "sellable", "in_plan", "out_plan"])
 
 
 def get_inventory_goods() -> pd.DataFrame:

@@ -113,6 +113,7 @@ export const api = {
   customerCountry: (qs: string, limit = 20) =>
     req("/customer/country" + qs + (qs ? "&" : "?") + `limit=${limit}`),
   inventory: (qs: string) => req("/inventory" + qs),
+  refreshSnapshot: () => req("/refresh/snapshot", { method: "POST" }),
   compare: (qs: string) => req("/compare" + qs),
   target: (qs = "") => req("/target" + qs),
   pnl: (qs = "") => req("/pnl" + qs),

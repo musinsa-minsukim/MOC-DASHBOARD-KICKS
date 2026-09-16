@@ -1674,3 +1674,57 @@ def fetch_store_moves() -> pd.DataFrame:
     for c in ("in_qty", "out_qty"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     return df[cols]
+
+
+# ---------------------------------------------------------------------------
+# 위탁(SCM-HUB) 실시간 매장재고 — team.scm.scm_hub_inventory_status_v (최신 재고일자).
+#   editorial 점재고는 D-1 마감이라 오늘 입고확정분이 지연됨 → 위탁은 이 뷰(당일 판매가능재고)를 따름.
+#   바코드 단위: 판매가능재고(점재고) + 예정_입고예정·이동입고중(입고예정) + 예정_출고예정·이동출고중(출고예정).
+#   창고명↔store_name 매핑은 storage_id 경유(이름 자동매칭 아님): dim_store→offline_shopno_storageid→scm_hub.storage.name.
+# ---------------------------------------------------------------------------
+def _scm_store_name_map() -> dict:
+    """SCM 뷰 `창고명`(=scm_hub.storage.name) → dim_store store_name. storage_id로 정확 연결."""
+    q = ("WITH " + DIM_STORE + r"""
+        SELECT st.name AS scm_name, ds.store_name
+        FROM dim_store ds
+        JOIN team.commercepm.offline_shopno_storageid sid ON CAST(sid.shop_no AS INT) = ds.shop_no
+        JOIN ocmp.scm_hub.storage st ON CAST(st._id AS BIGINT) = CAST(sid.storage_id AS BIGINT)
+        WHERE st.name IS NOT NULL
+    """)
+    try:
+        d = run_df(q)
+    except Exception:
+        return {}
+    return {str(r.scm_name): str(r.store_name) for r in d.itertuples()}
+
+
+def fetch_scm_store_stock() -> pd.DataFrame:
+    """위탁 매장재고(최신 재고일자) → store_name × goods_no × option(바코드) 별
+       sellable(판매가능=점재고) / in_plan(입고예정) / out_plan(출고예정). ⚠️ 뷰가 무거움(~5분) — 스냅샷 전용."""
+    m = _scm_store_name_map()
+    cols = ["store_name", "goods_no", "option", "barcode", "sellable", "in_plan", "out_plan"]
+    if not m:
+        return pd.DataFrame(columns=cols)
+    inlist = ",".join("'" + n.replace("'", "''") + "'" for n in m.keys())
+    q = f"""
+        SELECT `창고명` AS wh, ANY_VALUE(CAST(`UID` AS STRING)) AS goods_no,
+               ANY_VALUE(`옵션명`) AS opt, `바코드` AS barcode,
+               CAST(SUM(`판매가능재고`) AS DOUBLE) AS sellable,
+               CAST(SUM(COALESCE(`예정_입고예정`,0)+COALESCE(`예정_이동입고중`,0)) AS DOUBLE) AS in_plan,
+               CAST(SUM(COALESCE(`예정_출고예정`,0)+COALESCE(`예정_이동출고중`,0)) AS DOUBLE) AS out_plan
+        FROM team.scm.scm_hub_inventory_status_v
+        WHERE `재고일자` = (SELECT MAX(`재고일자`) FROM team.scm.scm_hub_inventory_status_v)
+          AND `창고명` IN ({inlist})
+        GROUP BY `창고명`, `바코드`
+    """
+    d = run_df(q)
+    if d is None or d.empty:
+        return pd.DataFrame(columns=cols)
+    d["store_name"] = d["wh"].map(m)
+    d = d[d["store_name"].notna()].copy()
+    d["goods_no"] = pd.to_numeric(d["goods_no"], errors="coerce").fillna(0).astype("int64")
+    d["option"] = d["opt"].fillna("").astype(str)
+    d["barcode"] = d["barcode"].astype(str)
+    for c in ("sellable", "in_plan", "out_plan"):
+        d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0)
+    return d[cols]

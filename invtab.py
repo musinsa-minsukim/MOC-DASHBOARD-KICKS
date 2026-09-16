@@ -143,10 +143,41 @@ def _store_types() -> dict:
     return {r.store_name: r.shop_type for r in df.itertuples()}
 
 
+def _apply_scm_overlay(inv):
+    """위탁 점재고를 SCM-HUB 실시간(판매가능재고)로 교체 — editorial은 D-1 마감이라 오늘 입고확정분이 지연됨.
+       위탁 barcode의 매장 컬럼값을 scm_store_stock.sellable(barcode×매장)로 덮어씀(없으면 0). 매입·허브 불변.
+       (SCM엔 있는데 inv에 없던 완전 신규 barcode는 다음 editorial 스냅샷 전까지 누락 — 소수 잔여, 추후 보강.)
+       scm_store_stock 캐시 없으면 editorial 그대로(폴백)."""
+    try:
+        scm = store.get_scm_store_stock()
+    except Exception:
+        return inv
+    if scm is None or scm.empty or "barcode" not in inv.columns:
+        return inv
+    store_cols, _hub, _j, _h = _cols(inv.columns)
+    scm = scm[scm["store_name"].isin(store_cols)].copy()
+    if scm.empty:
+        return inv
+    inv = inv.copy()
+    inv["barcode"] = inv["barcode"].astype(str)
+    scm["barcode"] = scm["barcode"].astype(str)
+    sp = scm.pivot_table(index="barcode", columns="store_name", values="sellable", aggfunc="sum", fill_value=0.0)
+    wt = inv["business_type"].astype(str) == "위탁"
+    if not wt.any():
+        return inv
+    bc = inv.loc[wt, "barcode"].values                    # 위탁 행의 barcode 순서
+    for s in store_cols:
+        if s not in inv.columns or s not in sp.columns:   # SCM에 그 매장 데이터 없으면 editorial 유지(부분 SCM 안전)
+            continue
+        inv.loc[wt, s] = sp[s].reindex(bc).fillna(0.0).values   # 그 매장 SCM 판가재(SCM 미보유 barcode=0)
+    return inv
+
+
 def _prep(f):
-    """f = 공통 필터 dict(biz/type/store/brand/cat_*/md/goods). 점재고 = 보이는 매장(store/type) 합."""
+    """f = 공통 필터 dict(biz/type/store/brand/cat_*/md/goods). 점재고 = 보이는 매장(store/type) 합.
+       위탁 점재고는 SCM-HUB 실시간(판매가능재고)로 오버레이(마감 지연 제거)."""
     f = f or {}
-    inv = store.get_inventory_pivot()
+    inv = _apply_scm_overlay(store.get_inventory_pivot())
     store_cols, hubcols, jcol, hcol = _cols(inv.columns)
     stype = _store_types()
     fstore = f.get("store") or []

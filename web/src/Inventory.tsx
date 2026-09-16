@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList, Cell, PieChart, Pie } from "recharts";
-import { Boxes, Warehouse, Package, Tags, Download, Palette, Grid2x2 } from "lucide-react";
+import { Boxes, Warehouse, Package, Tags, Download, Palette, Grid2x2, RefreshCw } from "lucide-react";
 import { api, num, getToken, toQuery, type Filters } from "./lib";
 import { Card, CardBody, SectionTitle, Spinner, FitText } from "./ui";
 import DataGrid, { colText, colNum } from "./Grid";
@@ -128,6 +128,18 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState("");
+  const doRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true); setRefreshMsg("");
+    try {
+      const r = await api.refreshSnapshot();
+      setRefreshMsg(r?.message || "재고 갱신 요청됨 — 수 분 후 반영");
+    } catch (e: any) {
+      setRefreshMsg("갱신 요청 실패: " + (e?.message || "권한/토큰 확인"));
+    } finally { setRefreshing(false); }
+  };
 
   const qs = useMemo(() => toQuery(filters, { withDate: false }), [filters]);
 
@@ -255,8 +267,15 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-slate-400 dark:text-slate-400">최신 스냅샷 · 상품·옵션(barcode) 단위 · 창고: MFS / 허브1000(온라인·오프라인·반품) / 허브1700 · 기간 필터 미적용 (매장타입·매장으로 보이는 점재고 결정)</p>
-        {loading && <Spinner className="h-4 w-4" />}
+        <p className="text-xs text-slate-400 dark:text-slate-400">최신 스냅샷 · 상품·옵션(barcode) 단위 · 위탁 점재고=SCM-HUB 실시간(판매가능재고) · 창고: MFS / 허브1000(온라인·오프라인·반품) / 허브1700 · 기간 필터 미적용</p>
+        <div className="flex items-center gap-2">
+          {refreshMsg && <span className="text-xs text-slate-500 dark:text-slate-400">{refreshMsg}</span>}
+          {loading && <Spinner className="h-4 w-4" />}
+          <button onClick={doRefresh} disabled={refreshing}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60 dark:hover:bg-emerald-500">
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /> 재고 REFRESH
+          </button>
+        </div>
       </div>
 
       {error && <div className="rounded-lg border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-600 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-400 flex items-center justify-between"><span>⚠ {error}</span><button onClick={() => setReloadKey((k) => k + 1)} className="rounded-md bg-rose-100 px-3 py-1 font-medium text-rose-700 dark:bg-rose-900/50 dark:text-rose-300">다시 시도</button></div>}
