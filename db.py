@@ -1678,7 +1678,8 @@ def _store_moves_all_sql() -> str:
         SELECT fk_sku_id, fk_product_option_id, ROW_NUMBER() OVER (PARTITION BY fk_sku_id
           ORDER BY CASE WHEN mapping_type='ACTIVE' THEN 0 ELSE 1 END, updated_at DESC) rn
         FROM ocmp.scm_hub.sku_product_option) WHERE rn=1),
-    oif313 AS (SELECT pm.shop shop, NULLIF(oi.S_MATNR,'') g, oi.`OPTION` o2, SUM(CAST(oi.MENGE AS DOUBLE)) shp
+    oif313 AS (SELECT pm.shop shop, NULLIF(oi.S_MATNR,'') g, oi.`OPTION` o2, SUM(CAST(oi.MENGE AS DOUBLE)) shp,
+        date_format(MAX(CASE WHEN oi.BUDAT NOT IN ('','00000000') THEN to_date(oi.BUDAT,'yyyyMMdd') END),'yyyy-MM-dd') lod  -- 창고→매장 출고확정일(전기완료)
         FROM pbo.moms.oif_sap_str oi JOIN pair_map pm ON CONCAT(oi.WERKS,'-',oi.GR_LGORT)=pm.pr
         WHERE oi.BWART='313' AND (oi.CANC IS NULL OR oi.CANC='') GROUP BY 1,2,3),
     erp315 AS (SELECT lm.shop shop, NULLIF(e.zz_smatnr,'') g, e.zz_option o2, SUM(CAST(e.menge AS DOUBLE)) rc,
@@ -1687,12 +1688,13 @@ def _store_moves_all_sql() -> str:
         WHERE e.bwart='315' AND e.shkzg='S' GROUP BY 1,2,3),
     erp AS (SELECT COALESCE(a.shop,b.shop) shop, COALESCE(a.g,b.g) g, COALESCE(a.o2,b.o2) o2,
         GREATEST(COALESCE(a.shp,0)-COALESCE(b.rc,0),0) inq, CAST(0 AS DOUBLE) outq, COALESCE(b.rc,0) hist,
-        b.frd, CAST(NULL AS STRING) lod
+        b.frd, a.lod   -- lod = 창고→매장 출고확정일(oif313 BUDAT), 매장 입고예정 트래킹용
         FROM oif313 a FULL OUTER JOIN erp315 b ON a.shop=b.shop AND a.g=b.g AND a.o2=b.o2),
     scm_raw AS (
         SELECT dm.shop shop, CAST(p.product_no AS STRING) g, po.option_name o2,
             GREATEST(smi.shipped_quantity-smi.received_quantity,0) inq, CAST(0 AS DOUBLE) outq, smi.received_quantity hist,
-            CASE WHEN smi.received_quantity>0 THEN CAST(smi.updated_at AS DATE) END frd_dt, CAST(NULL AS DATE) lod_dt
+            CASE WHEN smi.received_quantity>0 THEN CAST(smi.updated_at AS DATE) END frd_dt,
+            CASE WHEN smi.shipped_quantity>0 THEN CAST(smi.updated_at AS DATE) END lod_dt   -- 창고→매장 출고확정(dest 방향 shipped)
         FROM ocmp.scm_hub.stock_movement sm
         JOIN ocmp.scm_hub.stock_movement_item smi ON smi.fk_stock_movement_id=sm._id AND smi.stock_movement_status<>'CANCELED'
         JOIN scm_map dm ON sm.fk_destination_storage_id=dm.sid
@@ -1703,7 +1705,7 @@ def _store_moves_all_sql() -> str:
         SELECT sm2.shop shop, g, o2, inq, outq, hist, frd_dt, lod_dt FROM (
           SELECT smp.shop shop, CAST(p2.product_no AS STRING) g, po2.option_name o2,
             CAST(0 AS DOUBLE) inq, GREATEST(smi2.requested_quantity-smi2.received_quantity,0) outq, CAST(0 AS DOUBLE) hist,
-            CAST(NULL AS DATE) frd_dt, CASE WHEN smi2.shipped_quantity>0 THEN CAST(smi2.updated_at AS DATE) END lod_dt
+            CAST(NULL AS DATE) frd_dt, CAST(NULL AS DATE) lod_dt   -- source(매장 반품) 방향은 출고확정일 대상 아님
           FROM ocmp.scm_hub.stock_movement sm2b
           JOIN ocmp.scm_hub.stock_movement_item smi2 ON smi2.fk_stock_movement_id=sm2b._id AND smi2.stock_movement_status<>'CANCELED'
           JOIN scm_map smp ON sm2b.fk_source_storage_id=smp.sid

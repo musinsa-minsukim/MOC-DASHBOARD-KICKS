@@ -172,7 +172,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
       cellStyle: (): any => ({ textAlign: "center", color: dark ? "#94a3b8" : "#64748b" }),
     }),
     colText("마지막출고확정일", "마지막출고확정일", {
-      minWidth: 116, headerTooltip: "그 매장에서 마지막으로 출고(반품)확정된 날(YYYY-MM-DD) · 위탁 SCM shipped 기준. 매입/출고 이력 없으면 공란",
+      minWidth: 120, headerTooltip: "창고(물류)에서 그 매장으로 마지막 출고확정된 날(YYYY-MM-DD) · 매장 입고예정 트래킹용(언제 창고에서 출발했는지). 위탁=SCM 매장도착방향 shipped, 매입=ERP 313 출고확정(BUDAT). 출고확정 이력 없으면 공란",
       cellStyle: (): any => ({ textAlign: "center", color: dark ? "#94a3b8" : "#64748b" }),
     }),
     colText("브로큰", "브로큰", {
