@@ -1598,6 +1598,9 @@ STORE_MOVE_CODES = {
     136:("'1000-3058','1700-3053'", "'3058','3053'", 197),
     19: ("'1000-3134'", "'3134'", None),
     86: ("'1000-3600','1700-3047'", "'3600','3047'", 145),
+    122:("'1000-3660','1700-3660'", "'3660'", 157),        # 무신사 스토어 트리플스트리트 송도점(양 플랜트 동일 lgort 3660)
+    90: ("'1000-3150','1700-3051'", "'3150','3051'", 153), # 무신사 런 서울숲
+    137:("'1000-3135'", "'3135'", 198),                    # 무신사 뷰티 홍대(1700 없음, shop19처럼 1000만)
 }
 
 
@@ -1715,7 +1718,22 @@ def _store_moves_all_sql() -> str:
           JOIN scm_map smp ON sm2b.fk_source_storage_id=smp.sid
           LEFT JOIN spo ON spo.fk_sku_id=smi2.fk_sku_id
           LEFT JOIN ocmp.scm_hub.product_option po2 ON po2._id=spo.fk_product_option_id
-          LEFT JOIN ocmp.scm_hub.product p2 ON p2._id=po2.fk_product_id) sm2),
+          LEFT JOIN ocmp.scm_hub.product p2 ON p2._id=po2.fk_product_id) sm2
+        UNION ALL
+        -- ③ 위탁 직납(STORE_INBOUND): 브랜드/공급사→매장 직접입고. stock_movement이 아닌 inbound 테이블(별도 소스라 표준쿼리 누락).
+        --    inq=요청−확정(미입고 예정분, 매장확정 전까지 예정) / hist=매장 입고확정(직납 SKU 신규입고 오판 방지) / lod=NULL(창고 미경유).
+        --    product_option 직결(fk_product_option_id) → sku dedup 불필요. inbound_item_status<>'CANCELLED'(L 2개) 취소 제외.
+        SELECT jm.shop shop, CAST(pj.product_no AS STRING) g, poj.option_name o2,
+            GREATEST(COALESCE(ii.inbound_requested_quantity,0)-COALESCE(ii.inbound_completed_quantity,0),0) inq,
+            CAST(0 AS DOUBLE) outq, COALESCE(ii.inbound_completed_quantity,0) hist,
+            CASE WHEN COALESCE(ii.inbound_completed_quantity,0)>0 THEN CAST(ii.first_inbound_completed_at AS DATE) END frd_dt,
+            CAST(NULL AS DATE) lod_dt
+          FROM ocmp.scm_hub.inbound ib
+          JOIN ocmp.scm_hub.inbound_item ii ON ii.fk_inbound_id=ib._id AND ii.inbound_item_status<>'CANCELLED'
+          JOIN scm_map jm ON ib.fk_destination_storage_id=jm.sid
+          LEFT JOIN ocmp.scm_hub.product_option poj ON poj._id=ii.fk_product_option_id
+          LEFT JOIN ocmp.scm_hub.product pj ON pj._id=poj.fk_product_id
+          WHERE ib.inbound_type='STORE_INBOUND'),
     scm AS (SELECT shop, g, o2, SUM(inq) inq, SUM(outq) outq, SUM(hist) hist,
         date_format(MIN(frd_dt),'yyyy-MM-dd') frd, date_format(MAX(lod_dt),'yyyy-MM-dd') lod
         FROM scm_raw GROUP BY shop, g, o2),
