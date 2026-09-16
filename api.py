@@ -339,17 +339,17 @@ def refresh_sales_ep(_: str = Depends(require_user), __: None = Depends(require_
 
 @app.post("/api/refresh/snapshot")
 def refresh_snapshot_ep(_: str = Depends(require_user)):
-    """재고 REFRESH — GitHub Actions 스냅샷 갱신(refresh.yml) 워크플로를 dispatch로 트리거.
-       Cloud Run 4Gi는 재고(inventory_pivot/scm_store_stock) 재빌드 시 OOM → 16GB 러너에서 재빌드 후
-       GCS 갱신 → 다음 조회부터 반영. 토큰 GH_DISPATCH_TOKEN(actions:write) 필요(Secret Manager)."""
+    """재고 REFRESH — GitHub Actions 재고 갱신(refresh-stock.yml) 워크플로를 dispatch로 트리거.
+       무거운 위탁 실시간 재고(scm_store_stock)+STO 이동(store_moves)만 16GB 러너에서 재빌드 → GCS 갱신 →
+       다음 조회부터 반영(Cloud Run 4Gi OOM 회피). 토큰 GH_DISPATCH_TOKEN(actions:write) 필요(Secret Manager)."""
     import urllib.request
     import json as _json
     token = os.environ.get("GH_DISPATCH_TOKEN", "")
     repo = os.environ.get("GH_REPO", "musinsa-minsukim/MOC-DASHBOARD-KICKS")
     if not token:
         raise HTTPException(status_code=503, detail="GH_DISPATCH_TOKEN 미설정 — Cloud Run 시크릿 추가 필요")
-    url = f"https://api.github.com/repos/{repo}/actions/workflows/refresh.yml/dispatches"
-    body = _json.dumps({"ref": "main"}).encode()   # inputs 생략 → full 기본 false = --snapshots(스냅샷 전체 재빌드)
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/refresh-stock.yml/dispatches"
+    body = _json.dumps({"ref": "main"}).encode()   # 위탁 재고+이동 스냅샷만 재빌드(분리됨)
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "mok-dashboard"})

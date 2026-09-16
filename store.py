@@ -167,7 +167,7 @@ def refresh_snapshot(name: str) -> int:
 
 # 야간 full(refresh_all)에서 제외하는 무거운 스냅샷 — 별도 스케줄러 잡이 mode=snap 으로 갱신.
 # (IPS는 웜 ~10분이라 동기 full HTTP의 Cloud Run 요청 타임아웃을 압박 → core 리프레시와 분리)
-_DECOUPLED = {"ips", "ips_goods"}
+_DECOUPLED = {"ips", "ips_goods", "scm_store_stock", "store_moves"}   # 무거운 원천 → 메인 --snapshots에서 제외, 독립 갱신(refresh --stock)
 
 
 def refresh_snapshots(full: bool = False) -> dict:
