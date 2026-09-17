@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import math
+import os
 import re
+import threading
 
 import pandas as pd
 
@@ -105,6 +107,28 @@ def _broken_store_keys(df, vis) -> set:
     return broken
 
 
+def _broken_store_map(df, vis) -> dict:
+    """매장별 브로큰 컬러-SKU set dict(per_store_broken). 분모 n_all(컬러 전체 사이즈수)은 매장 무관이라
+       **1회만** 계산하고 매장별 n_stk만 반복 → _broken_keys를 매장수만큼 부르며 n_all 재계산하던 비용 제거."""
+    out = {s: set() for s in vis}
+    if df.empty or not vis:
+        return out
+    n_all = df.groupby("__color_key")["__size"].nunique()
+    eligible = n_all >= _BROKEN_MIN_SIZES
+    for s in vis:
+        if s not in df.columns:
+            continue
+        sub = df[df[s].fillna(0) > 0]
+        if sub.empty:
+            continue
+        n_stk = sub.groupby("__color_key")["__size"].nunique()
+        denom = n_all.reindex(n_stk.index)
+        elig = eligible.reindex(n_stk.index).fillna(False)
+        bad = n_stk[elig & (n_stk / denom < _BROKEN_FILL)]
+        out[s] = set(bad.index)
+    return out
+
+
 def _f(v) -> float:
     try:
         x = float(v)
@@ -134,7 +158,7 @@ def _cols(columns):
     skip = (set(_META_ASCII) | {hub_total, jaego_total, agg1000}
             | set(hubcols) | set(parts1000))
     skip.discard(None)
-    store_cols = [c for c in cols if c not in skip]
+    store_cols = [c for c in cols if c not in skip and not c.startswith("__")]   # __파생열(컬러키 등) 매장 오인 방지
     return store_cols, hubcols, jaego_total, hub_total
 
 
@@ -173,11 +197,38 @@ def _apply_scm_overlay(inv):
     return inv
 
 
+_base_lock = threading.Lock()
+_base_cache: dict = {}   # "v" -> ((inv_mtime, scm_mtime), 가공된 df)
+
+
+def _enriched_base():
+    """오버레이 + 컬러키 + goods_nm 정리를 **데이터 버전(파켓 mtime)당 1회만** 계산해 캐시.
+       이 전처리(_apply_scm_overlay pivot·_add_color_keys 색상파싱 ~0.7s)는 필터와 무관해
+       요청마다 반복하면 필터 변경이 느려짐 → 캐시로 요청당 비용 제거(스냅샷 갱신 시 자동 무효화)."""
+    inv_m = os.path.getmtime(store._path("inventory_pivot"))
+    try:
+        scm_m = os.path.getmtime(store._path("scm_store_stock"))
+    except OSError:
+        scm_m = 0.0
+    key = (inv_m, scm_m)
+    with _base_lock:
+        hit = _base_cache.get("v")
+        if hit and hit[0] == key:
+            return hit[1]
+    inv = _apply_scm_overlay(store.get_inventory_pivot())
+    inv = inv[inv["goods_nm"].astype(str).str.strip() != ""].copy()   # 상품명 공란 제외(구 _prep 위치)
+    inv = _add_color_keys(inv)                                        # __color_key/__size 부여(무거운 색상파싱)
+    with _base_lock:
+        _base_cache["v"] = (key, inv)
+    return inv
+
+
 def _prep(f):
     """f = 공통 필터 dict(biz/type/store/brand/cat_*/md/goods). 점재고 = 보이는 매장(store/type) 합.
-       위탁 점재고는 SCM-HUB 실시간(판매가능재고)로 오버레이(마감 지연 제거)."""
+       위탁 점재고는 SCM-HUB 실시간(판매가능재고)로 오버레이(마감 지연 제거).
+       베이스(오버레이+컬러키)는 _enriched_base 캐시 → 여기선 필터 + __jaego 만 계산."""
     f = f or {}
-    inv = _apply_scm_overlay(store.get_inventory_pivot())
+    inv = _enriched_base()
     store_cols, hubcols, jcol, hcol = _cols(inv.columns)
     stype = _store_types()
     fstore = f.get("store") or []
@@ -212,11 +263,10 @@ def _prep(f):
             df = df[df["goods_nm"].astype(str).str.lower().str.contains(nl, na=False, regex=False)]
     if f.get("running") and "is_running" in df.columns:   # 러닝화만(RUN 매장 취급 신발)
         df = df[df["is_running"] == 1]
-    df = df[df["goods_nm"].astype(str).str.strip() != ""].copy()
+    df = df.copy()                               # 캐시 베이스 보호(파생열 추가 전) — goods_nm 공란·컬러키는 베이스서 처리됨
     df["__jaego"] = df[vis].sum(axis=1) if vis else 0
     df["__hub"] = df[hcol].fillna(0) if hcol else 0
     df = df[(df["__jaego"] > 0) | (df["__hub"] > 0)]
-    df = _add_color_keys(df)
     return df, vis, hubcols, hcol
 
 
@@ -419,17 +469,17 @@ def _store_sku(df, vis):
     """매장별 컬러SKU/바코드SKU/UID/브로큰SKU — 각 매장 컬럼>0(그 매장 점재고 보유)인 행 기준.
        브로큰은 그 매장 내 구색률 기준(사이즈 3+ & 매장 사이즈/전체 사이즈<임계)."""
     rows = []
+    bmap = _broken_store_map(df, vis)               # 매장별 브로큰 set(분모 n_all 1회) — _broken_keys 16회 반복 제거
     for s in vis:
         m = df[s].fillna(0) > 0
         sub = df[m]
         if sub.empty:
             continue
-        bkeys = _broken_keys(df, m)
         rows.append({"name": s,
                      "color_sku": int(sub["__color_key"].nunique()),
                      "barcode_sku": int(sub["barcode"].nunique()),
                      "uid": int(sub["goods_no"].nunique()),
-                     "broken_sku": int(len(bkeys))})
+                     "broken_sku": int(len(bmap.get(s, ())))})
     rows.sort(key=lambda r: -r["color_sku"])
     return rows
 
@@ -492,13 +542,17 @@ def _move_detail(vis):
     return g
 
 
-def _goods_meta_map(df, txt):
-    """goods_no → {brand_nm/goods_nm/business_type/cat_*} (goods_opt 제외, 첫 값). 신규입고 합성행 메타용."""
+def _goods_meta_map(df, txt, goods=None):
+    """goods_no → {brand_nm/goods_nm/business_type/cat_*} (goods_opt 제외, 첫 값). 신규입고 합성행 메타용.
+       goods(집합) 주면 그 goods_no만 — 이동행 폴백 전용이라 전체 계산 불필요(iterrows 폐기, to_dict 벡터화)."""
     keep = [c for c in txt if c != "goods_opt" and c in df.columns]
     if df.empty or not keep:
         return {}
-    g = df.groupby("goods_no")[keep].first()
-    return {int(k): {c: ("" if pd.isna(v) else v) for c, v in row.items()} for k, row in g.iterrows()}
+    sub = df if goods is None else df[df["goods_no"].isin(goods)]
+    if sub.empty:
+        return {}
+    g = sub.groupby("goods_no")[keep].first().fillna("")
+    return {int(k): v for k, v in g.to_dict("index").items()}
 
 
 def _option_rows(df, vis, hubcols, limit):
@@ -507,7 +561,7 @@ def _option_rows(df, vis, hubcols, limit):
        입고예정 = 그 매장으로 오는 이동중 수량(STO). 입고구분 = 신규입고(그 컬러 매장 미보유)/필업(보유)/공란.
        브로큰은 그 매장 기준. 허브 열은 매장행마다 반복(합계는 __bc로 프론트 dedup). 창고만 있는 barcode는 '(창고 대기)'.
        성능: 점재고행은 매장별 nlargest(limit) 후보만. 정렬은 상품 총(점재고+입고예정)↓ → 신규입고도 상위 노출."""
-    per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
+    per_store_broken = _broken_store_map(df, vis)                                # 매장별 브로큰 컬러-SKU(분모 1회)
     inc = _move_detail(vis)                                                      # tidy df(in/out/hist_recv) or None
     move_by_goods = {}                                                           # gno → 총 이동중(입고+출고), 정렬 가중치
     if inc is not None:
@@ -539,12 +593,16 @@ def _option_rows(df, vis, hubcols, limit):
         return r
 
     df_goods = set(int(x) for x in df["goods_no"])
-    gmeta = _goods_meta_map(df, txt)
-    # (goods_no, goods_opt) → df 레코드(그 옵션의 매장별 점재고·메타·허브). 이동행이 실제 점재고를 붙일 수 있게.
+    # 이동행만 df 레코드(점재고·메타·허브) 폴백 조회가 필요 → '이동 있는 상품'으로 한정.
+    #   (전체 15만행 to_dict + goods 메타 전량 계산이 요청당 ~15s였음 → 이동 상품만 처리해 제거.)
+    move_goods = set(int(x) for x in inc["goods_no"].unique()) if inc is not None else set()
+    gmeta = _goods_meta_map(df, txt, move_goods) if move_goods else {}
+    # (goods_no, goods_opt) → df 레코드. 이동행이 실제 점재고를 붙일 수 있게(이동 상품만).
     df_by_key = {}
-    for d0 in df[cols].to_dict("records"):
-        df_by_key[(int(d0.get("goods_no") or 0),
-                   "" if d0.get("goods_opt") is None else str(d0.get("goods_opt")))] = d0
+    if move_goods:
+        for d0 in df[df["goods_no"].isin(move_goods)][cols].to_dict("records"):
+            df_by_key[(int(d0.get("goods_no") or 0),
+                       "" if d0.get("goods_opt") is None else str(d0.get("goods_opt")))] = d0
 
     # 1) 이동행: 입고/출고 이동중이 있는 (매장×옵션)은 점재고 유무와 무관하게 **항상** 행 생성(필터=df_goods 존중).
     #    - 입고예정>0 & 그 매장 입고 이력 없음(hist_recv=0) → 신규입고 / 이력 있음 → 필업. 출고예정만 있으면 반품(공란).
