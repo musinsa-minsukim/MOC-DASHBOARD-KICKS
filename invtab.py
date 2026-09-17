@@ -292,30 +292,63 @@ def _cat_pies(df, top_n=8):
     return out
 
 
-def _store_move_skus(vis, instore_keys=None) -> dict:
-    """선택 매장 store_moves(STO 이동중) → {brand_nm: {'in': 신규입고SKU, 'fillup': 필업SKU, 'out': 출고예정SKU}}.
-       입고예정은 '신규'(현재 매장에 없는 컬러-SKU)만 산정 — 이미 있는 SKU 보충(필업)은 제외.
-       color_key = option 파싱(_color_of; 매입 size-only→UID:goods). 브랜드는 goods_master 매핑."""
+_moves_lock = threading.Lock()
+_moves_cache: dict = {}   # (store_moves_mtime, goods_master_mtime) -> mv+__ck+__brand
+
+
+def _moves_enriched():
+    """store_moves에 __ck(컬러키)·__brand 부여를 **데이터버전(파켓 mtime)당 1회**만 계산해 캐시.
+       여러 move 함수가 요청마다 store_moves 전행 × _color_of 정규식 + goods_master(600만행) dict를 반복한 게
+       최대 병목(72만행 기준 ~67s)이었음 → distinct option만 파싱 + 브랜드는 store_moves 상품만 매핑 + 캐시."""
     try:
-        mv = store.get_store_moves()
-    except Exception:
-        return {}
-    if mv is None or mv.empty or not vis:
-        return {}
-    mv = mv[mv["store_name"].isin(vis)]
-    if mv.empty:
-        return {}
-    instore_keys = instore_keys or set()
+        sm_m = os.path.getmtime(store._path("store_moves"))
+    except OSError:
+        return None
+    try:
+        gm_m = os.path.getmtime(store._path("goods_master"))
+    except OSError:
+        gm_m = 0.0
+    key = (sm_m, gm_m)
+    with _moves_lock:
+        hit = _moves_cache.get("v")
+        if hit and hit[0] == key:
+            return hit[1]
+    mv = store.get_store_moves()
+    if mv is None or mv.empty:
+        with _moves_lock:
+            _moves_cache["v"] = (key, mv)
+        return mv
+    mv = mv.copy()
     gn = mv["goods_no"].astype("int64")
-    colors = mv["option"].map(_color_of)
-    ck = [f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors)]
-    try:
+    opt = mv["option"].astype(str)
+    cmap = {o: _color_of(o) for o in opt.unique()}          # distinct option만 정규식 파싱(전행 반복 제거)
+    colors = opt.map(cmap)
+    mv["__ck"] = [f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors)]
+    try:                                                    # 브랜드: store_moves 상품(수만)만 goods_master서 — 600만 전량 dict 회피
+        need = set(int(x) for x in gn.unique())
         gm = store.get_goods_master()[["goods_no", "brand_nm"]]
+        gm = gm[gm["goods_no"].astype("int64").isin(need)].drop_duplicates("goods_no")
         bmap = dict(zip(gm["goods_no"].astype("int64"), gm["brand_nm"].astype(str)))
     except Exception:
         bmap = {}
-    brands = [bmap.get(int(g), "(미상)") or "(미상)" for g in gn]
-    m = mv.assign(__ck=ck, __brand=brands)
+    br = gn.map(bmap)
+    mv["__brand"] = br.where(br.notna() & (br.astype(str) != ""), "(미상)")
+    with _moves_lock:
+        _moves_cache["v"] = (key, mv)
+    return mv
+
+
+def _store_move_skus(vis, instore_keys=None) -> dict:
+    """선택 매장 store_moves(STO 이동중) → {brand_nm: {'in': 신규입고SKU, 'fillup': 필업SKU, 'out': 출고예정SKU}}.
+       입고예정은 '신규'(현재 매장에 없는 컬러-SKU)만 산정 — 이미 있는 SKU 보충(필업)은 제외.
+       색상키(__ck)·브랜드(__brand)는 _moves_enriched 캐시(요청당 파싱·매핑 없음)."""
+    m = _moves_enriched()
+    if m is None or m.empty or not vis:
+        return {}
+    m = m[m["store_name"].isin(vis)]
+    if m.empty:
+        return {}
+    instore_keys = instore_keys or set()
     inrows = m[m["in_qty"] > 0]
     newin = inrows[~inrows["__ck"].isin(instore_keys)]      # 신규(현 매장 미보유)
     fill = inrows[inrows["__ck"].isin(instore_keys)]        # 필업(기존 보유 보충)
@@ -330,37 +363,24 @@ def _store_move_skus(vis, instore_keys=None) -> dict:
 
 def _move_incoming_keys(vis) -> set:
     """선택 매장 store_moves 입고 이동중(in_qty>0) 컬러-SKU key 집합 (상품옵션 표 입고구분 태깅용)."""
-    try:
-        mv = store.get_store_moves()
-    except Exception:
+    m = _moves_enriched()
+    if m is None or m.empty or not vis:
         return set()
-    if mv is None or mv.empty or not vis:
-        return set()
-    mv = mv[(mv["store_name"].isin(vis)) & (mv["in_qty"] > 0)]
-    if mv.empty:
-        return set()
-    gn = mv["goods_no"].astype("int64")
-    colors = mv["option"].map(_color_of)
-    return set(f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors))
+    m = m[(m["store_name"].isin(vis)) & (m["in_qty"] > 0)]
+    return set(m["__ck"])
 
 
 def _move_incoming_by_store(vis) -> dict:
     """매장별 이동중 입고(in_qty>0) 컬러-SKU key 집합 → {store_name: set(color_key)}.
        매장을 행으로 분리한 상품옵션 표에서 그 매장의 입고구분 태깅용."""
-    try:
-        mv = store.get_store_moves()
-    except Exception:
+    m = _moves_enriched()
+    if m is None or m.empty or not vis:
         return {}
-    if mv is None or mv.empty or not vis:
+    m = m[(m["store_name"].isin(vis)) & (m["in_qty"] > 0)]
+    if m.empty:
         return {}
-    mv = mv[(mv["store_name"].isin(vis)) & (mv["in_qty"] > 0)]
-    if mv.empty:
-        return {}
-    gn = mv["goods_no"].astype("int64")
-    colors = mv["option"].map(_color_of)
-    ck = [f"{g}|{c}" if c else f"UID:{g}" for g, c in zip(gn, colors)]
     out: dict = {}
-    for s, k in zip(mv["store_name"].astype(str), ck):
+    for s, k in zip(m["store_name"].astype(str), m["__ck"]):
         out.setdefault(s, set()).add(k)
     return out
 
@@ -522,23 +542,16 @@ def _move_detail(vis):
     """매장별 STO 이동중 상세 → tidy df[store_name, goods_no, option, in_qty, out_qty, colorkey] (in|out>0, 그룹합).
        입고예정(in_qty)/출고예정(out_qty) 수량 열 + 신규입고 행 생성용.
        ⚠️ out_qty: 위탁=이동중(shipped−received) 정확 / 매입=출고확정(GI) 누적 근사(hub 입고확정 미차감·반품 즉시 확정)."""
-    try:
-        mv = store.get_store_moves()
-    except Exception:
-        return None
+    mv = _moves_enriched()
     if mv is None or mv.empty or not vis:
         return None
-    mv = mv[(mv["store_name"].isin(vis)) & ((mv["in_qty"] > 0) | (mv["out_qty"] > 0))].copy()
+    mv = mv[(mv["store_name"].isin(vis)) & ((mv["in_qty"] > 0) | (mv["out_qty"] > 0))]
     if mv.empty:
         return None
-    mv["goods_no"] = mv["goods_no"].astype("int64")
-    mv["option"] = mv["option"].astype(str)
-    if "hist_recv" not in mv.columns:                          # 구 캐시 하위호환
-        mv["hist_recv"] = 0.0
+    # colorkey=__ck(이미 파싱됨, itertuples는 __접두 접근 불가라 평문 컬럼으로). first=그룹내 동일값.
     g = mv.groupby(["store_name", "goods_no", "option"], as_index=False).agg(
-        in_qty=("in_qty", "sum"), out_qty=("out_qty", "sum"), hist_recv=("hist_recv", "max"))
-    colors = g["option"].map(_color_of)
-    g["colorkey"] = [f"{gn}|{c}" if c else f"UID:{gn}" for gn, c in zip(g["goods_no"], colors)]  # itertuples는 __접두 접근 불가
+        in_qty=("in_qty", "sum"), out_qty=("out_qty", "sum"), hist_recv=("hist_recv", "max"),
+        colorkey=("__ck", "first"))
     return g
 
 
@@ -564,9 +577,9 @@ def _option_rows(df, vis, hubcols, limit):
     per_store_broken = _broken_store_map(df, vis)                                # 매장별 브로큰 컬러-SKU(분모 1회)
     inc = _move_detail(vis)                                                      # tidy df(in/out/hist_recv) or None
     move_by_goods = {}                                                           # gno → 총 이동중(입고+출고), 정렬 가중치
-    if inc is not None:
-        for r in inc.itertuples(index=False):
-            move_by_goods[int(r.goods_no)] = move_by_goods.get(int(r.goods_no), 0.0) + _f(r.in_qty) + _f(r.out_qty)
+    if inc is not None and not inc.empty:                                         # 벡터 집계(전행 itertuples+_f 제거)
+        _mv = pd.to_numeric(inc["in_qty"], errors="coerce").fillna(0.0) + pd.to_numeric(inc["out_qty"], errors="coerce").fillna(0.0)
+        move_by_goods = {int(k): float(v) for k, v in _mv.groupby(inc["goods_no"].astype("int64")).sum().items()}
     jaego_by_goods = df.groupby("goods_no")["__jaego"].sum().to_dict() if not df.empty else {}
     txt = [c for c in ("brand_nm", "goods_nm", "goods_opt", "business_type",
                        "cat_top", "cat_large", "cat_medium") if c in df.columns]
@@ -609,10 +622,14 @@ def _option_rows(df, vis, hubcols, limit):
     #      ※ '현재 재고 0'이 아니라 '입고 이력'이 기준(완판됐다가 재입고=필업). hist_recv=매장 SKU 누적 입고확정.
     move_recs, move_keys = [], set()
     if inc is not None:
-        for r in inc.itertuples(index=False):
+        inc = inc[inc["goods_no"].isin(df_goods)]                    # df 보유 상품만(벡터 필터)
+        move_keys = set(zip(inc["store_name"].tolist(),              # 스톡행 dedup용(전체) — 벡터 zip(전행 int/str 루프 제거)
+                            inc["goods_no"].astype("int64").tolist(),
+                            inc["option"].astype(str).tolist()))
+        # dict 빌드는 (입고+출고) 상위 limit 행만 — 전체 이동행(수십만) dict화 회피(어차피 아래서 [:limit]라 결과 동일).
+        inc_top = inc.assign(__mv=inc["in_qty"] + inc["out_qty"]).nlargest(limit, "__mv") if len(inc) > limit else inc
+        for r in inc_top.itertuples(index=False):
             gno = int(r.goods_no)
-            if gno not in df_goods:
-                continue
             opt = str(r.option); s = r.store_name
             exp = _f(r.in_qty); outg = _f(r.out_qty)
             d0 = df_by_key.get((gno, opt))
@@ -622,7 +639,6 @@ def _option_rows(df, vis, hubcols, limit):
             broken = "Y" if (stock > 0 and r.colorkey in per_store_broken.get(s, set())) else ""
             base = d0 if d0 is not None else dict(gmeta.get(gno, {}), goods_opt=opt, barcode=None, __hub=0)
             move_recs.append(_mk(base, s, stock, exp, outg, broken, ingu, gno))
-            move_keys.add((s, gno, opt))
     move_recs.sort(key=lambda x: (x["입고예정"] + x["출고예정"]), reverse=True)
     move_recs = move_recs[:limit]
     # 2) 순수 재고행: 상품 총 점재고 상위 limit barcode → 매장(점재고>0)별 전개. 이동행에서 낸 (매장,옵션)은 제외.

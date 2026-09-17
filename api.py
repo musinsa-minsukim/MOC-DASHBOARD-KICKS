@@ -810,15 +810,26 @@ def _add_brand_gmv(r: dict, f: dict) -> None:
 
 
 @app.get("/api/inventory")
-def inventory(f: dict = Depends(get_filters), limit: int = 1000,
+def inventory(f: dict = Depends(get_filters), limit: int = 1000, timing: int = 0,
               _: str = Depends(require_user), __: None = Depends(require_ready)):
     """재고 탭 — 최신 스냅샷. 공통 필터(사업구분·매장·브랜드·카테·MD·UID) 적용, 매장타입/매장으로 보이는 점재고 결정(기간 미적용).
-       브랜드 표엔 최근 28일 GMV·SOB를 병합해 재고 과다 판단 지원."""
+       브랜드 표엔 최근 28일 GMV·SOB를 병합해 재고 과다 판단 지원.
+       timing=1 → 단계별 소요(ms)를 응답 _timing에 포함 + 서버 로그([inv-timing])에 기록(성능 실측용)."""
+    t0 = time.perf_counter()
     r = invtab.compute(f, int(limit))
+    t1 = time.perf_counter()
     if not r.get("empty") and r.get("rows"):
         _add_catalog(r["rows"])   # 스타일넘버·정상가·판매가 (#1, #4)
+    t2 = time.perf_counter()
     if not r.get("empty"):
         _add_brand_gmv(r, f)      # 브랜드별 GMV·SOB·재고/매출 배수
+    t3 = time.perf_counter()
+    tm = {"compute_ms": round((t1 - t0) * 1000), "catalog_ms": round((t2 - t1) * 1000),
+          "brand_gmv_ms": round((t3 - t2) * 1000), "total_ms": round((t3 - t0) * 1000),
+          "n_rows": len(r.get("rows") or []), "stores": len(r.get("store_cols") or [])}
+    logging.warning("[inv-timing] %s filters=%s", tm, {k: v for k, v in (f or {}).items() if v})
+    if timing:
+        r["_timing"] = tm
     return r
 
 
