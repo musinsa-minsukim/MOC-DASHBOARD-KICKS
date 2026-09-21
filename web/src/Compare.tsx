@@ -47,6 +47,19 @@ function mergeGoods(aRows: any[], bRows: any[]) {
   }
   return finalizeAB([...m.values()]);
 }
+// footfall A/B: /api/footfall 결과 rows[{store_name, visitors}] 두 구간을 store_name으로 병합. footfall 없으면 null.
+function mergeFootfall(a: any, b: any) {
+  if (!a?.available && !b?.available) return null;
+  const m = new Map<string, any>();
+  for (const r of a?.rows || []) m.set(r.store_name, { name: r.store_name, "A구간": r.visitors || 0, "B구간": 0 });
+  for (const r of b?.rows || []) {
+    const e = m.get(r.store_name) || { name: r.store_name, "A구간": 0, "B구간": 0 };
+    e["B구간"] = r.visitors || 0;
+    m.set(r.store_name, e);
+  }
+  if (!m.size) return null;
+  return finalizeAB([...m.values()]);
+}
 function finalizeAB(rows: any[]) {
   for (const r of rows) r["증감"] = abRatio(r["A구간"], r["B구간"]);
   rows.sort((x, y) => y["A구간"] - x["A구간"] || y["B구간"] - x["B구간"]);
@@ -178,7 +191,8 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
       api.by(catDim, qA, 300), api.by(catDim, qB, 300),
       api.by("brand", qA, 300), api.by("brand", qB, 300),
       api.salesGoods(qA, 400), api.salesGoods(qB, 400),
-    ]).then(([sa, sb, stA, stB, caA, caB, brA, brB, gA, gB]: any[]) => {
+      api.footfall(qA), api.footfall(qB),
+    ]).then(([sa, sb, stA, stB, caA, caB, brA, brB, gA, gB, ffA, ffB]: any[]) => {
       if (!alive) return;
       setAb({
         sa, sb,
@@ -186,6 +200,7 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
         category: mergeName(caA, caB),
         brand: mergeName(brA, brB),
         goods: mergeGoods(gA?.rows, gB?.rows),
+        visStore: mergeFootfall(ffA, ffB),
       });
     }).catch((e) => alive && setError(e.message)).finally(() => alive && setAbLoading(false));
     return () => { alive = false; };
@@ -314,6 +329,14 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
               </div>
 
               <CmpTable dark={dark} title="매장별 A/B 비교" sub={abSub} table={ab.store} labelCols={[{ key: "name", label: "매장", pinWidth: 150 }]} cols={AB_COLS} ratioCols={AB_RC} colHeaders={abHeaders} csvName="compare_ab_store.csv" height={460} onRowPick={onPick ? (v) => onPick("store", v) : undefined} />
+
+              {ab.visStore && (
+                <>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <SummaryKpi label="입객 수" value={num(ab.visStore.total["A구간"])} delta={kd(ab.visStore.total["A구간"], ab.visStore.total["B구간"])} />
+                  </div>
+                  <CmpTable dark={dark} title="매장별 입객수 A/B 비교" sub={`${abSub} · 매장 입객수(footfall) · 기간·매장·매장타입만 반영(상품/브랜드/카테 필터 무관)`} table={ab.visStore} labelCols={[{ key: "name", label: "매장", pinWidth: 150 }]} cols={AB_COLS} ratioCols={AB_RC} colHeaders={abHeaders} csvName="compare_ab_store_visitors.csv" height={460} /></>
+              )}
               <CmpTable dark={dark} title="카테고리별 A/B 비교" sub={`${clv} 기준 · ${abSub}`} table={ab.category} labelCols={[{ key: "name", label: "카테고리", pinWidth: 150 }]} cols={AB_COLS} ratioCols={AB_RC} colHeaders={abHeaders} csvName="compare_ab_category.csv" height={460} onRowPick={onPick ? (v) => onPick(clvKey, v) : undefined} />
               <CmpTable dark={dark} title="브랜드별 A/B 비교" sub={`상위 300 · ${abSub}`} table={ab.brand} labelCols={[{ key: "name", label: "브랜드", pinWidth: 150 }]} cols={AB_COLS} ratioCols={AB_RC} colHeaders={abHeaders} csvName="compare_ab_brand.csv" height={460} onRowPick={onPick ? (v) => onPick("brand", v) : undefined} />
               <CmpTable
