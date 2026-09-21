@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, PieChart, Pie, Cell, Legend, LabelList,
 } from "recharts";
-import { Globe, TrendingUp, TrendingDown, ShoppingBag, Percent, Receipt } from "lucide-react";
+import { Globe, TrendingUp, TrendingDown, ShoppingBag, Percent, Receipt, Users, Footprints } from "lucide-react";
 import { api, toQuery, won, num, compact, prevRange, type Filters } from "./lib";
 import { HolidayTick } from "./holidays";
 import { trendLabel, pieLabel, CatTick } from "./chartlabels";
@@ -143,6 +143,8 @@ export default function Customer({ meta, dark, filters, onPick }: { meta: Meta; 
         <Kpi icon={<ShoppingBag size={16} />} label="순판매수량" value={cur ? num(cur.qty) : "—"} delta={cur && prev ? pctDelta(cur.qty, prev.qty) : null} />
         <Kpi icon={<Receipt size={16} />} label="내국인 객단가" value={aov ? won(aov.domestic.aov) : "—"} delta={aov && aovPrev ? pctDelta(aov.domestic.aov, aovPrev.domestic.aov) : null} />
         <Kpi icon={<Receipt size={16} />} label="외국인 객단가" accent value={aov ? won(aov.foreign.aov) : "—"} delta={aov && aovPrev ? pctDelta(aov.foreign.aov, aovPrev.foreign.aov) : null} />
+        <Kpi icon={<Footprints size={16} />} label="입객 수" value={footfall?.available ? num(footfall.totals.visitors) : "—"} />
+        <Kpi icon={<Users size={16} />} label="구매 전환율" accent value={footfall?.available ? footfall.totals.conversion.toFixed(1) + "%" : "—"} />
       </div>
       <p className="-mt-2 text-[11px] text-slate-400 dark:text-slate-400">
         ※ 객단가 = 판매가 합 ÷ 영수증 수(주문 건수, 중복 제거). 기간·매장·매장타입·사업구분·브랜드·카테·내외국인 반영(상품 UID·MD 제외){aov ? ` · 내국인 ${num(aov.domestic.receipts)}건 / 외국인 ${num(aov.foreign.receipts)}건` : ""}

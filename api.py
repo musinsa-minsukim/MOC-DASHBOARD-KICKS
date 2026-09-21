@@ -559,6 +559,30 @@ def hourly(f: dict = Depends(get_filters), _: str = Depends(require_user), __: N
              "receipts": int(_num(by[h].receipts)) if h in by else 0} for h in range(10, 24)]
 
 
+_DOW_LABEL = {1: "월", 2: "화", 3: "수", 4: "목", 5: "금", 6: "토", 7: "일"}
+
+
+@app.get("/api/dow")
+def dow(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """요일별 매출(완료주문 거래일 기준, 월~일). receipts 뷰 사용 →
+       기간·매장·매장타입·사업구분·브랜드·카테(3단) 필터 반영(build_where_receipts). 7요일 전 구간 반환(빈 요일은 0).
+       (시간대별=/api/hourly 과 동일 소스·집계, 그룹만 isodow.)"""
+    try:
+        where, params = build_where_receipts(f)
+        r = store.query(f"""
+            SELECT isodow(sales_date) AS dow, CAST(sum(gmv) AS DOUBLE) gmv,
+                   CAST(sum(CASE WHEN is_foreign=1 THEN gmv ELSE 0 END) AS DOUBLE) foreign_gmv,
+                   CAST(COUNT(DISTINCT order_id) AS DOUBLE) receipts
+            FROM receipts{where} GROUP BY isodow(sales_date) ORDER BY dow""", params)
+        by = {int(row.dow): row for row in r.itertuples()}
+    except Exception:
+        by = {}
+    return [{"dow": d, "label": _DOW_LABEL[d],
+             "gmv": _num(by[d].gmv) if d in by else 0.0,
+             "foreign_gmv": _num(by[d].foreign_gmv) if d in by else 0.0,
+             "receipts": int(_num(by[d].receipts)) if d in by else 0} for d in range(1, 8)]
+
+
 @app.get("/api/trend")
 def trend(f: dict = Depends(get_filters), gran: str = "day", split: str | None = None,
           _: str = Depends(require_user), __: None = Depends(require_ready)):
@@ -750,10 +774,12 @@ def target(month: str | None = None, date_from: str | None = None, date_to: str 
 @app.get("/api/compare")
 def compare(ref: str | None = None, clv: str = "대카테", f: dict = Depends(get_filters),
             _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """비교·신장율 탭 — 기준일(ref) 동기비(전일/전주/전월/전년). 날짜 필터는 기준일 윈도우로 대체."""
+    """비교·신장율 탭 — 기준일(ref) 동기비(전일/전주/전월/전년). 날짜 필터는 기준일 윈도우로 대체.
+       입객수(footfall) 신장율은 매장별·총계에만(footfall은 매장 단위) — store/type 필터만 반영."""
     f = {**f, "date_from": None, "date_to": None}   # 기간 필터 무시(ref 윈도우 사용)
     where, params = build_where(f)
-    return cmptab.compute(ref, clv, where, params)
+    fwhere, fparams = _traffic_where(None, None, f.get("store") or [], f.get("type") or [])
+    return cmptab.compute(ref, clv, where, params, fwhere, fparams)
 
 
 # --------------------------------------------------- 상품 메타 enrichment (스타일넘버·현재가·점별재고)

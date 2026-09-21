@@ -79,6 +79,43 @@ def _winsel(W):
     return ",\n".join(parts), p
 
 
+def _winsel_vis(W):
+    """입객수(footfall.visitors) 윈도우 합 — _winsel과 동일 구조, gmv→visitors."""
+    parts, p = [], []
+    for name in WIN_ORDER:
+        lo, hi = W[name]
+        parts.append(f'CAST(sum(CASE WHEN sales_date >= ? AND sales_date < ? THEN visitors ELSE 0 END) AS DOUBLE) "{name}"')
+        p += [str(lo), str(hi + dt.timedelta(days=1))]
+    return ",\n".join(parts), p
+
+
+def _vis_ratio_row(vals, valid):
+    """윈도우 값 dict → 값 + 비율(전일비/전주비/전월비/전년비) 합친 dict."""
+    row = {name: _f(vals[name]) for name in WIN_ORDER}
+    for lab, cw, bw, vk in RATIOS:
+        row[lab] = _pct(_f(vals[cw]), _f(vals[bw]), valid[vk], True)
+    return row
+
+
+def _visitors(fwhere, fparams, W, valid, floor):
+    """footfall 입객수 윈도우 — 총계(dict) + 매장별({store_name: dict}). footfall 캐시/컬럼 없으면 (None, {})."""
+    vsel, vp = _winsel_vis(W)
+    fwand = fwhere.replace(" WHERE ", " AND ", 1) if fwhere else ""
+    try:
+        tot = store.query(f"SELECT {vsel} FROM footfall WHERE sales_date >= ?{fwand}",
+                          vp + [floor] + fparams).iloc[0]
+        vdf = store.query(f'SELECT store_name AS "name", {vsel} FROM footfall '
+                          f"WHERE sales_date >= ?{fwand} GROUP BY store_name", vp + [floor] + fparams)
+    except Exception:
+        return None, {}
+    total = _vis_ratio_row({name: tot[name] for name in WIN_ORDER}, valid)
+    by_store = {}
+    for r in vdf.itertuples(index=False):
+        d = r._asdict()
+        by_store[d["name"]] = _vis_ratio_row(d, valid)
+    return total, by_store
+
+
 def _dim(select_keys, group_keys, where, params, W, valid, label_fn, floor, cap=None, recent=None):
     wsel, wp = _winsel(W)
     wand = where.replace(" WHERE ", " AND ", 1) if where else ""  # 날짜하한 뒤에 AND로 붙임
@@ -112,7 +149,8 @@ def _dim(select_keys, group_keys, where, params, W, valid, label_fn, floor, cap=
     return {"rows": rows, "total": tot_row}
 
 
-def compute(ref_str, clv, where, params):
+def compute(ref_str, clv, where, params, fwhere="", fparams=None):
+    fparams = fparams or []
     rng = store.query("SELECT CAST(min(sales_date) AS DATE) lo, CAST(max(sales_date) AS DATE) hi FROM sales").iloc[0]
     dmin, dmax = _to_date(rng.lo), _to_date(rng.hi)
     ref = _to_date(ref_str) if ref_str else dmax
@@ -132,6 +170,13 @@ def compute(ref_str, clv, where, params):
 
     store_t = _dim('store_name AS "name"', "store_name", where, params, W, valid,
                    lambda d: {"name": d["name"]}, floor)
+
+    # 입객수(footfall) 신장율 — 매장별·총계에만(footfall은 매장 단위, 카테/브랜드/상품 차원 없음). store/type 필터만.
+    vis_total, vis_by_store = _visitors(fwhere, fparams, W, valid, floor)
+    if store_t and vis_by_store:
+        for row in store_t["rows"]:
+            row["vis"] = vis_by_store.get(row["name"])
+        store_t["total"]["vis"] = vis_total
     cat_t = _dim(f'{ckey} AS "name"', ckey, where, params, W, valid,
                  lambda d: {"name": d["name"]}, floor)
     brand_t = _dim('brand_nm AS "name"', "brand_nm", where, params, W, valid,
@@ -153,5 +198,6 @@ def compute(ref_str, clv, where, params):
         "ref": str(ref), "clv": clv, "info": info,
         "cols": COLS, "win_order": WIN_ORDER, "ratio_cols": [r[0] for r in RATIOS],
         "summary": summary, "summary_ratio": summary_ratio,
+        "vis_summary": vis_total,   # 입객수 총계(윈도우 값 + 전일/전주/전월/전년비), footfall 없으면 None
         "store": store_t, "category": cat_t, "brand": brand_t, "goods": goods_t,
     }

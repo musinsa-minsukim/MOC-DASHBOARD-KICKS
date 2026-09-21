@@ -337,6 +337,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   const [aov, setAov] = useState<any>(null);
   const [aovPrev, setAovPrev] = useState<any>(null);
   const [hourly, setHourly] = useState<any[]>([]);
+  const [dow, setDow] = useState<any[]>([]);
   const [cmpTrend, setCmpTrend] = useState<any[]>([]); // GMV 추이 직전 동기간(항상 표시)
   const [trend, setTrend] = useState<any[]>([]);
   const [byStore, setByStore] = useState<any[]>([]);
@@ -387,6 +388,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       api.hourly(qs),
       api.footfall(qs),
       api.by("concept", qNoConcept, 100),
+      api.dow(qs),
     ]).then((res) => {
       if (!alive) return;
       const val = (i: number) => (res[i].status === "fulfilled" ? (res[i] as any).value : undefined);
@@ -399,6 +401,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       setHourly(val(12) ?? []);
       setFootfall(val(13) ?? null);
       setConcept(val(14) ?? []);
+      setDow(val(15) ?? []);
       const failed = res.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
       if (failed) setError(failed.reason?.message || "일부 데이터를 불러오지 못했습니다");
     }).finally(() => alive && setLoading(false));
@@ -446,6 +449,10 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   const hourlyData = useMemo(
     () => hourly.map((h: any) => ({ hour: h.hour, dom: Math.max(0, (h.gmv || 0) - (h.foreign_gmv || 0)), fgn: Math.max(0, h.foreign_gmv || 0), gmv: h.gmv || 0, receipts: h.receipts || 0 })),
     [hourly]
+  );
+  const dowData = useMemo(
+    () => dow.map((d: any) => ({ label: d.label, dom: Math.max(0, (d.gmv || 0) - (d.foreign_gmv || 0)), fgn: Math.max(0, d.foreign_gmv || 0), gmv: d.gmv || 0, receipts: d.receipts || 0 })),
+    [dow]
   );
 
   const granLabel = f.gran === "day" ? "일" : f.gran === "week" ? "주" : "월";
@@ -635,6 +642,34 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="dom" name="내국인" stackId="h" fill={C.dom} />
                 <Bar dataKey="fgn" name="외국인" stackId="h" fill={C.fgn} radius={[4, 4, 0, 0]}>
+                  <LabelList valueAccessor={(e: any) => e?.payload?.gmv} position="top" formatter={(v: any) => compact(v as number)} fontSize={10} fill={C.ttFg} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </CardBody>
+      </Card>
+
+      {/* 요일별 매출 (시간대별 아래) — 내/외국인 적층 */}
+      <Card>
+        <CardBody>
+          <SectionTitle title="요일별 매출" sub="완료주문 거래일(KST) 요일 · 내국인/외국인 · 월~일" right={<SectionStat cur={cur} byBiz={byBiz} />} />
+          {dowData.length === 0 || dowData.every((d) => !d.gmv) ? (
+            <div className="flex h-[300px] items-center justify-center text-sm text-slate-400">데이터 없음</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={dowData} margin={{ left: 8, right: 8, top: 16 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.grid} vertical={false} />
+                <XAxis dataKey="label" tickFormatter={(d: any) => `${d}`} tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} interval={0} />
+                <YAxis tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} width={48} />
+                <Tooltip
+                  formatter={(v: any, n: any, item: any) => { const tot = item?.payload?.gmv || 0; return [`${won(v as number)} (${tot ? ((Number(v) / tot) * 100).toFixed(1) : 0}%)`, n]; }}
+                  labelFormatter={(d: any) => `${d}요일`}
+                  contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }}
+                  cursor={{ fill: C.cursor }} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="dom" name="내국인" stackId="d" fill={C.dom} />
+                <Bar dataKey="fgn" name="외국인" stackId="d" fill={C.fgn} radius={[4, 4, 0, 0]}>
                   <LabelList valueAccessor={(e: any) => e?.payload?.gmv} position="top" formatter={(v: any) => compact(v as number)} fontSize={10} fill={C.ttFg} />
                 </Bar>
               </BarChart>

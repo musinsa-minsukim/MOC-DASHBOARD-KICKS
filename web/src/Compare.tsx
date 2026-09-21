@@ -193,6 +193,14 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
 
   const cols: string[] = d?.cols ?? [];
   const rc: string[] = d?.ratio_cols ?? [];
+  // 입객수(footfall) 매장별 표 — store 행의 vis(윈도우 값+비율)를 최상위로 펼침. footfall 없으면 null.
+  const visStore = useMemo(() => {
+    const st = d?.store;
+    if (!st?.rows) return null;
+    const rows = st.rows.filter((r: any) => r.vis).map((r: any) => ({ name: r.name, ...r.vis }));
+    if (!rows.length) return null;
+    return { rows, total: { _total: true, ...(d.store.total?.vis ?? {}) } };
+  }, [d]);
   const kd = (a: number, b: number) => (b ? "B대비 " + pct(((a - b) / b) * 100) : a > 0 ? "B대비 신규" : "—");
   const abSub = `A ${aFrom}~${aTo} vs B ${bFrom}~${bTo}`;
   const shortD = (s: string) => (s ? s.slice(5).replace("-", "/") : s); // 2026-06-25 → 06/25
@@ -240,6 +248,18 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
               </div>
 
               <CmpTable dark={dark} title="매장별 비교" sub={`기준일(${d.ref}) 매출 발생 매장 · 동기비`} table={d.store} labelCols={[{ key: "name", label: "매장", pinWidth: 150 }]} cols={cols} ratioCols={rc} csvName="compare_store.csv" height={460} onRowPick={onPick ? (v) => onPick("store", v) : undefined} />
+
+              {visStore && d.vis_summary && (
+                <>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <SummaryKpi label="기준일 입객" value={num(d.vis_summary["기준일gmv"])} delta={"전일비 " + d.vis_summary[rc[0]]} />
+                    <SummaryKpi label="당주 입객 (WTD)" value={num(d.vis_summary["당주gmv"])} delta={"전주비 " + d.vis_summary[rc[1]]} />
+                    <SummaryKpi label="당월 입객 (MTD)" value={num(d.vis_summary["당월gmv"])} delta={"전월비 " + d.vis_summary[rc[2]]} />
+                    <SummaryKpi label="당년 입객 (YTD)" value={num(d.vis_summary["당년gmv"])} delta={"전년비 " + d.vis_summary[rc[3]]} />
+                  </div>
+                  <CmpTable dark={dark} title="매장별 입객수 신장율" sub="매장 입객수(footfall) 동기비 · 기간·매장·매장타입만 반영(상품/브랜드/카테 필터 무관)" table={visStore} labelCols={[{ key: "name", label: "매장", pinWidth: 150 }]} cols={cols} ratioCols={rc} csvName="compare_store_visitors.csv" height={460} />
+                </>
+              )}
               <CmpTable dark={dark} title="카테고리별 비교" sub={`${d.clv} 기준 · 동기비`} table={d.category} labelCols={[{ key: "name", label: "카테고리", pinWidth: 150 }]} cols={cols} ratioCols={rc} csvName="compare_category.csv" height={460} onRowPick={onPick ? (v) => onPick(clvKey, v) : undefined} />
               <CmpTable dark={dark} title="브랜드별 비교" sub={`기준일(${d.ref}) 매출 발생 브랜드 (상위 200) · 동기비`} table={d.brand} labelCols={[{ key: "name", label: "브랜드", pinWidth: 150 }]} cols={cols} ratioCols={rc} csvName="compare_brand.csv" height={460} onRowPick={onPick ? (v) => onPick("brand", v) : undefined} />
               <CmpTable

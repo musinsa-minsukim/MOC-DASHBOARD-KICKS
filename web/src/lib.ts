@@ -102,6 +102,7 @@ export const api = {
   summary: (qs: string) => req("/summary" + qs),
   aov: (qs: string) => req("/aov" + qs),
   hourly: (qs: string) => req("/hourly" + qs),
+  dow: (qs: string) => req("/dow" + qs),
   trend: (qs: string) => req("/trend" + qs),
   by: (dim: string, qs: string, limit = 100) =>
     req(`/by/${dim}` + qs + (qs ? "&" : "?") + `limit=${limit}`),
