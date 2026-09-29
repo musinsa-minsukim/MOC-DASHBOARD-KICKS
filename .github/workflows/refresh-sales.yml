@@ -22,7 +22,7 @@ concurrency:
 jobs:
   refresh-sales:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30        # 15→30: full 동시실행/웨어하우스 콜드로 느려질 때 timeout kill 방지(:27 매시라 30분이면 다음 회차와도 무충돌)
     steps:
       - name: Checkout
         uses: actions/checkout@v4

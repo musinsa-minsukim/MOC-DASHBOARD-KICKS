@@ -22,7 +22,7 @@ concurrency:
 jobs:
   refresh-ips:
     runs-on: ubuntu-latest
-    timeout-minutes: 40        # CloudFetch로 페치 가속 후엔 여유. 상한일 뿐(실제 시간 아님) — 콜드 스캔 대비
+    timeout-minutes: 70        # 40→70: full 동시실행/웨어하우스 콜드로 느려질 때 timeout kill 방지(정상 ~10분, 상한일 뿐)
     steps:
       - name: Checkout
         uses: actions/checkout@v4
