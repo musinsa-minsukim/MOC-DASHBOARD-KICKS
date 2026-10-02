@@ -187,8 +187,9 @@ function SegBar({ title, sub, rows, height, C, pickKey, onPick, active, right, s
       const gmv = r.gmv || 0;
       // 전체 매출 비중 = 해당 항목 GMV ÷ 전체 합계(grand_total, 백엔드 윈도우 합 · 표시 항목 수와 무관한 진짜 총합)
       const share = showShare && r.grand_total ? (gmv / r.grand_total) * 100 : null;
+      const qtyTxt = showQty ? ` / ${compact(r.qty || 0)}개` : "";   // 막대 끝 라벨에 판매수량(GMV / N개)
       return { name: r.name, dom: Math.max(0, gmv - (r.foreign_gmv || 0)), fgn: Math.max(0, r.foreign_gmv || 0), gmv, qty: r.qty || 0,
-               label: share != null ? `${compact(gmv)} (${share.toFixed(1)}%)` : compact(gmv) };
+               label: share != null ? `${compact(gmv)}${qtyTxt} (${share.toFixed(1)}%)` : `${compact(gmv)}${qtyTxt}` };
     })
     .sort((a, b) => b.gmv - a.gmv);
   const clickable = !!(pickKey && onPick);
@@ -211,14 +212,12 @@ function SegBar({ title, sub, rows, height, C, pickKey, onPick, active, right, s
           <div className="flex items-center justify-center text-sm text-slate-400" style={{ height }}>데이터 없음</div>
         ) : (
           <ResponsiveContainer width="100%" height={height}>
-            <ComposedChart data={data} layout="vertical" margin={{ left: 8, right: showShare ? 96 : 52, top: 4 }}>
+            <BarChart data={data} layout="vertical" margin={{ left: 8, right: showShare ? (showQty ? 124 : 96) : (showQty ? 88 : 52), top: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.grid} horizontal={false} />
-              <XAxis type="number" xAxisId="gmv" tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} />
-              {showQty && <XAxis type="number" xAxisId="qty" orientation="top" tick={{ fontSize: 11, fill: C.qty }} tickLine={false} axisLine={false} tickFormatter={compact} />}
+              <XAxis type="number" tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} />
               <YAxis type="category" dataKey="name" width={140} interval={0} tick={<CatTick fill={C.ttFg} width={130} />} tickLine={false} axisLine={false} />
               <Tooltip
                 formatter={(v: any, n: any, item: any) => {
-                  if (n === "판매수량") return [`${num(v as number)}개`, n];
                   const tot = item?.payload?.gmv || 0;
                   return [`${won(v as number)} (${tot ? ((v / tot) * 100).toFixed(1) : 0}%)`, n];
                 }}
@@ -226,15 +225,14 @@ function SegBar({ title, sub, rows, height, C, pickKey, onPick, active, right, s
                 cursor={{ fill: C.cursor }}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar xAxisId="gmv" dataKey="dom" name="내국인" stackId="a" fill={C.dom} onClick={pick} cursor={clickable ? "pointer" : undefined} isAnimationActive={false}>
+              <Bar dataKey="dom" name="내국인" stackId="a" fill={C.dom} onClick={pick} cursor={clickable ? "pointer" : undefined} isAnimationActive={false}>
                 {clickable && data.map((d, i) => <Cell key={i} fill={C.dom} fillOpacity={op(d.name)} />)}
               </Bar>
-              <Bar xAxisId="gmv" dataKey="fgn" name="외국인" stackId="a" fill={C.fgn} radius={[0, 4, 4, 0]} onClick={pick} cursor={clickable ? "pointer" : undefined} isAnimationActive={false}>
+              <Bar dataKey="fgn" name="외국인" stackId="a" fill={C.fgn} radius={[0, 4, 4, 0]} onClick={pick} cursor={clickable ? "pointer" : undefined} isAnimationActive={false}>
                 {clickable && data.map((d, i) => <Cell key={i} fill={C.fgn} fillOpacity={op(d.name)} />)}
                 <LabelList dataKey="label" content={barEndLabel} />
               </Bar>
-              {showQty && <Line xAxisId="qty" type="monotone" dataKey="qty" name="판매수량" stroke={C.qty} strokeWidth={2} dot={{ r: 2.5, fill: C.qty }} activeDot={{ r: 4, fill: C.qty, stroke: C.ttBg, strokeWidth: 2 }} isAnimationActive={false} />}
-            </ComposedChart>
+            </BarChart>
           </ResponsiveContainer>
         )}
       </CardBody>
@@ -550,10 +548,10 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       </p>
 
       {/* ── 매장 (최상단) ── */}
-      <SegBar title="매장별 GMV" sub="내국인 / 외국인(면세) · 꺾은선=판매수량(상단 축)" rows={byStore} height={430} C={C} pickKey="store" onPick={onPick} active={f.store} showQty right={<SectionStat cur={cur} byBiz={byBiz} />} />
+      <SegBar title="매장별 GMV" sub="내국인 / 외국인(면세) · 막대 끝 = GMV / 판매수량" rows={byStore} height={430} C={C} pickKey="store" onPick={onPick} active={f.store} showQty right={<SectionStat cur={cur} byBiz={byBiz} />} />
 
       {/* ── 브랜드 ── */}
-      <SegBar title="브랜드 GMV Top 30" sub="내국인 / 외국인(면세) · 금액(전체 매출 비중) · 꺾은선=판매수량(상단 축)" rows={byBrand} height={620} C={C} pickKey="brand" onPick={onPick} active={f.brand} showShare showQty right={<SectionStat cur={cur} byBiz={byBiz} />} />
+      <SegBar title="브랜드 GMV Top 30" sub="내국인 / 외국인(면세) · 막대 끝 = GMV / 판매수량 (전체 매출 비중)" rows={byBrand} height={620} C={C} pickKey="brand" onPick={onPick} active={f.brand} showShare showQty right={<SectionStat cur={cur} byBiz={byBiz} />} />
       <Card>
         <CardBody>
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
