@@ -328,8 +328,8 @@ async function goodsCsv(qs: string) {
 export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta; dark: boolean; filters: Filters; onPick?: (k: keyof Filters, v: string) => void }) {
   void meta;
   const C = dark
-    ? { grid: "#1e293b", axis: "#94a3b8", ttFg: "#cbd5e1", ttBg: "#1e293b", ttBorder: "#475569", bar: "#818cf8", cursor: "rgba(129,140,248,0.14)", dom: "#818cf8", fgn: "#94b8e8", wt: "#818cf8", mi: "#a78bfa", etc: "#94a3b8" }
-    : { grid: "#f1f5f9", axis: "#94a3b8", ttFg: "#475569", ttBg: "#ffffff", ttBorder: "#e2e8f0", bar: "#4f46e5", cursor: "#f8fafc", dom: "#4f46e5", fgn: "#94b8e8", wt: "#4f46e5", mi: "#7c3aed", etc: "#94a3b8" };
+    ? { grid: "#1e293b", axis: "#94a3b8", ttFg: "#cbd5e1", ttBg: "#1e293b", ttBorder: "#475569", bar: "#818cf8", cursor: "rgba(129,140,248,0.14)", dom: "#818cf8", fgn: "#94b8e8", wt: "#818cf8", mi: "#a78bfa", etc: "#94a3b8", qty: "#34d399" }
+    : { grid: "#f1f5f9", axis: "#94a3b8", ttFg: "#475569", ttBg: "#ffffff", ttBorder: "#e2e8f0", bar: "#4f46e5", cursor: "#f8fafc", dom: "#4f46e5", fgn: "#94b8e8", wt: "#4f46e5", mi: "#7c3aed", etc: "#94a3b8", qty: "#059669" };
 
   const f = filters;
   const [cur, setCur] = useState<Summary | null>(null);
@@ -412,8 +412,9 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   const trendBiz = useMemo(() => {
     const m = new Map<string, any>();
     for (const r of trend) {
-      const row = m.get(r.bucket) || { bucket: r.bucket, 위탁: 0, 매입: 0, 기타: 0 };
+      const row = m.get(r.bucket) || { bucket: r.bucket, 위탁: 0, 매입: 0, 기타: 0, qty: 0 };
       row[r.business_type] = (row[r.business_type] || 0) + (r.gmv || 0);
+      row.qty += (r.qty || 0);   // 콤보: 판매수량 꺾은선(우측 축)
       m.set(r.bucket, row);
     }
     return [...m.values()];
@@ -447,11 +448,11 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   const catTopPie = useMemo(() => catTop.filter((c) => c.gmv > 0).map((c) => ({ name: c.name, value: c.gmv })), [catTop]);
   const conceptPie = useMemo(() => conceptRows.filter((c) => c.gmv > 0).map((c) => ({ name: c.name, value: c.gmv })), [conceptRows]);
   const hourlyData = useMemo(
-    () => hourly.map((h: any) => ({ hour: h.hour, dom: Math.max(0, (h.gmv || 0) - (h.foreign_gmv || 0)), fgn: Math.max(0, h.foreign_gmv || 0), gmv: h.gmv || 0, receipts: h.receipts || 0 })),
+    () => hourly.map((h: any) => ({ hour: h.hour, dom: Math.max(0, (h.gmv || 0) - (h.foreign_gmv || 0)), fgn: Math.max(0, h.foreign_gmv || 0), gmv: h.gmv || 0, qty: h.qty || 0, receipts: h.receipts || 0 })),
     [hourly]
   );
   const dowData = useMemo(
-    () => dow.map((d: any) => ({ label: d.label, dom: Math.max(0, (d.gmv || 0) - (d.foreign_gmv || 0)), fgn: Math.max(0, d.foreign_gmv || 0), gmv: d.gmv || 0, receipts: d.receipts || 0 })),
+    () => dow.map((d: any) => ({ label: d.label, dom: Math.max(0, (d.gmv || 0) - (d.foreign_gmv || 0)), fgn: Math.max(0, d.foreign_gmv || 0), gmv: d.gmv || 0, qty: d.qty || 0, receipts: d.receipts || 0 })),
     [dow]
   );
 
@@ -584,10 +585,12 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
               <ComposedChart data={trendData} margin={{ left: 8, right: 8, top: 16 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.grid} vertical={false} />
                 <XAxis dataKey="bucket" tick={<HolidayTick axisColor={C.axis} day={f.gran === "day"} format={(v: string) => v.slice(5)} />} tickLine={false} axisLine={false} minTickGap={24} />
-                <YAxis tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} width={48} />
+                <YAxis yAxisId="left" tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} width={48} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: C.qty }} tickLine={false} axisLine={false} tickFormatter={compact} width={44} />
                 <Tooltip
                   formatter={(v: any, n: any, item: any) => {
                     if (n === "직전 동기") return [won(v as number), "직전 동기간"];
+                    if (n === "판매수량") return [`${num(v as number)}개`, "판매수량"];
                     const p = item?.payload || {};
                     const tot = (p["위탁"] || 0) + (p["매입"] || 0);
                     return [`${won(v as number)} (${tot ? ((Number(v) / tot) * 100).toFixed(1) : 0}%)`, n];
@@ -601,11 +604,12 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
                   cursor={{ fill: C.cursor }}
                   contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="위탁" stackId="1" fill={C.wt} isAnimationActive={false} />
-                <Bar dataKey="매입" stackId="1" fill={C.mi} radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                <Bar yAxisId="left" dataKey="위탁" stackId="1" fill={C.wt} isAnimationActive={false} />
+                <Bar yAxisId="left" dataKey="매입" stackId="1" fill={C.mi} radius={[4, 4, 0, 0]} isAnimationActive={false}>
                   <LabelList position="top" valueAccessor={(e: any) => { const p = e?.payload || {}; return (p["위탁"] || 0) + (p["매입"] || 0); }} content={trendLabel(trendData.length, compact, C.ttFg)} />
                 </Bar>
                 <Line
+                  yAxisId="left"
                   type="monotone"
                   dataKey="cmp"
                   name="직전 동기"
@@ -616,6 +620,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
                   connectNulls
                   isAnimationActive={false}
                 />
+                <Line yAxisId="right" type="monotone" dataKey="qty" name="판매수량" stroke={C.qty} strokeWidth={2} dot={false} activeDot={{ r: 4, fill: C.qty, stroke: C.ttBg, strokeWidth: 2 }} isAnimationActive={false} />
               </ComposedChart>
             </ResponsiveContainer>
           )}
@@ -630,21 +635,23 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
             <div className="flex h-[300px] items-center justify-center text-sm text-slate-400">데이터 없음</div>
           ) : (
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={hourlyData} margin={{ left: 8, right: 8, top: 16 }}>
+              <ComposedChart data={hourlyData} margin={{ left: 8, right: 8, top: 16 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.grid} vertical={false} />
                 <XAxis dataKey="hour" tickFormatter={(h: any) => `${h}시`} tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} interval={0} />
-                <YAxis tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} width={48} />
+                <YAxis yAxisId="left" tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} width={48} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: C.qty }} tickLine={false} axisLine={false} tickFormatter={compact} width={44} />
                 <Tooltip
-                  formatter={(v: any, n: any, item: any) => { const tot = item?.payload?.gmv || 0; return [`${won(v as number)} (${tot ? ((Number(v) / tot) * 100).toFixed(1) : 0}%)`, n]; }}
+                  formatter={(v: any, n: any, item: any) => { if (n === "판매수량") return [`${num(v as number)}개`, n]; const tot = item?.payload?.gmv || 0; return [`${won(v as number)} (${tot ? ((Number(v) / tot) * 100).toFixed(1) : 0}%)`, n]; }}
                   labelFormatter={(h: any) => `${h}시`}
                   contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }}
                   cursor={{ fill: C.cursor }} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="dom" name="내국인" stackId="h" fill={C.dom} />
-                <Bar dataKey="fgn" name="외국인" stackId="h" fill={C.fgn} radius={[4, 4, 0, 0]}>
+                <Bar yAxisId="left" dataKey="dom" name="내국인" stackId="h" fill={C.dom} />
+                <Bar yAxisId="left" dataKey="fgn" name="외국인" stackId="h" fill={C.fgn} radius={[4, 4, 0, 0]}>
                   <LabelList valueAccessor={(e: any) => e?.payload?.gmv} position="top" formatter={(v: any) => compact(v as number)} fontSize={10} fill={C.ttFg} />
                 </Bar>
-              </BarChart>
+                <Line yAxisId="right" type="monotone" dataKey="qty" name="판매수량" stroke={C.qty} strokeWidth={2} dot={false} activeDot={{ r: 4, fill: C.qty, stroke: C.ttBg, strokeWidth: 2 }} isAnimationActive={false} />
+              </ComposedChart>
             </ResponsiveContainer>
           )}
         </CardBody>
@@ -658,21 +665,23 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
             <div className="flex h-[300px] items-center justify-center text-sm text-slate-400">데이터 없음</div>
           ) : (
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={dowData} margin={{ left: 8, right: 8, top: 16 }}>
+              <ComposedChart data={dowData} margin={{ left: 8, right: 8, top: 16 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.grid} vertical={false} />
                 <XAxis dataKey="label" tickFormatter={(d: any) => `${d}`} tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} interval={0} />
-                <YAxis tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} width={48} />
+                <YAxis yAxisId="left" tick={{ fontSize: 11, fill: C.axis }} tickLine={false} axisLine={false} tickFormatter={compact} width={48} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: C.qty }} tickLine={false} axisLine={false} tickFormatter={compact} width={44} />
                 <Tooltip
-                  formatter={(v: any, n: any, item: any) => { const tot = item?.payload?.gmv || 0; return [`${won(v as number)} (${tot ? ((Number(v) / tot) * 100).toFixed(1) : 0}%)`, n]; }}
+                  formatter={(v: any, n: any, item: any) => { if (n === "판매수량") return [`${num(v as number)}개`, n]; const tot = item?.payload?.gmv || 0; return [`${won(v as number)} (${tot ? ((Number(v) / tot) * 100).toFixed(1) : 0}%)`, n]; }}
                   labelFormatter={(d: any) => `${d}요일`}
                   contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }}
                   cursor={{ fill: C.cursor }} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="dom" name="내국인" stackId="d" fill={C.dom} />
-                <Bar dataKey="fgn" name="외국인" stackId="d" fill={C.fgn} radius={[4, 4, 0, 0]}>
+                <Bar yAxisId="left" dataKey="dom" name="내국인" stackId="d" fill={C.dom} />
+                <Bar yAxisId="left" dataKey="fgn" name="외국인" stackId="d" fill={C.fgn} radius={[4, 4, 0, 0]}>
                   <LabelList valueAccessor={(e: any) => e?.payload?.gmv} position="top" formatter={(v: any) => compact(v as number)} fontSize={10} fill={C.ttFg} />
                 </Bar>
-              </BarChart>
+                <Line yAxisId="right" type="monotone" dataKey="qty" name="판매수량" stroke={C.qty} strokeWidth={2} dot={false} activeDot={{ r: 4, fill: C.qty, stroke: C.ttBg, strokeWidth: 2 }} isAnimationActive={false} />
+              </ComposedChart>
             </ResponsiveContainer>
           )}
         </CardBody>

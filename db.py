@@ -504,7 +504,7 @@ def fetch_receipts(since: str | None = None) -> pd.DataFrame:
                  HOUR(COALESCE(om.transaction_at, om.created_at)) AS hour,   -- 거래시각 시(KST) — 시간대별 매출용
                  om.shop_no, oo.goods_no, oo.company_id, oo.brand_id,
                  (CASE WHEN om.tax_refund_type IS NOT NULL AND om.tax_refund_type <> 'NONE' THEN 1 ELSE 0 END) AS is_foreign,
-                 oo.order_amount
+                 oo.order_amount, oo.quantity
           FROM ocmp.moss.order_option oo
           JOIN ocmp.moss.order_master om ON om.order_id = oo.order_id
           WHERE om.dummy_order = 0 AND om.order_status = 50 """ + ordf + r"""
@@ -518,7 +518,7 @@ def fetch_receipts(since: str | None = None) -> pd.DataFrame:
         )
         SELECT order_id, sales_date, store_name, shop_type, is_foreign,
                business_type, brand_nm, cat_top, cat_large, cat_medium, hour,
-               CAST(SUM(order_amount) AS DOUBLE) AS gmv
+               CAST(SUM(order_amount) AS DOUBLE) AS gmv, CAST(SUM(quantity) AS DOUBLE) AS qty
         FROM (
           SELECT o.order_id, o.sales_date, o.hour, st.store_name, st.shop_type, o.is_foreign,
                  COALESCE(br.business_type, '기타') AS business_type,
@@ -526,7 +526,7 @@ def fetch_receipts(since: str | None = None) -> pd.DataFrame:
                  COALESCE(cat.cat_top, '미분류')    AS cat_top,
                  COALESCE(cat.cat_large, '미분류')  AS cat_large,
                  COALESCE(cat.cat_medium, '미분류') AS cat_medium,
-                 o.order_amount
+                 o.order_amount, o.quantity
           FROM ord o
           JOIN dim_store st ON st.shop_no = o.shop_no
           LEFT JOIN dim_brand br ON br.com_id = o.company_id AND br.brand_code = o.brand_id
@@ -542,6 +542,8 @@ def fetch_receipts(since: str | None = None) -> pd.DataFrame:
     df["hour"] = pd.to_numeric(df["hour"], errors="coerce").fillna(-1).astype("int64")  # 거래시각 시(0~23, 불명 -1)
     df["is_foreign"] = pd.to_numeric(df["is_foreign"]).fillna(0).astype("int64")
     df["gmv"] = pd.to_numeric(df["gmv"]).fillna(0.0)
+    if "qty" in df.columns:
+        df["qty"] = pd.to_numeric(df["qty"]).fillna(0.0)
     df["business_type"] = df["business_type"].fillna("기타")
     df["brand_nm"] = df["brand_nm"].fillna("(미매칭)")
     for c in ("cat_top", "cat_large", "cat_medium"):

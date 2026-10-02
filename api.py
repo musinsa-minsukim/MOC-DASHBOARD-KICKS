@@ -542,20 +542,24 @@ def aov(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None
 def hourly(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None = Depends(require_ready)):
     """시간대별 매출(완료주문 거래시각 기준, 10~23시). receipts 뷰 사용 →
        기간·매장·매장타입·사업구분·브랜드·카테(3단) 필터 반영(build_where_receipts). 10~23시 전 구간 반환(빈 시각은 0)."""
+    where, params = build_where_receipts(f)
+    w = where + (" AND " if where else " WHERE ") + "hour BETWEEN 10 AND 23"
+    def _q(qsel):   # receipts 캐시에 qty 없던 구버전 대비 폴백(qty=0)
+        return (f"SELECT hour, CAST(sum(gmv) AS DOUBLE) gmv, "
+                f"CAST(sum(CASE WHEN is_foreign=1 THEN gmv ELSE 0 END) AS DOUBLE) foreign_gmv, {qsel} "
+                f"CAST(COUNT(DISTINCT order_id) AS DOUBLE) receipts FROM receipts{w} GROUP BY hour ORDER BY hour")
     try:
-        where, params = build_where_receipts(f)
-        w = where + (" AND " if where else " WHERE ") + "hour BETWEEN 10 AND 23"
-        r = store.query(f"""
-            SELECT hour, CAST(sum(gmv) AS DOUBLE) gmv,
-                   CAST(sum(CASE WHEN is_foreign=1 THEN gmv ELSE 0 END) AS DOUBLE) foreign_gmv,
-                   CAST(COUNT(DISTINCT order_id) AS DOUBLE) receipts
-            FROM receipts{w} GROUP BY hour ORDER BY hour""", params)
-        by = {int(row.hour): row for row in r.itertuples()}
+        r = store.query(_q("CAST(sum(qty) AS DOUBLE) qty,"), params)
     except Exception:
-        by = {}
+        try:
+            r = store.query(_q("CAST(0 AS DOUBLE) qty,"), params)
+        except Exception:
+            r = None
+    by = {int(row.hour): row for row in r.itertuples()} if r is not None else {}
     return [{"hour": h,
              "gmv": _num(by[h].gmv) if h in by else 0.0,
              "foreign_gmv": _num(by[h].foreign_gmv) if h in by else 0.0,
+             "qty": _num(by[h].qty) if h in by else 0.0,
              "receipts": int(_num(by[h].receipts)) if h in by else 0} for h in range(10, 24)]
 
 
@@ -567,19 +571,23 @@ def dow(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None
     """요일별 매출(완료주문 거래일 기준, 월~일). receipts 뷰 사용 →
        기간·매장·매장타입·사업구분·브랜드·카테(3단) 필터 반영(build_where_receipts). 7요일 전 구간 반환(빈 요일은 0).
        (시간대별=/api/hourly 과 동일 소스·집계, 그룹만 isodow.)"""
+    where, params = build_where_receipts(f)
+    def _q(qsel):   # receipts 캐시에 qty 없던 구버전 대비 폴백(qty=0)
+        return (f"SELECT isodow(sales_date) AS dow, CAST(sum(gmv) AS DOUBLE) gmv, "
+                f"CAST(sum(CASE WHEN is_foreign=1 THEN gmv ELSE 0 END) AS DOUBLE) foreign_gmv, {qsel} "
+                f"CAST(COUNT(DISTINCT order_id) AS DOUBLE) receipts FROM receipts{where} GROUP BY isodow(sales_date) ORDER BY dow")
     try:
-        where, params = build_where_receipts(f)
-        r = store.query(f"""
-            SELECT isodow(sales_date) AS dow, CAST(sum(gmv) AS DOUBLE) gmv,
-                   CAST(sum(CASE WHEN is_foreign=1 THEN gmv ELSE 0 END) AS DOUBLE) foreign_gmv,
-                   CAST(COUNT(DISTINCT order_id) AS DOUBLE) receipts
-            FROM receipts{where} GROUP BY isodow(sales_date) ORDER BY dow""", params)
-        by = {int(row.dow): row for row in r.itertuples()}
+        r = store.query(_q("CAST(sum(qty) AS DOUBLE) qty,"), params)
     except Exception:
-        by = {}
+        try:
+            r = store.query(_q("CAST(0 AS DOUBLE) qty,"), params)
+        except Exception:
+            r = None
+    by = {int(row.dow): row for row in r.itertuples()} if r is not None else {}
     return [{"dow": d, "label": _DOW_LABEL[d],
              "gmv": _num(by[d].gmv) if d in by else 0.0,
              "foreign_gmv": _num(by[d].foreign_gmv) if d in by else 0.0,
+             "qty": _num(by[d].qty) if d in by else 0.0,
              "receipts": int(_num(by[d].receipts)) if d in by else 0} for d in range(1, 8)]
 
 
@@ -592,7 +600,7 @@ def trend(f: dict = Depends(get_filters), gran: str = "day", split: str | None =
     where, params = build_where(f)
     if split == "business":   # 위탁/매입 적층용 (bucket × business_type)
         df = store.query(f"""
-            SELECT {bucket} AS bucket, business_type, CAST(sum(gmv) AS DOUBLE) gmv
+            SELECT {bucket} AS bucket, business_type, CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(qty) AS DOUBLE) qty
             FROM sales{where} GROUP BY 1, 2 ORDER BY 1""", params)
         df["bucket"] = df["bucket"].astype(str)
         return df.fillna(0).to_dict(orient="records")
