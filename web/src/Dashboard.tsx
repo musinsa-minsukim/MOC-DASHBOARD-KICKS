@@ -241,7 +241,7 @@ function SegBar({ title, sub, rows, height, C, pickKey, onPick, active, right, s
 }
 
 function Donut({ title, sub, rows, C, pickKey, onPick, active, right }: {
-  title: string; sub: string; rows: { name: string; value: number }[]; C: any;
+  title: string; sub: string; rows: { name: string; value: number; qty?: number }[]; C: any;
   pickKey?: keyof Filters; onPick?: (k: keyof Filters, v: string) => void; active?: string[]; right?: React.ReactNode;
 }) {
   const tot = rows.reduce((s, r) => s + r.value, 0);
@@ -261,7 +261,11 @@ function Donut({ title, sub, rows, C, pickKey, onPick, active, right }: {
                 {rows.map((r, i) => <Cell key={i} fill={PIE[i % PIE.length]} stroke={C.ttBg} strokeWidth={2} fillOpacity={hasActive ? (active!.includes(r.name) ? 1 : 0.3) : 1} />)}
               </Pie>
               <Tooltip
-                formatter={(v: any, n: any) => [`${won(v as number)} (${tot ? (((v as number) / tot) * 100).toFixed(1) : 0}%)`, n]}
+                formatter={(v: any, n: any, item: any) => {
+                  const q = item?.payload?.qty;
+                  const pct = tot ? (((v as number) / tot) * 100).toFixed(1) : 0;
+                  return [`${won(v as number)}${q != null ? ` / ${num(q as number)}개` : ""} (${pct}%)`, n];
+                }}
                 contentStyle={{ borderRadius: 12, background: C.ttBg, color: C.ttFg, border: "1px solid " + C.ttBorder, fontSize: 13 }}
                 itemStyle={{ color: C.ttFg }}
                 labelStyle={{ color: C.ttFg }}
@@ -441,13 +445,14 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
 
   const catMedTop = useMemo(() => {
     const sorted = [...catMed].filter((c) => c.gmv > 0).sort((a, b) => b.gmv - a.gmv);
-    const top = sorted.slice(0, 10).map((c) => ({ name: c.name, value: c.gmv }));
+    const top = sorted.slice(0, 10).map((c) => ({ name: c.name, value: c.gmv, qty: c.qty || 0 }));
     const etc = sorted.slice(10).reduce((s, c) => s + c.gmv, 0);
-    if (etc > 0) top.push({ name: "기타", value: etc });
+    const etcQty = sorted.slice(10).reduce((s, c) => s + (c.qty || 0), 0);
+    if (etc > 0) top.push({ name: "기타", value: etc, qty: etcQty });
     return top;
   }, [catMed]);
-  const catTopPie = useMemo(() => catTop.filter((c) => c.gmv > 0).map((c) => ({ name: c.name, value: c.gmv })), [catTop]);
-  const conceptPie = useMemo(() => conceptRows.filter((c) => c.gmv > 0).map((c) => ({ name: c.name, value: c.gmv })), [conceptRows]);
+  const catTopPie = useMemo(() => catTop.filter((c) => c.gmv > 0).map((c) => ({ name: c.name, value: c.gmv, qty: c.qty || 0 })), [catTop]);
+  const conceptPie = useMemo(() => conceptRows.filter((c) => c.gmv > 0).map((c) => ({ name: c.name, value: c.gmv, qty: c.qty || 0 })), [conceptRows]);
   const hourlyData = useMemo(
     () => hourly.map((h: any) => ({ hour: h.hour, dom: Math.max(0, (h.gmv || 0) - (h.foreign_gmv || 0)), fgn: Math.max(0, h.foreign_gmv || 0), gmv: h.gmv || 0, qty: h.qty || 0, receipts: h.receipts || 0 })),
     [hourly]
