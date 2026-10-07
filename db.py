@@ -764,14 +764,34 @@ def fetch_settlement_option(since: str | None = None) -> pd.DataFrame:
 
 
 def fetch_settlement_daily(since: str | None = None) -> pd.DataFrame:
-    """오프라인 손익(P&L) 일자×매장×브랜드 집계 — team.sales.dsh_d_upt_editorial_summary_v. 손익 탭 전용.
-       Net Take=profit, CP=contribution_profit_pre, GMV=ord_amt(정산), 매장고정비=offline_cost_fixed.
+    """오프라인 손익(P&L) 일자×매장×브랜드×사업구분×카테(최상위/대/중) 집계 — team.sales.dsh_d_upt_editorial_summary_v.
+       Net Take=profit, CP=contribution_profit_pre, GMV=ord_amt(정산), 매장고정비=offline_cost_fixed(goods별 배분=가산 검증).
+       ★사업구분·카테는 손익 탭 **백단 필터용**(표엔 매장/브랜드만 노출) — sales와 동일 매핑(company margin_type / catmap)으로
+         붙여 공통 FilterBar 값과 일치. 표시는 /api/pnl에서 매장 또는 브랜드로 재집계(모든 지표 가산이라 정확).
        전월·전년동월 비교 위해 전체 이력(2023-10~) 보관. 대시보드 매장(dim_store)만.
        ⚠️ 최근 ~2개월 CP·매장고정비는 예측(잠정) — SAP 실적 확정 전.
        since='YYYY-MM-DD' 주면 그 날짜 이후만(증분). 과거는 증분 병합이 보존(전월/전년 비교 유지)."""
     df = f"AND v.ord_state_date >= '{since}'" if since else ""
-    q = ("WITH " + DIM_STORE + r"""
+    q = ("WITH " + DIM_STORE + r""",
+        dim_brand AS (   -- 사업구분(위탁/매입) = company margin_type (fetch_sales와 동일 → 공통 필터 값 일치)
+          SELECT cb.com_id, cb.brand AS brand_code,
+            CASE c.margin_type WHEN 'FEE' THEN '위탁' WHEN 'WONGA' THEN '매입' ELSE '기타' END AS business_type
+          FROM musinsa.partnerportal.company_brand cb
+          LEFT JOIN musinsa.partnerportal.company c ON c.com_id = cb.com_id
+        ),
+        catmap AS (      -- 카테(최상위/대/중) = 에디토리얼 최신 스냅샷 (fetch_sales와 동일 → 공통 필터 값 일치)
+          SELECT goods_no, ANY_VALUE(final_large_nm_off) AS cat_top,
+                 ANY_VALUE(large_nm_off) AS cat_large, ANY_VALUE(medium_nm_off) AS cat_medium
+          FROM team.sales.dsh_d_upt_editorial_stock_summary s2
+          JOIN (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary) lc
+            ON s2.ord_state_date = lc.d
+          GROUP BY goods_no
+        )
         SELECT v.ord_state_date AS sales_date, ds.store_name, ds.shop_type, v.brand_nm,
+               COALESCE(br.business_type, '기타') AS business_type,
+               COALESCE(cat.cat_top, '미분류')    AS cat_top,
+               COALESCE(cat.cat_large, '미분류')  AS cat_large,
+               COALESCE(cat.cat_medium, '미분류') AS cat_medium,
                CAST(SUM(v.qty) AS DOUBLE)          AS qty,
                CAST(SUM(v.ord_amt) AS DOUBLE)      AS gmv,
                CAST(SUM(v.normal_amt) AS DOUBLE)   AS normal_amt,
@@ -781,14 +801,16 @@ def fetch_settlement_daily(since: str | None = None) -> pd.DataFrame:
                CAST(SUM(v.additional_rev) AS DOUBLE)          AS add_rev
         FROM team.sales.dsh_d_upt_editorial_summary_v v
         JOIN dim_store ds ON ds.shop_no = v.shop_no
+        LEFT JOIN dim_brand br ON br.com_id = v.company_id AND br.brand_code = v.brand_id
+        LEFT JOIN catmap cat ON cat.goods_no = v.goods_no
         WHERE v.ord_state_date IS NOT NULL """ + df + r"""
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
     """)
     d = run_df(q)
     d["sales_date"] = pd.to_datetime(d["sales_date"], errors="coerce")
     for c in ("qty", "gmv", "normal_amt", "net_take", "cp", "offline_cost", "add_rev"):
         d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0)
-    for c in ("store_name", "shop_type", "brand_nm"):
+    for c in ("store_name", "shop_type", "brand_nm", "business_type", "cat_top", "cat_large", "cat_medium"):
         d[c] = d[c].fillna("")
     return d[d["sales_date"].notna()]
 

@@ -40,7 +40,8 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
   const level = drill ? "brand" : "store";
   // 공통 FilterBar 중 settlement_daily(일자×매장×브랜드) 그레인이 지원하는 것만 적용: 매장·매장타입·브랜드.
   //   (사업구분·카테·MD·기간은 이 그레인/탭 자체 마감기간에 없어 미적용.)
-  const fStore = filters.store || [], fType = filters.type || [], fBrand = filters.brand || [];
+  // 백단 필터용: 사업구분·카테는 표엔 안 보이지만 settlement_daily 재그레인으로 적용됨.
+  const fKey = JSON.stringify([filters.store, filters.type, filters.brand, filters.biz, filters.cat_top, filters.cat_large, filters.cat_medium]);
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
@@ -51,12 +52,16 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
     } else if (period) {
       p.set("period", period);
     }
-    if (drill) p.set("store", drill);                       // 드릴 중엔 그 매장 1개
-    else fStore.forEach((s) => p.append("store", s));       // 아니면 공통 매장 필터
-    fType.forEach((t) => p.append("type", t));              // 공통 매장타입
-    fBrand.forEach((b) => p.append("brand", b));            // 공통 브랜드
+    if (drill) p.set("store", drill);                                   // 드릴 중엔 그 매장 1개
+    else (filters.store || []).forEach((s) => p.append("store", s));    // 아니면 공통 매장 필터
+    (filters.type || []).forEach((t) => p.append("type", t));           // 공통 매장타입
+    (filters.brand || []).forEach((b) => p.append("brand", b));         // 공통 브랜드
+    (filters.biz || []).forEach((b) => p.append("biz", b));             // 공통 사업구분(백단)
+    (filters.cat_top || []).forEach((c) => p.append("cat_top", c));     // 공통 카테(백단)
+    (filters.cat_large || []).forEach((c) => p.append("cat_large", c));
+    (filters.cat_medium || []).forEach((c) => p.append("cat_medium", c));
     return "?" + p.toString();
-  }, [mode, level, period, rangeFrom, rangeTo, drill, fStore, fType, fBrand]);
+  }, [mode, level, period, rangeFrom, rangeTo, drill, fKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let alive = true;

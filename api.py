@@ -1317,6 +1317,10 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
         store_f: list[str] = Query(default=[], alias="store"),
         types_f: list[str] = Query(default=[], alias="type"),
         brand_f: list[str] = Query(default=[], alias="brand"),
+        biz_f: list[str] = Query(default=[], alias="biz"),
+        ctop_f: list[str] = Query(default=[], alias="cat_top"),
+        clarge_f: list[str] = Query(default=[], alias="cat_large"),
+        cmed_f: list[str] = Query(default=[], alias="cat_medium"),
         _: str = Depends(require_user), __: None = Depends(require_ready)):
     """손익(P&L) — 매장별(level=store) 또는 브랜드별(level=brand, 매장 필터) × 월마감/일마감/기간.
        공식 정산값(editorial): Net Take=profit, CP=contribution_profit_pre, GMV=정산(ord_amt),
@@ -1363,8 +1367,17 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
         label = f"{y:04d}-{m:02d}"
 
     gcol = "brand_nm" if level == "brand" else "store_name"
+    # 백단 필터: 매장타입·매장·브랜드는 항상, 사업구분·카테는 settlement_daily에 그 컬럼이 있을 때만(구 캐시 안전).
+    try:
+        stl_cols = set(store.query("SELECT * FROM settlement_daily LIMIT 0").columns)
+    except Exception:
+        stl_cols = set()
+    filt = [(types_f, "shop_type"), (store_f, "store_name"), (brand_f, "brand_nm")]
+    for vals, col in ((biz_f, "business_type"), (ctop_f, "cat_top"), (clarge_f, "cat_large"), (cmed_f, "cat_medium")):
+        if col in stl_cols:
+            filt.append((vals, col))
     wc, wp = [], []
-    for vals, col in ((types_f, "shop_type"), (store_f, "store_name"), (brand_f, "brand_nm")):
+    for vals, col in filt:
         if vals:
             wc.append(f"{col} IN ({','.join(['?'] * len(vals))})"); wp += list(vals)
     wextra = (" AND " + " AND ".join(wc)) if wc else ""
