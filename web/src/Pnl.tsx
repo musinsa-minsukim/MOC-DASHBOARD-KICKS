@@ -51,16 +51,16 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
   const [period, setPeriod] = useState<string>("");
   const [rangeFrom, setRangeFrom] = useState<string>(""); // 기간 모드 from(YYYY-MM-DD)
   const [rangeTo, setRangeTo] = useState<string>("");     // 기간 모드 to
-  const [drill, setDrill] = useState<string | null>(null); // null=매장별, 값=그 매장의 브랜드별
+  // 3단 드릴: 매장별(둘 다 null) > 브랜드별(store만) > 상품별(store+brand)
+  const [drillStore, setDrillStore] = useState<string | null>(null);
+  const [drillBrand, setDrillBrand] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
 
   const up = dark ? "#4ade80" : "#16a34a", down = dark ? "#f87171" : "#dc2626";
-  const level = drill ? "brand" : "store";
-  // 공통 FilterBar 중 settlement_daily(일자×매장×브랜드) 그레인이 지원하는 것만 적용: 매장·매장타입·브랜드.
-  //   (사업구분·카테·MD·기간은 이 그레인/탭 자체 마감기간에 없어 미적용.)
-  // 백단 필터용: 사업구분·카테는 표엔 안 보이지만 settlement_daily 재그레인으로 적용됨.
+  const level = drillBrand ? "goods" : drillStore ? "brand" : "store";
+  // 공통 FilterBar: 매장/브랜드=settlement_daily, 상품=settlement_option 그레인이 지원하는 것만 백단 적용(소스에 없으면 무시).
   const fKey = JSON.stringify([filters.store, filters.type, filters.brand, filters.biz, filters.cat_top, filters.cat_large, filters.cat_medium]);
 
   const qs = useMemo(() => {
@@ -72,16 +72,17 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
     } else if (period) {
       p.set("period", period);
     }
-    if (drill) p.set("store", drill);                                   // 드릴 중엔 그 매장 1개
+    if (drillStore) p.set("store", drillStore);                         // 드릴 매장 1개
     else (filters.store || []).forEach((s) => p.append("store", s));    // 아니면 공통 매장 필터
+    if (drillBrand) p.set("brand", drillBrand);                         // 드릴 브랜드 1개(상품 레벨)
+    else (filters.brand || []).forEach((b) => p.append("brand", b));    // 아니면 공통 브랜드
     (filters.type || []).forEach((t) => p.append("type", t));           // 공통 매장타입
-    (filters.brand || []).forEach((b) => p.append("brand", b));         // 공통 브랜드
     (filters.biz || []).forEach((b) => p.append("biz", b));             // 공통 사업구분(백단)
     (filters.cat_top || []).forEach((c) => p.append("cat_top", c));     // 공통 카테(백단)
     (filters.cat_large || []).forEach((c) => p.append("cat_large", c));
     (filters.cat_medium || []).forEach((c) => p.append("cat_medium", c));
     return "?" + p.toString();
-  }, [mode, level, period, rangeFrom, rangeTo, drill, fKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mode, level, period, rangeFrom, rangeTo, drillStore, drillBrand, fKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let alive = true;
@@ -114,10 +115,11 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
   const cols = useMemo(() => {
     const rows = d?.rows || [];
     const T = d?.totals || {};
+    const nameHdr = level === "goods" ? "상품" : level === "brand" ? "브랜드" : "매장";
     const c: any[] = [
-      colText("name", level === "brand" ? "브랜드" : "매장", {
-        pinned: "left", minWidth: 180,
-        cellStyle: (p: any): any => (level === "store" && p.data?.name && p.data?.name !== "합계" ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : {}),
+      colText("name", nameHdr, {
+        pinned: "left", minWidth: level === "goods" ? 240 : 180,
+        cellStyle: (p: any): any => (level !== "goods" && p.data?.name && p.data?.name !== "합계" ? { cursor: "pointer", color: dark ? "#a5b4fc" : "#4f46e5", fontWeight: 600 } : {}),  // 매장·브랜드는 클릭해 더 드릴
       }),
     ];
     if (level === "store")
@@ -133,7 +135,10 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
       heatRateCol("nt_rate", "순매출율", rows, T.nt_rate ?? 0, dark),
       colNum("cp", "공헌이익(CP)", "compact", { minWidth: 110 }),
       heatRateCol("cp_rate", "CP율", rows, T.cp_rate ?? 0, dark),
-      colNum("offline_cost", "매장고정비", "compact", { minWidth: 104 }),
+    );
+    if (level !== "goods")   // 매장고정비는 매장 단위 — 상품 레벨엔 미표시(배분 불가)
+      c.push(colNum("offline_cost", "매장고정비", "compact", { minWidth: 104 }));
+    c.push(
       colNum("pm_cp", `${pmLabel}CP`, "compact", { minWidth: 100 }),
       pctCol("pm_delta", `${pmLabel}대비`),
       colNum("py_cp", `${pyLabel}CP`, "compact", { minWidth: 108 }),
@@ -145,13 +150,15 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
   // 합계행 — pinnedTop(상단 고정). pinnedTop은 값 변경 시 셀 리렌더가 안 되는 한계가 있어,
   // 데이터가 바뀌면(gridKey 변경) 그리드를 리마운트해 '고정 + 필터 반영'을 동시에 만족시킨다.
   const total = useMemo(() => (d?.totals ? [d.totals] : []), [d]);
-  const gridKey = useMemo(() => `${d?.period}|${level}|${(d?.rows?.length) || 0}|${Math.round((d?.totals?.gmv) || 0)}|${Math.round((d?.totals?.cp) || 0)}`, [d, level]);
+  const gridKey = useMemo(() => `${d?.period}|${level}|${drillStore}|${drillBrand}|${(d?.rows?.length) || 0}|${Math.round((d?.totals?.gmv) || 0)}|${Math.round((d?.totals?.cp) || 0)}`, [d, level, drillStore, drillBrand]);
 
   const onCellClicked = (e: any) => {
-    if (level !== "store" || e?.node?.rowPinned) return;
-    if (e?.column?.getColId?.() !== "name") return;   // 매장명(1열) 클릭 시에만 드릴다운
+    if (level === "goods" || e?.node?.rowPinned) return;           // 상품 레벨은 더 못 드릴
+    if (e?.column?.getColId?.() !== "name") return;                // 1열(매장/브랜드명) 클릭 시에만
     const nm = e?.data?.name;
-    if (nm && nm !== "합계") setDrill(nm);
+    if (!nm || nm === "합계") return;
+    if (level === "store") setDrillStore(nm);                      // 매장 → 브랜드별
+    else if (level === "brand") setDrillBrand(nm);                 // 브랜드 → 상품별
   };
 
   return (
@@ -194,11 +201,14 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
         {loading && <Spinner className="mb-1 h-4 w-4" />}
       </CardBody></Card>
 
-      {/* 드릴다운 브레드크럼 */}
-      <div className="-mt-2 flex items-center gap-2 text-sm">
-        <button onClick={() => setDrill(null)} className={`rounded-md px-2 py-0.5 font-medium ${drill ? "text-indigo-600 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-950/40" : "text-slate-500 dark:text-slate-300"}`}>전체 매장</button>
-        {drill && <><span className="text-slate-300 dark:text-slate-600">›</span><span className="font-semibold text-slate-700 dark:text-slate-200">{drill}</span><span className="text-xs text-slate-400">(브랜드별)</span></>}
-        {!drill && <span className="text-xs text-slate-400 dark:text-slate-500">· 매장명(첫 열) 클릭 → 브랜드 드릴다운</span>}
+      {/* 드릴다운 브레드크럼: 전체 매장 > 매장 > 브랜드 */}
+      <div className="-mt-2 flex flex-wrap items-center gap-2 text-sm">
+        <button onClick={() => { setDrillStore(null); setDrillBrand(null); }} className={`rounded-md px-2 py-0.5 font-medium ${drillStore ? "text-indigo-600 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-950/40" : "text-slate-500 dark:text-slate-300"}`}>전체 매장</button>
+        {drillStore && <><span className="text-slate-300 dark:text-slate-600">›</span>
+          <button onClick={() => setDrillBrand(null)} className={`rounded-md px-2 py-0.5 font-medium ${drillBrand ? "text-indigo-600 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-950/40" : "font-semibold text-slate-700 dark:text-slate-200"}`}>{drillStore}</button>
+          {!drillBrand && <span className="text-xs text-slate-400">(브랜드별)</span>}</>}
+        {drillBrand && <><span className="text-slate-300 dark:text-slate-600">›</span><span className="font-semibold text-slate-700 dark:text-slate-200">{drillBrand}</span><span className="text-xs text-slate-400">(상품별)</span></>}
+        {!drillStore && <span className="text-xs text-slate-400 dark:text-slate-500">· 매장명(첫 열) 클릭 → 브랜드 → 상품 드릴다운</span>}
       </div>
 
       <p className="-mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400 dark:text-slate-400">
@@ -215,7 +225,7 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
       ) : (
         <Card><CardBody>
           <div className="mb-3">
-            <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{drill ? `${drill} · 브랜드별` : "매장별"} 손익 · {d.period} {mode === "day" ? "(일마감)" : mode === "range" ? "(기간)" : "(월마감)"}</h3>
+            <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">{drillBrand ? `${drillStore} › ${drillBrand} · 상품별` : drillStore ? `${drillStore} · 브랜드별` : "매장별"} 손익 · {d.period} {mode === "day" ? "(일마감)" : mode === "range" ? "(기간)" : "(월마감)"}</h3>
             <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">CP 내림차순 · 합계 고정 · {pmLabel}·{pyLabel} CP 대비 · 순매출율/CP율 = 전체 대비 색상</p>
           </div>
           <DataGrid key={gridKey} rows={d.rows} columns={cols} dark={dark} pinnedTop={total} onCellClicked={onCellClicked}

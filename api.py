@@ -1367,44 +1367,52 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
         label = f"{y:04d}-{m:02d}"
 
     gcol = "brand_nm" if level == "brand" else "store_name"
-    # 백단 필터: 매장타입·매장·브랜드는 항상, 사업구분·카테는 settlement_daily에 그 컬럼이 있을 때만(구 캐시 안전).
+    is_goods = level == "goods"
+    # 드릴 레벨별 소스: 매장/브랜드=settlement_daily(브랜드 그레인), 상품=settlement_option(goods 그레인, 고정비 없음).
+    src = "settlement_option" if is_goods else "settlement_daily"
     try:
-        stl_cols = set(store.query("SELECT * FROM settlement_daily LIMIT 0").columns)
+        src_cols = set(store.query(f"SELECT * FROM {src} LIMIT 0").columns)
     except Exception:
-        stl_cols = set()
-    filt = [(types_f, "shop_type"), (store_f, "store_name"), (brand_f, "brand_nm")]
-    for vals, col in ((biz_f, "business_type"), (ctop_f, "cat_top"), (clarge_f, "cat_large"), (cmed_f, "cat_medium")):
-        if col in stl_cols:
-            filt.append((vals, col))
+        src_cols = set()
+    # 백단 필터: 그 소스에 실제 있는 컬럼만 적용(구 캐시/소스별 컬럼 차이 안전).
     wc, wp = [], []
-    for vals, col in filt:
-        if vals:
+    for vals, col in ((types_f, "shop_type"), (store_f, "store_name"), (brand_f, "brand_nm"),
+                      (biz_f, "business_type"), (ctop_f, "cat_top"), (clarge_f, "cat_large"), (cmed_f, "cat_medium")):
+        if vals and col in src_cols:
             wc.append(f"{col} IN ({','.join(['?'] * len(vals))})"); wp += list(vals)
     wextra = (" AND " + " AND ".join(wc)) if wc else ""
 
+    key_sel = "goods_no k, any_value(goods_nm) gname" if is_goods else f"{gcol} k"
+    group_by = "goods_no" if is_goods else gcol
     def agg(rng, cols):
         return store.query(f"""
-            SELECT {gcol} k, {cols} FROM settlement_daily
+            SELECT {key_sel}, {cols} FROM {src}
             WHERE sales_date >= CAST(? AS DATE) AND sales_date < CAST(? AS DATE) + INTERVAL 1 DAY{wextra}
-            GROUP BY {gcol}""", [rng[0].isoformat(), rng[1].isoformat()] + wp)
-    has_pay = "pay" in stl_cols                          # 실결제(pay)는 재그레인 refresh 후 생김 — 없으면 2차/TTL 할인율 '—'
+            GROUP BY {group_by}""", [rng[0].isoformat(), rng[1].isoformat()] + wp)
+    has_pay = "pay" in src_cols                          # 실결제(pay): settlement_daily는 재그레인 refresh 후, settlement_option은 상시
     pay_sel = "CAST(sum(pay) AS DOUBLE) pay" if has_pay else "CAST(NULL AS DOUBLE) pay"
-    cur_df = agg(cur, "CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(net_take) AS DOUBLE) net_take, "
-                      "CAST(sum(cp) AS DOUBLE) cp, CAST(sum(offline_cost) AS DOUBLE) offline_cost, "
-                      "CAST(sum(normal_amt) AS DOUBLE) normal_amt, " + pay_sel + ", CAST(sum(qty) AS DOUBLE) qty, "
-                      "any_value(shop_type) shop_type")
-    pmm = {r.k: _num(r.cp) for r in agg(pm, "CAST(sum(cp) AS DOUBLE) cp").itertuples()}
-    pym = {r.k: _num(r.cp) for r in agg(py, "CAST(sum(cp) AS DOUBLE) cp").itertuples()}
+    oc_sel = "CAST(sum(offline_cost) AS DOUBLE) offline_cost" if "offline_cost" in src_cols else "CAST(0 AS DOUBLE) offline_cost"
+    try:                                                 # 소스 뷰 없거나(상품=settlement_option 미캐시) 쿼리 실패 → 빈 결과(안전)
+        cur_df = agg(cur, "CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(net_take) AS DOUBLE) net_take, "
+                          "CAST(sum(cp) AS DOUBLE) cp, " + oc_sel + ", "
+                          "CAST(sum(normal_amt) AS DOUBLE) normal_amt, " + pay_sel + ", CAST(sum(qty) AS DOUBLE) qty, "
+                          "any_value(shop_type) shop_type") if src_cols else None
+        pmm = {r.k: _num(r.cp) for r in agg(pm, "CAST(sum(cp) AS DOUBLE) cp").itertuples()} if src_cols else {}
+        pym = {r.k: _num(r.cp) for r in agg(py, "CAST(sum(cp) AS DOUBLE) cp").itertuples()} if src_cols else {}
+    except Exception:
+        cur_df, pmm, pym = None, {}, {}
     _d = lambda a, b: ((a - b) / abs(b) * 100) if b else None
     _rate = lambda a, b: round((a - b) / a * 100, 1) if (a and b is not None) else None  # a→b 할인율 =(a−b)/a
 
     rows = []
-    for r in cur_df.itertuples():
+    for r in (cur_df.itertuples() if cur_df is not None else []):
         gmv, cp, nt = _num(r.gmv), _num(r.cp), _num(r.net_take)
         nm = _num(r.normal_amt)
         pay = _num(getattr(r, "pay", 0.0)) if has_pay else None
         pmc, pyc = pmm.get(r.k, 0.0), pym.get(r.k, 0.0)
-        rows.append({"name": r.k, "shop_type": getattr(r, "shop_type", ""),
+        nm_disp = (getattr(r, "gname", None) or str(r.k)) if is_goods else r.k   # 상품은 상품명 표시
+        rows.append({"name": nm_disp, "goods_no": (int(r.k) if is_goods else None),
+                     "shop_type": getattr(r, "shop_type", ""),
                      "gmv": gmv, "net_take": nt, "cp": cp, "offline_cost": _num(r.offline_cost),
                      "qty": _num(r.qty), "normal_amt": nm, "pay": pay,
                      "dc1": _rate(nm, gmv),                 # 1차 할인율(정상가→GMV)
