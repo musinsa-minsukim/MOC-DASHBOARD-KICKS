@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "./lib";
+import { api, type Filters } from "./lib";
 import { Card, CardBody, Chip, Spinner } from "./ui";
 import DataGrid, { colText, colNum } from "./Grid";
 
@@ -25,13 +25,12 @@ function heatRateCol(field: string, header: string, rows: any[], anchor: number,
   });
 }
 
-export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
+export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean; filters: Filters }) {
   const [d, setD] = useState<any>(null);
   const [mode, setMode] = useState<"month" | "day" | "range">("month");
   const [period, setPeriod] = useState<string>("");
   const [rangeFrom, setRangeFrom] = useState<string>(""); // 기간 모드 from(YYYY-MM-DD)
   const [rangeTo, setRangeTo] = useState<string>("");     // 기간 모드 to
-  const [types, setTypes] = useState<string[]>([]);
   const [drill, setDrill] = useState<string | null>(null); // null=매장별, 값=그 매장의 브랜드별
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -39,6 +38,9 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
 
   const up = dark ? "#4ade80" : "#16a34a", down = dark ? "#f87171" : "#dc2626";
   const level = drill ? "brand" : "store";
+  // 공통 FilterBar 중 settlement_daily(일자×매장×브랜드) 그레인이 지원하는 것만 적용: 매장·매장타입·브랜드.
+  //   (사업구분·카테·MD·기간은 이 그레인/탭 자체 마감기간에 없어 미적용.)
+  const fStore = filters.store || [], fType = filters.type || [], fBrand = filters.brand || [];
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
@@ -49,10 +51,12 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
     } else if (period) {
       p.set("period", period);
     }
-    if (drill) p.set("store", drill);
-    else types.forEach((t) => p.append("type", t));
+    if (drill) p.set("store", drill);                       // 드릴 중엔 그 매장 1개
+    else fStore.forEach((s) => p.append("store", s));       // 아니면 공통 매장 필터
+    fType.forEach((t) => p.append("type", t));              // 공통 매장타입
+    fBrand.forEach((b) => p.append("brand", b));            // 공통 브랜드
     return "?" + p.toString();
-  }, [mode, level, period, rangeFrom, rangeTo, types, drill]);
+  }, [mode, level, period, rangeFrom, rangeTo, drill, fStore, fType, fBrand]);
 
   useEffect(() => {
     let alive = true;
@@ -115,6 +119,7 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
 
   const onCellClicked = (e: any) => {
     if (level !== "store" || e?.node?.rowPinned) return;
+    if (e?.column?.getColId?.() !== "name") return;   // 매장명(1열) 클릭 시에만 드릴다운
     const nm = e?.data?.name;
     if (nm && nm !== "합계") setDrill(nm);
   };
@@ -156,16 +161,6 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
             </div>
           )}
         </div>
-        {!drill && (
-          <div>
-            <div className="mb-1 text-xs font-medium text-slate-400 dark:text-slate-400">채널</div>
-            <div className="flex flex-wrap gap-1.5">
-              {meta.shop_types.map((t) => (
-                <Chip key={t} active={types.includes(t)} onClick={() => setTypes(types.includes(t) ? types.filter((x) => x !== t) : [...types, t])}>{t}</Chip>
-              ))}
-            </div>
-          </div>
-        )}
         {loading && <Spinner className="mb-1 h-4 w-4" />}
       </CardBody></Card>
 
@@ -173,7 +168,7 @@ export default function Pnl({ meta, dark }: { meta: Meta; dark: boolean }) {
       <div className="-mt-2 flex items-center gap-2 text-sm">
         <button onClick={() => setDrill(null)} className={`rounded-md px-2 py-0.5 font-medium ${drill ? "text-indigo-600 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-950/40" : "text-slate-500 dark:text-slate-300"}`}>전체 매장</button>
         {drill && <><span className="text-slate-300 dark:text-slate-600">›</span><span className="font-semibold text-slate-700 dark:text-slate-200">{drill}</span><span className="text-xs text-slate-400">(브랜드별)</span></>}
-        {!drill && <span className="text-xs text-slate-400 dark:text-slate-500">· 매장 행 클릭 → 브랜드 드릴다운</span>}
+        {!drill && <span className="text-xs text-slate-400 dark:text-slate-500">· 매장명(첫 열) 클릭 → 브랜드 드릴다운</span>}
       </div>
 
       <p className="-mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400 dark:text-slate-400">
