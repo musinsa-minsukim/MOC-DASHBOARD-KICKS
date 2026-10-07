@@ -102,8 +102,18 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
     ];
     if (level === "store")
       c.push(colText("shop_type", "채널", { minWidth: 80 }));
+    const dcCol = (field: string, header: string) => colNum(field, header, "num", {
+      minWidth: 92,
+      valueFormatter: (p: any) => (p.value == null ? "—" : (p.value as number).toFixed(1) + "%"),
+      cellStyle: (): any => ({ textAlign: "right", color: dark ? "#cbd5e1" : "#475569" }),
+    });
     c.push(
+      colNum("normal_amt", "정상가 매출", "compact", { minWidth: 104 }),
+      dcCol("dc1", "1차 할인율"),
       colNum("gmv", "GMV(정산)", "compact", { minWidth: 104 }),
+      dcCol("dc2", "2차 할인율"),
+      colNum("pay", "실결제금액", "compact", { minWidth: 104 }),
+      dcCol("dc_ttl", "TTL 할인율"),
       colNum("net_take", "순매출(NetTake)", "compact", { minWidth: 116 }),
       heatRateCol("nt_rate", "순매출율", rows, T.nt_rate ?? 0, dark),
       colNum("cp", "공헌이익(CP)", "compact", { minWidth: 110 }),

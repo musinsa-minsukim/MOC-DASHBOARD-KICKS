@@ -1387,21 +1387,29 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
             SELECT {gcol} k, {cols} FROM settlement_daily
             WHERE sales_date >= CAST(? AS DATE) AND sales_date < CAST(? AS DATE) + INTERVAL 1 DAY{wextra}
             GROUP BY {gcol}""", [rng[0].isoformat(), rng[1].isoformat()] + wp)
+    has_pay = "pay" in stl_cols                          # 실결제(pay)는 재그레인 refresh 후 생김 — 없으면 2차/TTL 할인율 '—'
+    pay_sel = "CAST(sum(pay) AS DOUBLE) pay" if has_pay else "CAST(NULL AS DOUBLE) pay"
     cur_df = agg(cur, "CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(net_take) AS DOUBLE) net_take, "
                       "CAST(sum(cp) AS DOUBLE) cp, CAST(sum(offline_cost) AS DOUBLE) offline_cost, "
-                      "CAST(sum(normal_amt) AS DOUBLE) normal_amt, CAST(sum(qty) AS DOUBLE) qty, "
+                      "CAST(sum(normal_amt) AS DOUBLE) normal_amt, " + pay_sel + ", CAST(sum(qty) AS DOUBLE) qty, "
                       "any_value(shop_type) shop_type")
     pmm = {r.k: _num(r.cp) for r in agg(pm, "CAST(sum(cp) AS DOUBLE) cp").itertuples()}
     pym = {r.k: _num(r.cp) for r in agg(py, "CAST(sum(cp) AS DOUBLE) cp").itertuples()}
     _d = lambda a, b: ((a - b) / abs(b) * 100) if b else None
+    _rate = lambda a, b: round((a - b) / a * 100, 1) if (a and b is not None) else None  # a→b 할인율 =(a−b)/a
 
     rows = []
     for r in cur_df.itertuples():
         gmv, cp, nt = _num(r.gmv), _num(r.cp), _num(r.net_take)
+        nm = _num(r.normal_amt)
+        pay = _num(getattr(r, "pay", 0.0)) if has_pay else None
         pmc, pyc = pmm.get(r.k, 0.0), pym.get(r.k, 0.0)
         rows.append({"name": r.k, "shop_type": getattr(r, "shop_type", ""),
                      "gmv": gmv, "net_take": nt, "cp": cp, "offline_cost": _num(r.offline_cost),
-                     "qty": _num(r.qty), "normal_amt": _num(r.normal_amt),
+                     "qty": _num(r.qty), "normal_amt": nm, "pay": pay,
+                     "dc1": _rate(nm, gmv),                 # 1차 할인율(정상가→GMV)
+                     "dc2": _rate(gmv, pay),                # 2차 할인율(GMV→실결제)
+                     "dc_ttl": _rate(nm, pay),              # TTL 할인율(정상가→실결제)
                      "cp_rate": (cp / (gmv / 1.1) * 100) if gmv else 0,
                      "nt_rate": (nt / gmv * 100) if gmv else 0,
                      "pm_cp": pmc, "pm_delta": _d(cp, pmc), "py_cp": pyc, "py_delta": _d(cp, pyc)})
@@ -1409,8 +1417,10 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
 
     def T(k): return sum(x[k] for x in rows)
     tg, tcp, tnt, tpm, tpy = T("gmv"), T("cp"), T("net_take"), T("pm_cp"), T("py_cp")
+    tnm = T("normal_amt"); tpay = sum(_num(x["pay"]) for x in rows) if has_pay else None
     totals = {"name": "합계", "shop_type": "", "gmv": tg, "net_take": tnt, "cp": tcp,
-              "offline_cost": T("offline_cost"), "qty": T("qty"), "normal_amt": T("normal_amt"),
+              "offline_cost": T("offline_cost"), "qty": T("qty"), "normal_amt": tnm, "pay": tpay,
+              "dc1": _rate(tnm, tg), "dc2": _rate(tg, tpay), "dc_ttl": _rate(tnm, tpay),
               "cp_rate": (tcp / (tg / 1.1) * 100) if tg else 0, "nt_rate": (tnt / tg * 100) if tg else 0,
               "pm_cp": tpm, "pm_delta": _d(tcp, tpm), "py_cp": tpy, "py_delta": _d(tcp, tpy)}
 

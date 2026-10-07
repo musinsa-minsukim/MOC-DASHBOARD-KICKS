@@ -795,6 +795,7 @@ def fetch_settlement_daily(since: str | None = None) -> pd.DataFrame:
                CAST(SUM(v.qty) AS DOUBLE)          AS qty,
                CAST(SUM(v.ord_amt) AS DOUBLE)      AS gmv,
                CAST(SUM(v.normal_amt) AS DOUBLE)   AS normal_amt,
+               CAST(SUM(v.pay_amt) AS DOUBLE)      AS pay,
                CAST(SUM(v.profit) AS DOUBLE)       AS net_take,
                CAST(SUM(v.contribution_profit_pre) AS DOUBLE) AS cp,
                CAST(SUM(v.offline_cost_fixed) AS DOUBLE)      AS offline_cost,
@@ -808,7 +809,7 @@ def fetch_settlement_daily(since: str | None = None) -> pd.DataFrame:
     """)
     d = run_df(q)
     d["sales_date"] = pd.to_datetime(d["sales_date"], errors="coerce")
-    for c in ("qty", "gmv", "normal_amt", "net_take", "cp", "offline_cost", "add_rev"):
+    for c in ("qty", "gmv", "normal_amt", "pay", "net_take", "cp", "offline_cost", "add_rev"):
         d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0)
     for c in ("store_name", "shop_type", "brand_nm", "business_type", "cat_top", "cat_large", "cat_medium"):
         d[c] = d[c].fillna("")
