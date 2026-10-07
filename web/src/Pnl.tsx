@@ -25,6 +25,26 @@ function heatRateCol(field: string, header: string, rows: any[], anchor: number,
   });
 }
 
+// 할인율 히트맵: 합계(평균) 대비 **높은 할인=빨강/주황**, 낮은 할인=초록 (heatRateCol의 색 방향 반전).
+function heatDiscCol(field: string, header: string, rows: any[], anchor: number, dark: boolean) {
+  const vals = rows.filter((r) => r[field] != null).map((r) => r[field] as number);
+  const up = Math.max(1e-6, (vals.length ? Math.max(...vals) : anchor + 1) - anchor);
+  const dn = Math.max(1e-6, anchor - (vals.length ? Math.min(...vals) : anchor - 1));
+  return colNum(field, header, "num", {
+    minWidth: 88,
+    valueFormatter: (p: any) => (p.value == null ? "—" : (p.value as number).toFixed(1) + "%"),
+    cellStyle: (p: any) => {
+      const v = p.value as number | null;
+      if (v == null) return { textAlign: "right", color: "var(--ratio-neutral)" };
+      let hue: number, t: number;
+      if (v >= anchor) { t = Math.min(1, (v - anchor) / up); hue = 55 - 55 * t; }   // 평균보다 높은 할인 → 노랑→빨강
+      else { t = Math.min(1, (anchor - v) / dn); hue = 95 + 40 * t; }               // 평균보다 낮은 할인 → 초록
+      const [b, s] = dark ? [0.18, 0.42] : [0.12, 0.4];
+      return { textAlign: "right", backgroundColor: `hsla(${hue.toFixed(0)},78%,50%,${(b + s * t).toFixed(3)})`, fontWeight: 600, ...(dark ? { color: "#e2e8f0" } : {}) };
+    },
+  });
+}
+
 export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean; filters: Filters }) {
   const [d, setD] = useState<any>(null);
   const [mode, setMode] = useState<"month" | "day" | "range">("month");
@@ -102,18 +122,13 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
     ];
     if (level === "store")
       c.push(colText("shop_type", "채널", { minWidth: 80 }));
-    const dcCol = (field: string, header: string) => colNum(field, header, "num", {
-      minWidth: 92,
-      valueFormatter: (p: any) => (p.value == null ? "—" : (p.value as number).toFixed(1) + "%"),
-      cellStyle: (): any => ({ textAlign: "right", color: dark ? "#cbd5e1" : "#475569" }),
-    });
     c.push(
       colNum("normal_amt", "정상가 매출", "compact", { minWidth: 104 }),
-      dcCol("dc1", "1차 할인율"),
+      heatDiscCol("dc1", "1차 할인율", rows, T.dc1 ?? 0, dark),
       colNum("gmv", "GMV(정산)", "compact", { minWidth: 104 }),
-      dcCol("dc2", "2차 할인율"),
+      heatDiscCol("dc2", "2차 할인율", rows, T.dc2 ?? 0, dark),
       colNum("pay", "실결제금액", "compact", { minWidth: 104 }),
-      dcCol("dc_ttl", "TTL 할인율"),
+      heatDiscCol("dc_ttl", "TTL 할인율", rows, T.dc_ttl ?? 0, dark),
       colNum("net_take", "순매출(NetTake)", "compact", { minWidth: 116 }),
       heatRateCol("nt_rate", "순매출율", rows, T.nt_rate ?? 0, dark),
       colNum("cp", "공헌이익(CP)", "compact", { minWidth: 110 }),
