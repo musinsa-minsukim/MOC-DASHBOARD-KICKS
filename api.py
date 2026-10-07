@@ -1426,8 +1426,11 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
     def T(k): return sum(x[k] for x in rows)
     tg, tcp, tnt, tpm, tpy = T("gmv"), T("cp"), T("net_take"), T("pm_cp"), T("py_cp")
     tnm = T("normal_amt"); tpay = sum(_num(x["pay"]) for x in rows) if has_pay else None
+    for x in rows:                                        # GMV SOB(%) = 그 행 GMV ÷ 전체(합계) GMV
+        x["sob"] = round(x["gmv"] / tg * 100, 1) if tg else None
     totals = {"name": "합계", "shop_type": "", "gmv": tg, "net_take": tnt, "cp": tcp,
               "offline_cost": T("offline_cost"), "qty": T("qty"), "normal_amt": tnm, "pay": tpay,
+              "sob": 100.0 if tg else None,
               "dc1": _rate(tnm, tg), "dc2": _rate(tg, tpay), "dc_ttl": _rate(tnm, tpay),
               "cp_rate": (tcp / (tg / 1.1) * 100) if tg else 0, "nt_rate": (tnt / tg * 100) if tg else 0,
               "pm_cp": tpm, "pm_delta": _d(tcp, tpm), "py_cp": tpy, "py_delta": _d(tcp, tpy)}

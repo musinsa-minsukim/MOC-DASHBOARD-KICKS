@@ -125,6 +125,11 @@ export default function Pnl({ meta, dark, filters }: { meta: Meta; dark: boolean
     if (level === "store")
       c.push(colText("shop_type", "채널", { minWidth: 80 }));
     c.push(
+      colNum("sob", "GMV SOB", "num", {
+        minWidth: 92,
+        valueFormatter: (p: any) => (p.value == null ? "—" : (p.value as number).toFixed(1) + "%"),
+        cellStyle: (): any => ({ textAlign: "right", fontWeight: 600, color: dark ? "#cbd5e1" : "#475569" }),
+      }),
       colNum("normal_amt", "정상가 매출", "compact", { minWidth: 104 }),
       heatDiscCol("dc1", "1차 할인율", rows, T.dc1 ?? 0, dark),
       colNum("gmv", "GMV(정산)", "compact", { minWidth: 104 }),
