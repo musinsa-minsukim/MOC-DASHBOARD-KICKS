@@ -58,6 +58,39 @@ def _filter_sql(basis: str | None, seg: str | None, grp: str | None = None):
     return (" AND " + " AND ".join(cl)) if cl else "", params
 
 
+def _grp_where(grp: str | None):
+    """매장그룹(grp) → store_name 기준 WHERE 조각(footfall/receipts/settlement_daily 등 store_name 보유 뷰용).
+       (이 뷰들엔 cat_top/business_type가 없어 매장그룹만 반영)."""
+    if grp == "킥스":
+        return " AND store_name LIKE '%킥스%'", []
+    if grp in ("킥스외", "킥스 외"):
+        return " AND store_name NOT LIKE '%킥스%'", []
+    return "", []
+
+
+def _daily_store_kpis(d0: str, gw: str, gwp: list) -> dict:
+    """전일(d0) 입객·구매전환율·객단가·NetTake·CP (매장그룹만 반영). 캐시 없으면 해당 지표 None."""
+    out = {"visitors": None, "conversion": None, "aov": None, "receipts": None, "net_take": None, "cp": None}
+    try:
+        v = store.query(f"SELECT CAST(sum(visitors) AS DOUBLE) v FROM footfall WHERE CAST(sales_date AS DATE)=?{gw}", [d0] + gwp).iloc[0]
+        out["visitors"] = _f(v.v)
+    except Exception:
+        pass
+    try:
+        r = store.query(f"SELECT CAST(COUNT(DISTINCT order_id) AS DOUBLE) rc, CAST(sum(gmv) AS DOUBLE) g FROM receipts WHERE CAST(sales_date AS DATE)=?{gw}", [d0] + gwp).iloc[0]
+        rc = _f(r.rc); out["receipts"] = rc; out["aov"] = (_f(r.g) / rc) if rc else 0
+        if out["visitors"]:
+            out["conversion"] = rc / out["visitors"] * 100
+    except Exception:
+        pass
+    try:
+        s = store.query(f"SELECT CAST(sum(net_take) AS DOUBLE) nt, CAST(sum(cp) AS DOUBLE) cp FROM settlement_daily WHERE CAST(sales_date AS DATE)=?{gw}", [d0] + gwp).iloc[0]
+        out["net_take"] = _f(s.nt); out["cp"] = _f(s.cp)
+    except Exception:
+        pass
+    return out
+
+
 def _inv_cols(cols: list[str]) -> dict:
     """재고 컬럼 탐색: 점재고합계 / 허브합계 / 허브1000 / 허브1700 / MFS."""
     cols = [str(c) for c in cols]
@@ -98,9 +131,11 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
     tot = store.query(
         f"""SELECT CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(qty) AS DOUBLE) qty,
                    CAST(sum(foreign_gmv) AS DOUBLE) fgn, count(DISTINCT goods_no) goods,
-                   count(DISTINCT store_name) stores
+                   count(DISTINCT store_name) stores,
+                   CAST(sum(normal_amt) AS DOUBLE) normal_amt, CAST(sum(pay) AS DOUBLE) pay
             FROM sales WHERE CAST(sales_date AS DATE)=?{fsql}""", [d0] + fp).iloc[0]
     gmv0, qty0 = _f(tot.gmv), _f(tot.qty)
+    norm0, pay0 = _f(tot.normal_amt), _f(tot.pay)
     gmv1 = 0.0
     if d1:
         gmv1 = _f(store.query(
@@ -108,17 +143,42 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
             [d1] + fp).iloc[0].gmv)
     wow = _pct(gmv0, gmv1)
 
-    # ---- 4일 / 14일 추이 ----
-    lo14 = ds[min(len(ds) - 1, 13)]
+    # ---- 4일 / 35일 추이 ----
+    import datetime as _dtm
+    _d0d = _dtm.date.fromisoformat(d0)
+    lo35 = (_d0d - _dtm.timedelta(days=34)).isoformat()
     tr = store.query(
         f"""SELECT CAST(sales_date AS DATE) d, CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(qty) AS DOUBLE) qty
-            FROM sales WHERE CAST(sales_date AS DATE) >= ?{fsql} GROUP BY 1 ORDER BY 1""", [lo14] + fp)
+            FROM sales WHERE CAST(sales_date AS DATE) >= ?{fsql} GROUP BY 1 ORDER BY 1""", [lo35] + fp)
     tr["d"] = tr["d"].astype(str).str[:10]
     trend = [{"date": r.d, "gmv": _f(r.gmv), "qty": _f(r.qty)} for r in tr.itertuples()]
     tmap = {r["date"]: r for r in trend}
     trend4 = [{"label": dnames[i], "date": d4[i],
                "gmv": _f(tmap.get(d4[i], {}).get("gmv", 0)),
                "qty": _f(tmap.get(d4[i], {}).get("qty", 0))} for i in range(len(d4))]
+
+    # ---- 주간 WoW (금주 7일 d0-6~d0 vs 전주 d0-13~d0-7) + 요일별 금주 vs 전주 ----
+    wk_cf = (_d0d - _dtm.timedelta(days=6)).isoformat()
+    wk_pf = (_d0d - _dtm.timedelta(days=13)).isoformat()
+    wk_pt = (_d0d - _dtm.timedelta(days=7)).isoformat()
+    ww = store.query(
+        f"""SELECT CASE WHEN CAST(sales_date AS DATE) >= ? THEN 'cur' ELSE 'prev' END wk,
+                   isodow(sales_date) dow, CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(qty) AS DOUBLE) qty
+            FROM sales WHERE CAST(sales_date AS DATE) >= ? AND CAST(sales_date AS DATE) <= ?{fsql}
+            GROUP BY 1, 2""", [wk_cf, wk_pf, d0] + fp)
+    _wk = {("cur" if r.wk == "cur" else "prev", int(r.dow)): (_f(r.gmv), _f(r.qty)) for r in ww.itertuples()}
+    _DOWL = {1: "월", 2: "화", 3: "수", 4: "목", 5: "금", 6: "토", 7: "일"}
+    dow = [{"dow": i, "label": _DOWL[i],
+            "cur_gmv": _wk.get(("cur", i), (0, 0))[0], "prev_gmv": _wk.get(("prev", i), (0, 0))[0]} for i in range(1, 8)]
+    wcg = sum(x["cur_gmv"] for x in dow); wpg = sum(x["prev_gmv"] for x in dow)
+    wcq = sum(_wk.get(("cur", i), (0, 0))[1] for i in range(1, 8)); wpq = sum(_wk.get(("prev", i), (0, 0))[1] for i in range(1, 8))
+    week = {"cur_from": wk_cf, "cur_to": d0, "prev_from": wk_pf, "prev_to": wk_pt,
+            "cur_gmv": wcg, "prev_gmv": wpg, "gmv_delta": _pct(wcg, wpg),
+            "cur_qty": wcq, "prev_qty": wpq, "qty_delta": _pct(wcq, wpq)}
+
+    # ---- 입객·전환율·객단가·NetTake (매장그룹만 반영; footfall/receipts/settlement엔 카테/사업구분 컬럼 없음) ----
+    gw, gwp = _grp_where(grp)
+    kpi_extra = _daily_store_kpis(d0, gw, gwp)
 
     # ---- 매장별(d0) ----
     st = store.query(
@@ -161,7 +221,15 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
             "goods": int(_f(tot.goods)), "stores": int(_f(tot.stores)),
             "gmv_prev": gmv1, "gmv_delta": wow,
             "foreign_ratio": (_f(tot.fgn) / gmv0 * 100 if gmv0 else 0),
+            "normal_amt": norm0, "pay": pay0,
+            "dc1": (round((norm0 - gmv0) / norm0 * 100, 1) if norm0 else None),     # 1차 할인율(정상가→GMV)
+            "dc2": (round((gmv0 - pay0) / gmv0 * 100, 1) if (gmv0 and pay0) else None),  # 2차(GMV→실결제)
+            "dc_ttl": (round((norm0 - pay0) / norm0 * 100, 1) if (norm0 and pay0) else None),  # TTL(정상가→실결제)
+            "visitors": kpi_extra["visitors"], "conversion": kpi_extra["conversion"],
+            "aov": kpi_extra["aov"], "receipts": kpi_extra["receipts"],
+            "net_take": kpi_extra["net_take"], "cp": kpi_extra["cp"],
         },
+        "week": week, "dow": dow,
         "lead_store": stores[0] if stores else None,
         "lead_brand": brands[0] if brands else None,
         "trend": trend, "trend4": trend4, "dnames": dnames,

@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AreaChart,
   Area,
+  BarChart,
+  Bar,
+  Legend,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -23,6 +26,11 @@ import {
   RotateCw,
   CircleAlert,
   CircleCheck,
+  Receipt,
+  Users,
+  Percent,
+  Coins,
+  Tag,
 } from "lucide-react";
 import { api, getToken, won, num, compact } from "./lib";
 import { Card, CardBody, SectionTitle, Spinner, Chip, FitText } from "./ui";
@@ -141,8 +149,8 @@ export default function Summary({ dark }: { meta?: any; dark: boolean }) {
   }, [qs, reloadKey]);
 
   const C = dark
-    ? { grid: "#1e293b", axis: "#94a3b8", ttFg: "#cbd5e1", ttBg: "#0f172a", ttBorder: "#334155", area: "#818cf8" }
-    : { grid: "#f1f5f9", axis: "#94a3b8", ttFg: "#475569", ttBg: "#ffffff", ttBorder: "#e2e8f0", area: "#4f46e5" };
+    ? { grid: "#1e293b", axis: "#94a3b8", ttFg: "#cbd5e1", ttBg: "#0f172a", ttBorder: "#334155", area: "#818cf8", prevBar: "#475569", cursorFill: "rgba(148,163,184,.1)" }
+    : { grid: "#f1f5f9", axis: "#94a3b8", ttFg: "#475569", ttBg: "#ffffff", ttBorder: "#e2e8f0", area: "#4f46e5", prevBar: "#cbd5e1", cursorFill: "#f8fafc" };
 
   if (err)
     return (
@@ -221,6 +229,11 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <Kpi icon={ShoppingBag} label="전일 GMV" value={won(t.gmv)} delta={t.gmv_delta} />
             <Kpi icon={Package} label="전일 판매수량" value={num(t.qty) + "개"} sub={`외국인 ${t.foreign_ratio.toFixed(1)}%`} />
+            <Kpi icon={Receipt} label="객단가" value={t.aov != null ? won(t.aov) : "—"} sub={t.receipts != null ? `영수증 ${num(t.receipts)}건` : undefined} />
+            <Kpi icon={Users} label="입객수" value={t.visitors != null ? num(t.visitors) + "명" : "—"} />
+            <Kpi icon={Percent} label="구매 전환율" value={t.conversion != null ? t.conversion.toFixed(1) + "%" : "—"} />
+            <Kpi icon={Coins} label="Net Take" value={t.net_take != null ? won(t.net_take) : "—"} sub={t.cp != null ? `CP ${compact(t.cp)}` : undefined} />
+            <Kpi icon={Tag} label="TTL 할인율" value={t.dc_ttl != null ? t.dc_ttl.toFixed(1) + "%" : "—"} sub={t.dc1 != null ? `1차 ${t.dc1}% · 2차 ${t.dc2 ?? "-"}%` : undefined} />
             <Kpi icon={Store} label={`선두 매장 · ${d.lead_store?.name ?? "-"}`} value={`${(d.lead_store?.share ?? 0).toFixed(1)}%`} sub={compact(d.lead_store?.gmv ?? 0)} />
             <Kpi icon={Tags} label={`주도 브랜드 · ${d.lead_brand?.name ?? "-"}`} value={`${(d.lead_brand?.share ?? 0).toFixed(1)}%`} sub={compact(d.lead_brand?.gmv ?? 0)} />
           </div>
@@ -230,6 +243,41 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
           </ul>
         </CardBody>
       </Card>
+
+      {/* 주간 실적(WoW) + 요일별 금주 vs 전주 */}
+      {d.week && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <Card><CardBody>
+            <SectionTitle title="주간 실적 (WoW)" sub={`금주 ${d.week.cur_from}~${d.week.cur_to} vs 전주 ${d.week.prev_from}~${d.week.prev_to} · 각 7일`} />
+            <div className="mt-2 grid grid-cols-2 gap-4">
+              <div>
+                <div className="text-xs text-slate-400 dark:text-slate-400">금주 GMV</div>
+                <div className="text-xl font-bold tabular-nums text-slate-900 dark:text-slate-50">{won(d.week.cur_gmv)}</div>
+                <div className="mt-1 flex items-center gap-2"><DeltaBadge v={d.week.gmv_delta} /><span className="text-xs text-slate-400">전주 {compact(d.week.prev_gmv)}</span></div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-400 dark:text-slate-400">금주 판매수량</div>
+                <div className="text-xl font-bold tabular-nums text-slate-900 dark:text-slate-50">{num(d.week.cur_qty)}개</div>
+                <div className="mt-1 flex items-center gap-2"><DeltaBadge v={d.week.qty_delta} /><span className="text-xs text-slate-400">전주 {num(d.week.prev_qty)}개</span></div>
+              </div>
+            </div>
+          </CardBody></Card>
+          <Card><CardBody>
+            <SectionTitle title="요일별 금주 vs 전주" sub="GMV (월~일)" />
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={d.dow} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.grid} vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11, fill: C.axis }} axisLine={false} tickLine={false} interval={0} />
+                <YAxis tickFormatter={(v) => compact(v as number)} tick={{ fontSize: 11, fill: C.axis }} axisLine={false} tickLine={false} width={44} />
+                <Tooltip formatter={(v: any, n: any) => [won(v as number), n === "cur_gmv" ? "금주" : "전주"]} contentStyle={{ background: C.ttBg, border: `1px solid ${C.ttBorder}`, borderRadius: 10, fontSize: 12, color: C.ttFg }} labelStyle={{ color: C.ttFg }} cursor={{ fill: C.cursorFill }} />
+                <Legend formatter={(v: any) => <span style={{ color: C.ttFg, fontSize: 11 }}>{v === "cur_gmv" ? "금주" : "전주"}</span>} />
+                <Bar dataKey="prev_gmv" name="prev_gmv" fill={C.prevBar} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="cur_gmv" name="cur_gmv" fill={C.area} radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardBody></Card>
+        </div>
+      )}
 
       {/* 중카테고리별 브랜드 랭킹 (#6) */}
       {Array.isArray(d.cat_brand) && d.cat_brand.length > 0 && (
@@ -378,7 +426,7 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
       {/* 4) 최근 14일 추이 + 전일~-4일 */}
       <Card>
         <CardBody>
-          <SectionTitle title="전일 전체 실적" sub="최근 14일 추이 · 전일~-4일" />
+          <SectionTitle title="일별 GMV 추이" sub="최근 35일 · 전일~-4일 비교" />
           <ResponsiveContainer width="100%" height={220}>
             <AreaChart data={d.trend} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
               <defs>
