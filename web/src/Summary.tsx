@@ -114,6 +114,7 @@ async function downloadRestockCsv(qs: string, latest: string) {
 
 export default function Summary({ dark }: { meta?: any; dark: boolean }) {
   const [seg, setSeg] = useState<string>("전체");
+  const [grp, setGrp] = useState<string>("전체");  // 매장그룹 세그먼트: 통합(전체)/킥스/킥스외
   const [d, setD] = useState<Daily | null>(null);
   const [err, setErr] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -121,8 +122,9 @@ export default function Summary({ dark }: { meta?: any; dark: boolean }) {
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (seg && seg !== "전체") p.append("seg", seg);
+    if (grp && grp !== "전체") p.append("grp", grp);
     return p.toString() ? "?" + p.toString() : "";
-  }, [seg]);
+  }, [seg, grp]);
 
   useEffect(() => {
     let alive = true;
@@ -157,15 +159,24 @@ export default function Summary({ dark }: { meta?: any; dark: boolean }) {
       {/* 헤더 + 기준 선택 */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">오프라인 MD 일별 매출 리포트</h1>
+          <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">통합 데일리 리포트</h1>
           <p className="mt-0.5 text-sm text-slate-400 dark:text-slate-400">
             {d ? <>최신 데이터일 <span className="font-semibold text-slate-600 dark:text-slate-300">{d.latest}</span>{d.prev && <> · 직전일({d.prev}) 대비 · 사이드바 필터와 무관</>}</> : "불러오는 중…"}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {["전체", "매입", "위탁"].map((s) => (
-            <Chip key={s} active={seg === s} onClick={() => setSeg(s)}>{s}</Chip>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* 세그먼트(매장그룹): 통합/킥스/킥스 외. 무탠(무신사 스탠다드)은 범위 밖이라 제외 */}
+          <div className="flex items-center gap-1.5">
+            {[["전체", "통합"], ["킥스", "킥스"], ["킥스외", "킥스 외"]].map(([v, lbl]) => (
+              <Chip key={v} active={grp === v} onClick={() => setGrp(v)}>{lbl}</Chip>
+            ))}
+          </div>
+          <span className="text-slate-200 dark:text-slate-700">|</span>
+          <div className="flex items-center gap-1.5">
+            {["전체", "매입", "위탁"].map((s) => (
+              <Chip key={s} active={seg === s} onClick={() => setSeg(s)}>{s}</Chip>
+            ))}
+          </div>
         </div>
       </div>
 

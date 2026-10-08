@@ -43,13 +43,18 @@ def _pct(cur: float, prev: float):
     return (cur / prev - 1) * 100
 
 
-def _filter_sql(basis: str | None, seg: str | None):
-    """basis(cat_top)·seg(business_type) → 추가 WHERE 조각 + 파라미터."""
+def _filter_sql(basis: str | None, seg: str | None, grp: str | None = None):
+    """basis(cat_top)·seg(business_type)·grp(매장그룹: 킥스/킥스외) → 추가 WHERE 조각 + 파라미터.
+       grp: '킥스'=shop_type='KICKS' / '킥스외'=그 외(무신사 런 등 포함) / 전체=미적용. (무탠=무신사 스탠다드는 dim_store 밖이라 미지원)"""
     cl, params = [], []
     if basis and basis != "전체":
         cl.append("cat_top = ?"); params.append(basis)
     if seg and seg != "전체":
         cl.append("business_type = ?"); params.append(seg)
+    if grp == "킥스":
+        cl.append("store_name LIKE '%킥스%'")       # 무신사 킥스 성수·홍대·스타필드 고양(매장명 기준, shop_type 미등록 매장 포함)
+    elif grp in ("킥스외", "킥스 외"):
+        cl.append("store_name NOT LIKE '%킥스%'")
     return (" AND " + " AND ".join(cl)) if cl else "", params
 
 
@@ -73,15 +78,15 @@ def _store_stock_col(cols: list[str]) -> str:
     return rest[0] if rest else cols[2]
 
 
-def compute(basis: str | None, seg: str | None) -> dict:
-    fsql, fp = _filter_sql(basis, seg)
+def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
+    fsql, fp = _filter_sql(basis, seg, grp)
 
     today = store.today_kst()  # 오늘(KST) 제외 → d0는 항상 어제(완성된 날). '전일 리포트' 의도 고정.
     dates = store.query(
         f"SELECT DISTINCT CAST(sales_date AS DATE) d FROM sales WHERE 1=1{fsql} "
         f"AND CAST(sales_date AS DATE) < ? ORDER BY d DESC LIMIT 21", [*fp, today])["d"].tolist()
     if not dates:
-        return {"empty": True, "basis": basis or "전체", "seg": seg or "전체"}
+        return {"empty": True, "basis": basis or "전체", "seg": seg or "전체", "grp": grp or "전체"}
 
     ds = [str(x)[:10] for x in dates]
     d0 = ds[0]
@@ -148,7 +153,7 @@ def compute(basis: str | None, seg: str | None) -> dict:
 
     return {
         "empty": False,
-        "basis": basis or "전체", "seg": seg or "전체",
+        "basis": basis or "전체", "seg": seg or "전체", "grp": grp or "전체",
         "latest": d0, "prev": d1,
         "issue": (wow is not None and wow < -5),
         "totals": {
@@ -190,9 +195,9 @@ def _restock_df(d0, fsql, fp):
     return m.sort_values(["store_stock", "sold"], ascending=[True, False])
 
 
-def restock_full(basis: str | None = None, seg: str | None = None):
+def restock_full(basis: str | None = None, seg: str | None = None, grp: str | None = None):
     """재고보충 전체 행(캡 없음) — CSV 다운로드용. (d0, rows[])."""
-    fsql, fp = _filter_sql(basis or "전체", seg or "전체")
+    fsql, fp = _filter_sql(basis or "전체", seg or "전체", grp or "전체")
     dd = store.query(f"SELECT max(CAST(sales_date AS DATE)) d FROM sales WHERE 1=1{fsql} "
                      f"AND CAST(sales_date AS DATE) < ?", [*fp, store.today_kst()]).iloc[0].d
     if dd is None:
@@ -355,12 +360,13 @@ def _heavy_sections(d4, dnames, d0, d1, fsql, fp, gmv0):
     return notable, restock, actions
 
 
-def report(basis: str | None = None, seg: str | None = None) -> dict:
+def report(basis: str | None = None, seg: str | None = None, grp: str | None = None) -> dict:
     basis = basis or "전체"
     seg = seg or "전체"
-    k = (_mtime("sales"), _mtime("inventory_goods"), _mtime("inventory_store_long"), basis, seg)
+    grp = grp or "전체"
+    k = (_mtime("sales"), _mtime("inventory_goods"), _mtime("inventory_store_long"), basis, seg, grp)
     if k not in _cache:
         if len(_cache) > 64:
             _cache.clear()
-        _cache[k] = compute(basis, seg)
+        _cache[k] = compute(basis, seg, grp)
     return _cache[k]

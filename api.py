@@ -1451,19 +1451,19 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
 
 
 @app.get("/api/daily")
-def daily_report(basis: str | None = None, seg: str | None = None,
+def daily_report(basis: str | None = None, seg: str | None = None, grp: str | None = None,
                  _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """요약 탭 — 최신 데이터일 기준 일별 리포트. basis=최상위카테, seg=매입/위탁 기준으로 재계산.
-    (전일 종합·액션포인트·주목상품 4일·매장/브랜드/상품 TOP100·재고보충 매장×상품)."""
-    return daily.report(basis, seg)
+    """통합 데일리 리포트 탭 — 최신 데이터일 기준 일별 리포트. basis=최상위카테, seg=매입/위탁,
+       grp=매장그룹(킥스/킥스외) 세그먼트로 재계산. (전일 종합·액션포인트·주목상품 4일·TOP100·재고보충)."""
+    return daily.report(basis, seg, grp)
 
 
 @app.get("/api/daily/restock.csv")
-def daily_restock_csv(basis: str | None = None, seg: str | None = None,
+def daily_restock_csv(basis: str | None = None, seg: str | None = None, grp: str | None = None,
                       _: str = Depends(require_user), __: None = Depends(require_ready)):
     """재고보충 필요 상품 전체 CSV (캡 없음) — 허브 발주용. UTF-8 BOM."""
     import io, csv
-    d0, rows = daily.restock_full(basis, seg)
+    d0, rows = daily.restock_full(basis, seg, grp)
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["매장", "브랜드", "UID", "상품명", "전일판매", "점재고", "허브재고"])
