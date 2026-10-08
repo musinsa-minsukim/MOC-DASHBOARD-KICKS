@@ -30,7 +30,7 @@ const Pnl = lazy(() => import("./Pnl"));
 const Ips = lazy(() => import("./Ips"));
 
 const NAV = [
-  { key: "summary", label: "요약", icon: LayoutDashboard, ready: true },
+  { key: "summary", label: "통합 데일리 리포트", icon: LayoutDashboard, ready: true },
   { key: "sales", label: "판매", icon: ShoppingCart, ready: true },
   { key: "pnl", label: "NET TAKE/CP", icon: Coins, ready: true },
   { key: "drill", label: "드릴다운", icon: ListTree, ready: true },
@@ -246,7 +246,7 @@ export default function App() {
       return { ...prev, [key]: has ? cur.filter((x) => x !== value) : [...cur, value] } as Filters;
     });
 
-  const navLabel = NAV.find((n) => n.key === view)?.label ?? "요약";
+  const navLabel = NAV.find((n) => n.key === view)?.label ?? "통합 데일리 리포트";
 
   return (
     <div className="flex min-h-screen">
