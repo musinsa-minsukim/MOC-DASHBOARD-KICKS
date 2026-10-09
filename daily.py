@@ -180,6 +180,37 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
     gw, gwp = _grp_where(grp)
     kpi_extra = _daily_store_kpis(d0, gw, gwp)
 
+    # ---- 할인율 구간별 GMV (1차 할인율=정상가→GMV, 상품단 산출 후 구간 집계) ----
+    _DBAND = {0: "정가", 1: "~10%", 2: "10~20%", 3: "20~30%", 4: "30~40%", 5: "40~50%", 6: "50%+", 7: "정상가 미상"}
+    dbd = store.query(
+        f"""SELECT band, CAST(sum(gmv) AS DOUBLE) gmv, CAST(sum(qty) AS DOUBLE) qty, count(*) goods FROM (
+                SELECT goods_no, sum(gmv) gmv, sum(qty) qty,
+                  CASE WHEN sum(normal_amt) <= 0 THEN 7
+                    WHEN (sum(normal_amt)-sum(gmv))/sum(normal_amt) < 0.001 THEN 0
+                    WHEN (sum(normal_amt)-sum(gmv))/sum(normal_amt) < 0.1  THEN 1
+                    WHEN (sum(normal_amt)-sum(gmv))/sum(normal_amt) < 0.2  THEN 2
+                    WHEN (sum(normal_amt)-sum(gmv))/sum(normal_amt) < 0.3  THEN 3
+                    WHEN (sum(normal_amt)-sum(gmv))/sum(normal_amt) < 0.4  THEN 4
+                    WHEN (sum(normal_amt)-sum(gmv))/sum(normal_amt) < 0.5  THEN 5
+                    ELSE 6 END band
+                FROM sales WHERE CAST(sales_date AS DATE)=?{fsql} GROUP BY goods_no
+            ) t GROUP BY band ORDER BY band""", [d0] + fp)
+    disc_bands = [{"band": _DBAND.get(int(r.band), "?"), "gmv": _f(r.gmv), "qty": _f(r.qty), "goods": int(r.goods),
+                   "share": (_f(r.gmv) / gmv0 * 100 if gmv0 else 0)} for r in dbd.itertuples()]
+
+    # ---- 점별 재고 요약 (현재 보유 · 매장별 점재고 총합·SKU수; 매장그룹만 반영) ----
+    store_stock = []
+    try:
+        iscols = [str(c) for c in store.query("SELECT * FROM inventory_store_long LIMIT 0").columns]
+        sc = _store_stock_col(iscols)
+        ss = store.query(
+            f"""SELECT store_name, CAST(sum("{sc}") AS DOUBLE) stock,
+                       count(DISTINCT CASE WHEN "{sc}" > 0 THEN goods_no END) skus
+                FROM inventory_store_long WHERE 1=1{gw} GROUP BY store_name ORDER BY stock DESC""", gwp)
+        store_stock = [{"name": r.store_name, "stock": _f(r.stock), "skus": int(r.skus)} for r in ss.itertuples()]
+    except Exception:
+        pass
+
     # ---- 매장별(d0) ----
     st = store.query(
         f"""SELECT store_name AS "name", any_value(shop_type) shop_type,
@@ -229,7 +260,7 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
             "aov": kpi_extra["aov"], "receipts": kpi_extra["receipts"],
             "net_take": kpi_extra["net_take"], "cp": kpi_extra["cp"],
         },
-        "week": week, "dow": dow,
+        "week": week, "dow": dow, "disc_bands": disc_bands, "store_stock": store_stock,
         "lead_store": stores[0] if stores else None,
         "lead_brand": brands[0] if brands else None,
         "trend": trend, "trend4": trend4, "dnames": dnames,

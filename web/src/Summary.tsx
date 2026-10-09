@@ -279,6 +279,32 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
         </div>
       )}
 
+      {/* 할인율 구간별 GMV + 점별 재고 요약 */}
+      {((Array.isArray(d.disc_bands) && d.disc_bands.length > 0) || (Array.isArray(d.store_stock) && d.store_stock.length > 0)) && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {Array.isArray(d.disc_bands) && d.disc_bands.length > 0 && (
+            <Card><CardBody>
+              <SectionTitle title="할인율 구간별 GMV" sub="1차 할인율(정상가→GMV) 기준 · 전일" />
+              <div className="mt-1">
+                {d.disc_bands.filter((b: any) => b.gmv > 0).map((b: any, i: number) => (
+                  <BarRow key={b.band} rank={i + 1} name={b.band} value={won(b.gmv)} share={b.share} meta={`${b.share.toFixed(1)}%`} color={C.area} />
+                ))}
+              </div>
+            </CardBody></Card>
+          )}
+          {Array.isArray(d.store_stock) && d.store_stock.length > 0 && (
+            <Card><CardBody>
+              <SectionTitle title="점별 재고 (현재 보유)" sub="매장별 점재고 총합 · SKU수 · 매장그룹만 반영" />
+              <div className="mt-1">
+                {(() => { const mx = Math.max(...d.store_stock.map((s: any) => s.stock), 1); return d.store_stock.map((s: any, i: number) => (
+                  <BarRow key={s.name} rank={i + 1} name={s.name} value={num(s.stock) + "개"} share={(s.stock / mx) * 100} meta={`${num(s.skus)} SKU`} color="#60a5fa" />
+                )); })()}
+              </div>
+            </CardBody></Card>
+          )}
+        </div>
+      )}
+
       {/* 중카테고리별 브랜드 랭킹 (#6) */}
       {Array.isArray(d.cat_brand) && d.cat_brand.length > 0 && (
         <Card>
