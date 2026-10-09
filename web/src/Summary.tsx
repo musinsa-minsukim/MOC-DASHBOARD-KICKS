@@ -305,6 +305,35 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
         </div>
       )}
 
+      {/* 급상승 / 급락 상품 딥다이브 (전일 vs 전전일 GMV) */}
+      {((d.risers?.length ?? 0) > 0 || (d.fallers?.length ?? 0) > 0) && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {[{ title: "급상승 상품 딥다이브", rows: d.risers ?? [], up: true }, { title: "급락 상품 딥다이브", rows: d.fallers ?? [], up: false }].map((sec) => (
+            <Card key={sec.title}><CardBody>
+              <SectionTitle title={sec.title} sub="전일 vs 전전일 GMV 증감 · TOP 15" />
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="border-b border-slate-100 text-xs text-slate-400 dark:border-slate-800">
+                    <th className="py-1.5 text-left font-medium">상품</th>
+                    <th className="py-1.5 text-right font-medium">전일 GMV</th>
+                    <th className="py-1.5 text-right font-medium">증감</th>
+                  </tr></thead>
+                  <tbody>
+                    {sec.rows.map((x: any) => (
+                      <tr key={x.goods_no} className="border-b border-slate-50 dark:border-slate-800/50">
+                        <td className="max-w-[240px] truncate py-1.5 pr-2 text-slate-700 dark:text-slate-200" title={`${x.brand} · ${x.name}`}><span className="text-slate-400">{x.brand}</span> {x.name}</td>
+                        <td className="py-1.5 text-right tabular-nums text-slate-700 dark:text-slate-200">{compact(x.gmv)}</td>
+                        <td className={`py-1.5 text-right tabular-nums font-semibold ${sec.up ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{x.pct == null ? "신규" : (x.pct >= 0 ? "+" : "") + x.pct.toFixed(0) + "%"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardBody></Card>
+          ))}
+        </div>
+      )}
+
       {/* 중카테고리별 브랜드 랭킹 (#6) */}
       {Array.isArray(d.cat_brand) && d.cat_brand.length > 0 && (
         <Card>

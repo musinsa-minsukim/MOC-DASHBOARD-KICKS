@@ -211,6 +211,23 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
     except Exception:
         pass
 
+    # ---- 급상승/급락 딥다이브 (전일 vs 전전일 상품 GMV 증감) ----
+    risers, fallers = [], []
+    if d1:
+        mv = store.query(
+            f"""SELECT goods_no, any_value(nm) nm, any_value(brand) brand,
+                       CAST(sum(CASE WHEN dd=? THEN gmv ELSE 0 END) AS DOUBLE) g0,
+                       CAST(sum(CASE WHEN dd=? THEN gmv ELSE 0 END) AS DOUBLE) g1,
+                       CAST(sum(CASE WHEN dd=? THEN qty ELSE 0 END) AS DOUBLE) q0
+                FROM (SELECT CAST(sales_date AS DATE) dd, goods_no, goods_nm nm, brand_nm brand, gmv, qty
+                      FROM sales WHERE CAST(sales_date AS DATE) IN (?, ?){fsql}) t
+                GROUP BY goods_no""", [d0, d1, d0, d0, d1] + fp)
+        rows = [{"goods_no": int(r.goods_no), "name": r.nm, "brand": r.brand,
+                 "gmv": _f(r.g0), "gmv_prev": _f(r.g1), "qty": _f(r.q0),
+                 "delta": _f(r.g0) - _f(r.g1), "pct": _pct(_f(r.g0), _f(r.g1))} for r in mv.itertuples()]
+        risers = sorted([x for x in rows if x["delta"] > 0], key=lambda x: -x["delta"])[:15]
+        fallers = sorted([x for x in rows if x["delta"] < 0], key=lambda x: x["delta"])[:15]
+
     # ---- 매장별(d0) ----
     st = store.query(
         f"""SELECT store_name AS "name", any_value(shop_type) shop_type,
@@ -261,6 +278,7 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
             "net_take": kpi_extra["net_take"], "cp": kpi_extra["cp"],
         },
         "week": week, "dow": dow, "disc_bands": disc_bands, "store_stock": store_stock,
+        "risers": risers, "fallers": fallers,
         "lead_store": stores[0] if stores else None,
         "lead_brand": brands[0] if brands else None,
         "trend": trend, "trend4": trend4, "dnames": dnames,
