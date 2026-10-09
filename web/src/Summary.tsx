@@ -305,6 +305,18 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
         </div>
       )}
 
+      {/* 브랜드별 보유재고 (현재) */}
+      {Array.isArray(d.brand_stock) && d.brand_stock.length > 0 && (
+        <Card><CardBody>
+          <SectionTitle title="브랜드별 보유재고 (현재)" sub="점재고 상위 30 브랜드 · SKU수 · 매장그룹만 반영" />
+          <div className="mt-1 grid grid-cols-1 gap-x-8 md:grid-cols-2">
+            {(() => { const mx = Math.max(...d.brand_stock.map((b: any) => b.stock), 1); return d.brand_stock.map((b: any, i: number) => (
+              <BarRow key={b.name} rank={i + 1} name={b.name} value={num(b.stock) + "개"} share={(b.stock / mx) * 100} meta={`${num(b.skus)} SKU`} color="#34d399" />
+            )); })()}
+          </div>
+        </CardBody></Card>
+      )}
+
       {/* 급상승 / 급락 상품 딥다이브 (전일 vs 전전일 GMV) */}
       {((d.risers?.length ?? 0) > 0 || (d.fallers?.length ?? 0) > 0) && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

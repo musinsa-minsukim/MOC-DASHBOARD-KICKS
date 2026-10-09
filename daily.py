@@ -211,6 +211,34 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
     except Exception:
         pass
 
+    # ---- 브랜드별 보유재고 (현재 점재고 · goods_master 조인 · 매장그룹별 매장컬럼 합) ----
+    brand_stock = []
+    try:
+        igc = [str(c) for c in store.get_inventory_goods().columns]
+        try:
+            lo = igc.index("goods_no") + 1
+        except ValueError:
+            lo = 1
+        hi = igc.index("점재고합계") if "점재고합계" in igc else len(igc)
+        store_cols_ig = [c for c in igc[lo:hi]]                     # 매장별 재고 컬럼
+        if grp == "킥스":
+            ec = [c for c in store_cols_ig if "킥스" in c]
+            expr = " + ".join(f'"{c}"' for c in ec) if ec else "0"
+        elif grp in ("킥스외", "킥스 외"):
+            ec = [c for c in store_cols_ig if "킥스" not in c]
+            expr = " + ".join(f'"{c}"' for c in ec) if ec else "0"
+        else:
+            expr = '"점재고합계"' if "점재고합계" in igc else (" + ".join(f'"{c}"' for c in store_cols_ig) or "0")
+        bsq = store.query(
+            f"""SELECT g.brand_nm brand, CAST(sum({expr}) AS DOUBLE) stock,
+                       count(DISTINCT CASE WHEN ({expr}) > 0 THEN iv.goods_no END) skus
+                FROM inventory_goods iv JOIN goods_master g ON CAST(g.goods_no AS BIGINT)=CAST(iv.goods_no AS BIGINT)
+                WHERE g.brand_nm IS NOT NULL GROUP BY g.brand_nm HAVING sum({expr}) > 0
+                ORDER BY stock DESC LIMIT 30""")
+        brand_stock = [{"name": r.brand, "stock": _f(r.stock), "skus": int(r.skus)} for r in bsq.itertuples()]
+    except Exception:
+        pass
+
     # ---- 급상승/급락 딥다이브 (전일 vs 전전일 상품 GMV 증감) ----
     risers, fallers = [], []
     if d1:
@@ -278,7 +306,7 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
             "net_take": kpi_extra["net_take"], "cp": kpi_extra["cp"],
         },
         "week": week, "dow": dow, "disc_bands": disc_bands, "store_stock": store_stock,
-        "risers": risers, "fallers": fallers,
+        "risers": risers, "fallers": fallers, "brand_stock": brand_stock,
         "lead_store": stores[0] if stores else None,
         "lead_brand": brands[0] if brands else None,
         "trend": trend, "trend4": trend4, "dnames": dnames,
