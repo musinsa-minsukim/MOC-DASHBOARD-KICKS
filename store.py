@@ -67,6 +67,31 @@ def _write(df: pd.DataFrame, name: str, row_group_size: int | None = None):
     os.replace(tmp, _path(name))   # 원자적 교체
 
 
+def read_json(name: str) -> dict:
+    """CACHE(GCS FUSE)의 작은 JSON 설정 파일 읽기 (층 지정 등 사용자 입력). 없거나 오류면 {}.
+       GCS FUSE는 bare open이 stale일 수 있어 stat로 메타 재검증 후 읽는다."""
+    p = os.path.join(CACHE, f"{name}.json")
+    try:
+        os.stat(p)
+    except OSError:
+        return {}
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def write_json(name: str, obj: dict):
+    """CACHE(GCS FUSE)에 JSON 원자적 쓰기(tmp 후 os.replace) — 리프레시가 안 건드리는 별도 파일."""
+    os.makedirs(CACHE, exist_ok=True)
+    p = os.path.join(CACHE, f"{name}.json")
+    tmp = p + f".tmp{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False)
+    os.replace(tmp, p)
+
+
 def _meta_load() -> dict:
     p = os.path.join(CACHE, "_meta.json")
     try:

@@ -343,6 +343,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   const [aovPrev, setAovPrev] = useState<any>(null);
   const [hourly, setHourly] = useState<any[]>([]);
   const [dow, setDow] = useState<any[]>([]);
+  const [floorSales, setFloorSales] = useState<any>(null);  // {store: [{floor,gmv,qty,share}]} 킥스 홍대·성수 층별
   const [cmpTrend, setCmpTrend] = useState<any[]>([]); // GMV 추이 직전 동기간(항상 표시)
   const [trend, setTrend] = useState<any[]>([]);
   const [byStore, setByStore] = useState<any[]>([]);
@@ -394,6 +395,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       api.footfall(qs),
       api.by("concept", qNoConcept, 100),
       api.dow(qs),
+      api.floorSales(qs),
     ]).then((res) => {
       if (!alive) return;
       const val = (i: number) => (res[i].status === "fulfilled" ? (res[i] as any).value : undefined);
@@ -407,6 +409,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       setFootfall(val(13) ?? null);
       setConcept(val(14) ?? []);
       setDow(val(15) ?? []);
+      setFloorSales(val(16) ?? null);
       const failed = res.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
       if (failed) setError(failed.reason?.message || "일부 데이터를 불러오지 못했습니다");
     }).finally(() => alive && setLoading(false));
@@ -699,9 +702,41 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
         <Donut title="중카테 비중" sub="GMV · Top 10 + 기타" rows={catMedTop} C={C} right={<SectionStat cur={cur} byBiz={byBiz} />} />
       </div>
 
-      {/* ── 컨셉 ── (항상 렌더: 데이터 없으면 '데이터 없음' 표시 → 일시적 오류에도 카드가 사라지지 않음) */}
+      {/* ── 컨셉 + 킥스 층별 매출 ── (항상 렌더: 데이터 없으면 '데이터 없음' 표시) */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Donut title="컨셉 비중" sub="GMV · 걸즈/영/포멀/킥스/뷰티/잡화/포우먼" rows={conceptPie} C={C} pickKey="concept" onPick={onPick} active={f.concept} right={<SectionStat cur={cur} byBiz={byBiz} />} />
+        <Card><CardBody>
+          <SectionTitle title="킥스 홍대·성수 층별 매출" sub="선택 기간 · 각 매출의 월별 층 지정 반영 · ‘층 지정’ 탭에서 관리" />
+          {floorSales && (["무신사 킥스 홍대", "무신사 킥스 성수"].some((s) => (floorSales[s] ?? []).length > 0)) ? (
+            <>
+              <div className="mt-1 grid grid-cols-2 gap-5">
+                {["무신사 킥스 홍대", "무신사 킥스 성수"].map((st) => {
+                  const rows = (floorSales[st] ?? []);
+                  const mx = Math.max(...rows.map((r: any) => r.gmv), 1);
+                  return (
+                    <div key={st}>
+                      <div className="mb-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300">{st.replace("무신사 킥스 ", "킥스 ")}</div>
+                      {rows.length === 0 ? <div className="text-xs text-slate-400">데이터 없음</div> : rows.map((r: any) => (
+                        <div key={r.floor} className="py-1">
+                          <div className="flex items-baseline justify-between gap-2 text-xs">
+                            <span className="truncate text-slate-600 dark:text-slate-300">{r.floor}</span>
+                            <span className="shrink-0 tabular-nums text-slate-700 dark:text-slate-200">{compact(r.gmv)} <span className="text-slate-400">({r.share.toFixed(0)}%)</span></span>
+                          </div>
+                          <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                            <div className="h-full rounded-full" style={{ width: `${Math.max(2, (r.gmv / mx) * 100)}%`, backgroundColor: r.floor === "미지정" ? (dark ? "#475569" : "#cbd5e1") : C.wt }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-400">※ 층 매핑이 없으면 ‘미지정’으로 집계 · ‘층 지정’ 탭에서 월별로 브랜드 층을 설정하세요.</p>
+            </>
+          ) : (
+            <div className="flex h-[200px] items-center justify-center text-center text-sm text-slate-400 dark:text-slate-400">‘층 지정’ 탭에서 브랜드 층을 설정하면<br />선택 기간의 층별 매출이 표시됩니다</div>
+          )}
+        </CardBody></Card>
       </div>
 
       {/* ── 상품 ── */}

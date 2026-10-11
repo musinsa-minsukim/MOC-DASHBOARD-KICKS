@@ -12,6 +12,7 @@ import {
   LogOut,
   RefreshCw,
   BarChart4,
+  Layers,
   Sun,
   Moon,
 } from "lucide-react";
@@ -28,6 +29,7 @@ const Target = lazy(() => import("./Target"));
 const Drill = lazy(() => import("./Drill"));
 const Pnl = lazy(() => import("./Pnl"));
 const Ips = lazy(() => import("./Ips"));
+const Floor = lazy(() => import("./Floor"));
 
 const NAV = [
   { key: "summary", label: "통합 데일리 리포트", icon: LayoutDashboard, ready: true },
@@ -39,6 +41,7 @@ const NAV = [
   { key: "compare", label: "비교·신장율", icon: BarChart3, ready: true },
   { key: "inventory", label: "재고", icon: Package, ready: true },
   { key: "ips", label: "통합 IPS", icon: Boxes, ready: true },
+  { key: "floor", label: "층 지정", icon: Layers, ready: true },
 ];
 
 function useDarkMode(): [boolean, () => void] {
@@ -255,7 +258,7 @@ export default function App() {
         <Topbar title={navLabel} dark={dark} onTheme={toggleDark} status={status} />
         <MobileNav view={view} setView={setView} />
         <main className="animate-rise mx-auto w-full max-w-[1440px] flex-1 space-y-5 p-4 md:p-6">
-          {view !== "summary" && view !== "target" && view !== "ips" && (
+          {view !== "summary" && view !== "target" && view !== "ips" && view !== "floor" && (
             <div
               className="sticky z-20 -mx-4 -mt-4 mb-1 px-4 pt-4 pb-2 md:-mx-6 md:-mt-6 md:px-6 md:pt-6"
               style={{ backgroundColor: "var(--bg)", top: "calc(4rem + env(safe-area-inset-top))" }}
@@ -279,6 +282,7 @@ export default function App() {
             {view === "target" && <Target key={dataVersion} meta={meta} dark={dark} />}
             {view === "pnl" && <Pnl key={dataVersion} meta={meta} dark={dark} filters={filters} />}
             {view === "ips" && <Ips key={dataVersion} dark={dark} />}
+            {view === "floor" && <Floor key={dataVersion} meta={meta} dark={dark} />}
           </Suspense>
         </main>
       </div>

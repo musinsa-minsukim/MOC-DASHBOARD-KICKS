@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 import store
 import daily
+import floor
 import invtab
 import cmptab
 import prodmeta
@@ -1448,6 +1449,37 @@ def pnl(mode: str = "month", period: str | None = None, level: str = "store",
             "rows": rows, "totals": totals, "provisional": provisional,
             "months": months[::-1], "max_date": max_d.isoformat(), "min_date": min_d.isoformat(),
             "range": {"from": cur[0].isoformat(), "to": cur[1].isoformat()}}
+
+
+class FloorSave(BaseModel):
+    month: str
+    store: str
+    assignments: dict
+
+
+@app.get("/api/floor")
+def floor_get(month: str | None = None,
+              _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """층 지정 탭 — 대상 매장(킥스 홍대/성수)·재고보유 브랜드·현재 (월×매장×브랜드)→층 매핑."""
+    return floor.tab_payload(month)
+
+
+@app.post("/api/floor")
+def floor_post(body: FloorSave, _: str = Depends(require_user)):
+    """층 지정 저장 — 월×매장의 브랜드→층 매핑을 GCS(floor_map.json)에 기록."""
+    if body.store not in floor.FLOOR_STORES:
+        raise HTTPException(status_code=400, detail=f"unknown store: {body.store}")
+    floor.save_assignments(body.month, body.store, body.assignments or {})
+    return {"ok": True}
+
+
+@app.get("/api/floor/sales")
+def floor_sales_ep(f: dict = Depends(get_filters),
+                   _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """킥스 홍대·성수 층별 매출 — 선택 기간/필터(매장 제외)를 각 매출의 월별 층맵으로 집계."""
+    f2 = {**f, "store": None}            # 매장 필터 무시(대상=킥스 홍대/성수 고정)
+    where, params = build_where(f2)
+    return floor.floor_sales(where, params)
 
 
 @app.get("/api/daily")
