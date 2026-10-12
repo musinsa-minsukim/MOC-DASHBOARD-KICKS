@@ -26,14 +26,18 @@ export default function Floor({ dark }: { meta?: any; dark: boolean }) {
     return () => { alive = false; };
   }, [month, reload]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 선택 월·매장의 기존 지정값 로드
+  // 선택 월·매장의 유효값 로드(상속 반영: 과거월=기준월, 미래월=직전 명시월 이월)
   useEffect(() => {
     if (!payload || !store) return;
-    setAssign({ ...((payload.map?.[month]?.[store]) ?? {}) });
+    setAssign({ ...((payload.effective?.[store]) ?? {}) });
   }, [payload, store, month]);
 
   const brands: string[] = payload?.brands?.[store] ?? [];
   const assignedCount = useMemo(() => Object.values(assign).filter((v) => v && String(v).trim()).length, [assign]);
+  // 값 출처: source===month → 이 달 직접 저장 / 다른 월 → 그 달에서 상속 / null → 기준월도 비어있음
+  const srcMonth: string | null = payload?.source?.[store] ?? null;
+  const baseMonth: string = payload?.base ?? "";
+  const inherited = !!srcMonth && srcMonth !== month;
 
   const setFloor = (brand: string, v: string) => setAssign((a) => ({ ...a, [brand]: v }));
 
@@ -74,7 +78,24 @@ export default function Floor({ dark }: { meta?: any; dark: boolean }) {
       ) : (
         <Card><CardBody>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <SectionTitle title={`${store.replace("무신사 ", "")} · ${month} 브랜드 층 지정`} sub={`재고 보유 브랜드 ${brands.length}개 · 지정 ${assignedCount}개 · 자유 입력(예: 1F / 2F / B1)`} />
+            <div className="min-w-0">
+              <SectionTitle title={`${store.replace("무신사 ", "")} · ${month} 브랜드 층 지정`} sub={`재고 보유 브랜드 ${brands.length}개 · 지정 ${assignedCount}개 · 자유 입력(예: 1F / 2F / B1)`} />
+              <div className="mt-1 text-xs">
+                {inherited ? (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                    {srcMonth} 설정을 상속한 기본값 · 저장하면 {month} 전용으로 고정됩니다
+                  </span>
+                ) : srcMonth === month ? (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                    이 달 직접 저장된 설정{baseMonth && month === baseMonth ? " (기준월)" : ""}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                    상속할 기준월({baseMonth}) 설정이 비어 있습니다
+                  </span>
+                )}
+              </div>
+            </div>
             <div className="flex items-center gap-2">
               {msg && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400"><Check size={13} />{msg}</span>}
               <button onClick={save} disabled={saving}

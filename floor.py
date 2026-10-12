@@ -10,9 +10,44 @@ import store
 FLOOR_STORES = ["무신사 킥스 홍대", "무신사 킥스 성수"]
 _MAP = "floor_map"   # {ym: {store: {brand: floor}}}
 
+# 기준 월: 사용자가 처음 세팅한 월. 명시 설정이 없는 월의 기본값 해석 기준.
+#   · 과거 월(< BASE): 기본값 = BASE 월 설정
+#   · 미래 월(> BASE): 기본값 = 직전(이하) 명시월 설정을 이월(없으면 BASE)
+#   · 각 월은 사용자가 그 달을 직접 저장하면 그 달 명시값이 우선
+BASE_MONTH = "2026-10"
+
 
 def get_map() -> dict:
     return store.read_json(_MAP)
+
+
+def _store_explicit(m: dict, store_name: str, mm: str) -> dict | None:
+    """m에 (mm×store) 명시 설정이 있고 비어있지 않으면 그 dict, 아니면 None."""
+    d = (m.get(mm, {}) or {}).get(store_name, {}) or {}
+    return d if d else None
+
+
+def effective_for_store(m: dict, store_name: str, month: str) -> tuple[dict, str | None]:
+    """month×store에 적용할 (브랜드→층 dict, 값의 출처월). 출처월이 month와 같으면 명시 설정.
+       명시 없으면: 미래월=직전 명시월 이월(없으면 BASE), 과거월=BASE."""
+    if not month:
+        return {}, None
+    d = _store_explicit(m, store_name, month)
+    if d is not None:
+        return d, month                       # 해당 월 직접 설정
+    if month >= BASE_MONTH:
+        cands = sorted(mm for mm in m.keys() if mm <= month and _store_explicit(m, store_name, mm) is not None)
+        src = cands[-1] if cands else BASE_MONTH   # 직전(이하) 명시월 이월
+    else:
+        src = BASE_MONTH                       # 과거월 → 기준월
+    ed = _store_explicit(m, store_name, src)
+    return (ed or {}), (src if ed else None)
+
+
+def effective_map(month: str) -> dict:
+    """선택 월의 전 매장 유효 층맵 {store: {brand: floor}} (상속 반영)."""
+    m = get_map()
+    return {s: effective_for_store(m, s, month)[0] for s in FLOOR_STORES}
 
 
 def save_assignments(month: str, store_name: str, assignments: dict) -> dict:
@@ -48,10 +83,19 @@ def brands_with_stock() -> dict:
 
 
 def tab_payload(month: str | None = None) -> dict:
-    """층 지정 탭용: 전체 맵 + 대상 매장 + 매장별 재고보유 브랜드 + (옵션)선택월 지정현황."""
+    """층 지정 탭용: 전체 맵 + 대상 매장 + 매장별 재고보유 브랜드 + 선택월 유효값(상속 반영).
+       effective[store]=프리필할 브랜드→층, source[store]=값 출처월(=month면 명시저장, ≠면 상속), base=기준월."""
     m = get_map()
+    eff: dict = {}
+    src: dict = {}
+    if month:
+        for s in FLOOR_STORES:
+            d, sm = effective_for_store(m, s, month)
+            eff[s] = d
+            src[s] = sm
     return {"stores": FLOOR_STORES, "brands": brands_with_stock(), "map": m,
-            "month": month, "assignments": (m.get(month, {}) if month else {})}
+            "month": month, "base": BASE_MONTH, "effective": eff, "source": src,
+            "assignments": (m.get(month, {}) if month else {})}
 
 
 def floor_sales(where: str, params: list) -> dict:
@@ -68,8 +112,14 @@ def floor_sales(where: str, params: list) -> dict:
     except Exception:
         return {s: [] for s in FLOOR_STORES}
     agg: dict = {s: {} for s in FLOOR_STORES}
+    eff_cache: dict = {}   # (ym, store) → 유효 층맵 (상속 반영, 월별 1회 계산)
     for r in df.itertuples():
-        floor = (m.get(r.ym, {}).get(r.store_name, {}) or {}).get(r.brand_nm) or "미지정"
+        key = (r.ym, r.store_name)
+        fmap = eff_cache.get(key)
+        if fmap is None:
+            fmap = effective_for_store(m, r.store_name, r.ym)[0]
+            eff_cache[key] = fmap
+        floor = fmap.get(r.brand_nm) or "미지정"
         a = agg.setdefault(r.store_name, {})
         cell = a.setdefault(floor, {"floor": floor, "gmv": 0.0, "qty": 0.0})
         cell["gmv"] += float(r.gmv or 0); cell["qty"] += float(r.qty or 0)
