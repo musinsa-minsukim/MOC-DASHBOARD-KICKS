@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import datetime
+
 import store
 
 # 층별 매출 대상 매장 (킥스 홍대·성수만). dim_store store_name과 정확히 일치.
@@ -15,6 +17,10 @@ _MAP = "floor_map"   # {ym: {store: {brand: floor}}}
 #   · 미래 월(> BASE): 기본값 = 직전(이하) 명시월 설정을 이월(없으면 BASE)
 #   · 각 월은 사용자가 그 달을 직접 저장하면 그 달 명시값이 우선
 BASE_MONTH = "2026-10"
+
+
+def _now_month() -> str:
+    return datetime.date.today().strftime("%Y-%m")
 
 
 def get_map() -> dict:
@@ -84,17 +90,28 @@ def brands_with_stock() -> dict:
 
 def tab_payload(month: str | None = None) -> dict:
     """층 지정 탭용: 전체 맵 + 대상 매장 + 매장별 재고보유 브랜드 + 선택월 유효값(상속 반영).
-       effective[store]=프리필할 브랜드→층, source[store]=값 출처월(=month면 명시저장, ≠면 상속), base=기준월."""
+       effective[store]=프리필할 브랜드→층, source[store]=값 출처월(=month면 명시/동결, ≠면 상속 중), base=기준월.
+       ★ 과거·현재 월(month ≤ 현재월): 상속값을 '최초 1회' 그 달로 동결(materialize) → 이후 기준월을 고쳐도 불변·독립.
+         미래 월(month > 현재월): 동결하지 않고 직전월을 라이브 반영(저장 시 그 달로 고정)."""
     m = get_map()
+    now = _now_month()
     eff: dict = {}
     src: dict = {}
+    changed = False
     if month:
         for s in FLOOR_STORES:
             d, sm = effective_for_store(m, s, month)
+            # 과거/현재 월 + 상속값이 있으면(다른 달에서 옴) 최초 1회 동결 → 독립 복사본
+            if month <= now and d and sm is not None and sm != month:
+                m.setdefault(month, {})[s] = dict(d)
+                sm = month
+                changed = True
             eff[s] = d
             src[s] = sm
+    if changed:
+        store.write_json(_MAP, m)
     return {"stores": FLOOR_STORES, "brands": brands_with_stock(), "map": m,
-            "month": month, "base": BASE_MONTH, "effective": eff, "source": src,
+            "month": month, "base": BASE_MONTH, "now": now, "effective": eff, "source": src,
             "assignments": (m.get(month, {}) if month else {})}
 
 

@@ -34,10 +34,11 @@ export default function Floor({ dark }: { meta?: any; dark: boolean }) {
 
   const brands: string[] = payload?.brands?.[store] ?? [];
   const assignedCount = useMemo(() => Object.values(assign).filter((v) => v && String(v).trim()).length, [assign]);
-  // 값 출처: source===month → 이 달 직접 저장 / 다른 월 → 그 달에서 상속 / null → 기준월도 비어있음
+  // 값 출처: source===month → 이 달 전용(저장/동결) / 다른 월 → 그 달 상속 중(미래월 라이브) / null → 기준월도 비어있음
   const srcMonth: string | null = payload?.source?.[store] ?? null;
   const baseMonth: string = payload?.base ?? "";
-  const inherited = !!srcMonth && srcMonth !== month;
+  const nowMonth: string = payload?.now ?? "";
+  const inherited = !!srcMonth && srcMonth !== month;   // 미래월: 직전월 라이브 반영 중(아직 미동결)
 
   const setFloor = (brand: string, v: string) => setAssign((a) => ({ ...a, [brand]: v }));
 
@@ -83,11 +84,11 @@ export default function Floor({ dark }: { meta?: any; dark: boolean }) {
               <div className="mt-1 text-xs">
                 {inherited ? (
                   <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-                    {srcMonth} 설정을 상속한 기본값 · 저장하면 {month} 전용으로 고정됩니다
+                    {month > nowMonth ? "직전월" : "기준월"}({srcMonth}) 설정을 반영 중(미래월 · 미동결) · 저장하면 {month} 전용으로 고정됩니다
                   </span>
                 ) : srcMonth === month ? (
                   <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
-                    이 달 직접 저장된 설정{baseMonth && month === baseMonth ? " (기준월)" : ""}
+                    {month === baseMonth ? "이 달 설정 (기준월)" : "이 달 전용 설정 (고정됨 · 기준월 수정에 영향 없음)"}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
