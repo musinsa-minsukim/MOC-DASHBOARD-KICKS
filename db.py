@@ -1927,3 +1927,45 @@ def fetch_scm_store_stock() -> pd.DataFrame:
     for c in ("sellable", "in_plan", "out_plan"):
         d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0)
     return d[cols]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_store_sku_status() -> dict:
+    """대시보드 오프라인 매장 × SKU 전개 운영상태(SCM storage_sku.status) → {(store_name, sku_id): '운영중'|'미운영'}.
+       OPERATION_ENABLED=운영중, 그 외(CREATED/OPERATION_DISABLED/DELETED)=미운영. storage_sku 행 없음 = '미지정'(맵에 없음).
+       재고 탭 CSV 운영상태 열용. 라이브 + 1h 캐시(운영상태는 수시 변동)."""
+    # ★ CSV엔 '재고 있는 (매장×SKU)'만 나오므로 그걸로 한정 — 전 storage_sku(4.5M)·인벤SKU(3.6M)는 과대(재고 없는 미운영 대량).
+    #   stocked = editorial 점재고(sellable>0) (매장, SKU). 여기 등록(storage_sku)된 건만 운영중/미운영, 나머지(맵에 없음)=미지정.
+    q = ("WITH " + DIM_STORE + r""",
+        sid AS (SELECT CAST(s.storage_id AS BIGINT) AS storage_id, ds.store_name
+                FROM team.commercepm.offline_shopno_storageid s
+                JOIN dim_store ds ON ds.shop_no = CAST(s.shop_no AS INT)),
+        l  AS (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary),
+        stocked AS (
+          SELECT DISTINCT st.store_name AS store_name, sb.fk_sku_id AS fk_sku_id
+          FROM team.sales.dsh_d_upt_editorial_stock_summary s
+          JOIN l ON s.ord_state_date = l.d
+          JOIN dim_store st ON st.shop_no = s.shop_no
+          JOIN ocmp.scm_hub.barcode b ON b.supplier_barcode = s.barcode
+          JOIN ocmp.scm_hub.sku_barcode sb ON sb.fk_barcode_id = b._id
+          WHERE s.barcode IS NOT NULL AND s.sellable_qty > 0)
+        SELECT sid.store_name AS store_name, CAST(sk.sku_id AS STRING) AS sku_id,
+               MAX(CASE WHEN ss.status = 'OPERATION_ENABLED' THEN 1 ELSE 0 END) AS op
+        FROM ocmp.scm_hub.storage_sku ss
+        JOIN sid ON sid.storage_id = ss.fk_storage_id
+        JOIN stocked k ON k.store_name = sid.store_name AND k.fk_sku_id = ss.fk_sku_id
+        JOIN ocmp.scm_hub.sku sk ON sk._id = ss.fk_sku_id
+        GROUP BY sid.store_name, CAST(sk.sku_id AS STRING)
+    """)
+    try:
+        d = run_df(q)
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("storage_sku 운영상태 조회 실패(미지정 처리): %s", e)
+        return {}
+    out = {}
+    for r in d.itertuples(index=False):
+        sid = str(r.sku_id)
+        if sid:
+            out[(str(r.store_name), sid)] = "운영중" if int(r.op or 0) == 1 else "미운영"
+    return out

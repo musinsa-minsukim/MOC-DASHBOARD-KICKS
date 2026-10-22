@@ -349,6 +349,14 @@ def get_scm_store_stock() -> pd.DataFrame:
         return pd.DataFrame(columns=["store_name", "goods_no", "option", "barcode", "sellable", "in_plan", "out_plan"])
 
 
+def get_store_sku_status() -> dict:
+    """매장×SKU 전개 운영상태 {(store_name, sku_id): '운영중'|'미운영'} (SCM storage_sku, 라이브+1h캐시). 실패 시 {}."""
+    try:
+        return db.fetch_store_sku_status()
+    except Exception:
+        return {}
+
+
 def get_inventory_goods() -> pd.DataFrame:
     return _read_cached("inventory_goods", lambda df: df.assign(goods_no=pd.to_numeric(df["goods_no"]).astype("int64")))
 
