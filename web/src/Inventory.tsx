@@ -135,6 +135,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
     setRefreshing(true); setRefreshMsg("");
     try {
       const r = await api.refreshSnapshot();
+      window.dispatchEvent(new Event("refresh-started"));   // 최상단 '갱신 중' 표시 즉시 반영
       setRefreshMsg(r?.message || "재고 갱신 요청됨 — 수 분 후 반영");
     } catch (e: any) {
       setRefreshMsg("갱신 요청 실패: " + (e?.message || "권한/토큰 확인"));

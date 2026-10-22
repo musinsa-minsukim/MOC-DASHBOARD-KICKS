@@ -115,6 +115,12 @@ function Topbar({ title, dark, onTheme, status }: {
 }) {
   return (
     <header className="sticky top-0 z-10 flex min-h-[4rem] items-center gap-3 border-b border-slate-200/70 bg-white/70 px-5 pt-[env(safe-area-inset-top)] backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-900/70">
+      {/* 데이터 갱신 중 — 최상단 인디터미닛 진행바(스크롤해도 sticky 헤더에 고정 노출) */}
+      {status?.refreshing && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[3px] overflow-hidden">
+          <div className="refreshbar h-full w-full bg-gradient-to-r from-indigo-400 via-indigo-600 to-indigo-400 dark:from-indigo-500 dark:via-indigo-300 dark:to-indigo-500" />
+        </div>
+      )}
       <div className="flex items-center gap-2 lg:hidden">
         <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-indigo-600 text-white shadow-sm shadow-indigo-600/25">
           <BarChart4 size={16} />
@@ -122,6 +128,12 @@ function Topbar({ title, dark, onTheme, status }: {
       </div>
       <h2 className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h2>
       <div className="ml-auto flex items-center gap-2">
+        {/* 데이터 갱신 중 배지(스피너) — sticky 헤더라 스크롤해도 노출 */}
+        {status?.refreshing && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-600 ring-1 ring-inset ring-indigo-100 dark:bg-indigo-950/60 dark:text-indigo-300 dark:ring-indigo-900/60">
+            <RefreshCw size={13} className="animate-spin" /> 데이터 갱신 중
+          </span>
+        )}
         {/* 데이터 신선도 — 판매(증분)·재고(스냅샷) 기준일/갱신 */}
         <div className="hidden flex-col text-[11px] leading-tight text-slate-400 lg:flex dark:text-slate-500" title="판매=MOSS 증분(준실시간) · 재고=일별 스냅샷">
           <span>판매 데이터 <b className="font-semibold text-slate-600 dark:text-slate-300">{status?.sales_max_date ?? "—"}</b> · 최근거래 {fmtTs(status?.sales_max_ts)} · 갱신 {fmtDT(status?.sales_refreshed_at)}</span>
@@ -204,14 +216,17 @@ export default function App() {
     if (!authed) return;
     const load = () => api.status().then(setStatus).catch(() => {});
     load();
-    const id = window.setInterval(load, 60_000);
+    const id = window.setInterval(load, status?.refreshing ? 5_000 : 60_000);  // 갱신 중엔 빠르게 폴링 → 즉시 표시/해제
     const onFocus = () => load();
+    const onStarted = () => load();                                            // 재고/판매 REFRESH 직후 즉시 상태 반영
     window.addEventListener("focus", onFocus);
+    window.addEventListener("refresh-started", onStarted);
     return () => {
       window.clearInterval(id);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("refresh-started", onStarted);
     };
-  }, [authed, dataVersion]);
+  }, [authed, dataVersion, status?.refreshing]);
 
   // meta 로드되면 기본 기간 = 최신 데이터일(오늘) 단일일 (시작=종료=오늘)
   useEffect(() => {
