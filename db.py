@@ -111,6 +111,43 @@ dim_store AS (
 #   goods_no 기준 집합을 원천에서 산출 → sales/sales_option/inventory 모두 동일하게 반영.
 # ---------------------------------------------------------------------------
 _CAT_OVERRIDE_ACC = ("Acc", "기타", "기타")   # (cat_top, cat_large, cat_medium)
+_CAT_OVERRIDE_ETC = ("기타", "기타", "기타")   # 슈케어 브랜드 전상품 보정 타깃
+
+# 슈케어 브랜드(신발 아님) — 원천에서 전상품이 Shoes로 오분류됨 → 전상품 기타로 보정(가격 무관).
+#   brand_nm LIKE 매칭(한글 표기 + 영문 병기). 신규 상품도 자동 반영.
+_SHOECARE_LIKE = ("%프리덕%", "%사피르%", "%콜로닐%", "%SAPHIR%", "%COLLONIL%")
+
+
+def _shoecare_like_sql(col: str) -> str:
+    """col(brand_nm)이 슈케어 브랜드와 매칭되는 LIKE 조건(upper 대소문자 무시)."""
+    return "(" + " OR ".join(f"upper(COALESCE({col},'')) LIKE upper('{p}')" for p in _SHOECARE_LIKE) + ")"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _shoecare_etc_goods() -> frozenset:
+    """Shoes로 오분류되는 슈케어 브랜드(프리덕·사피르·콜로닐) 전체 goods_no → 기타. 가격 조건 없음.
+       bizest(브랜드마스터) ∪ editorial(오프라인 판매/재고 최신 스냅샷) 양쪽에서 수집."""
+    q = f"""
+      WITH bz AS (
+        SELECT CAST(g.goods_no AS BIGINT) AS gno
+        FROM musinsa.bizest.goods g
+        LEFT JOIN musinsa.partnerportal.brand b ON b.brand = g.brand
+        WHERE {_shoecare_like_sql('b.brand_nm')}
+      ),
+      l AS (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary),
+      ed AS (
+        SELECT DISTINCT CAST(s.goods_no AS BIGINT) AS gno
+        FROM team.sales.dsh_d_upt_editorial_stock_summary s JOIN l ON s.ord_state_date = l.d
+        WHERE {_shoecare_like_sql('s.brand_nm')}
+      )
+      SELECT DISTINCT gno AS goods_no FROM (SELECT gno FROM bz UNION SELECT gno FROM ed)
+    """
+    try:
+        return frozenset(int(x) for x in run_df(q)["goods_no"].tolist())
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("슈케어 카테고리 보정 goods 조회 실패(보정 생략): %s", e)
+        return frozenset()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -143,18 +180,21 @@ def _crocs_acc_goods() -> frozenset:
 
 
 def apply_category_override(df):
-    """goods_no + cat_top/cat_large/cat_medium 를 가진 df에 카테고리 보정 적용(크록스 지비츠 → Acc/기타/기타)."""
+    """goods_no + cat_top/cat_large/cat_medium 를 가진 df에 카테고리 오탐 보정 적용.
+       ① 크록스 지비츠(정상가 0~25,900) → Acc/기타/기타
+       ② 슈케어 브랜드(프리덕·사피르·콜로닐) 전상품 → 기타/기타/기타 (Shoes 오분류 보정, 가격 무관)."""
     if df is None or "goods_no" not in getattr(df, "columns", []):
         return df
-    ov = _crocs_acc_goods()
-    if not ov:
-        return df
-    m = df["goods_no"].isin(ov)
-    if not m.any():
-        return df
-    for col, val in zip(("cat_top", "cat_large", "cat_medium"), _CAT_OVERRIDE_ACC):
-        if col in df.columns:
-            df.loc[m, col] = val
+    for ov, cat in ((_crocs_acc_goods(), _CAT_OVERRIDE_ACC),
+                    (_shoecare_etc_goods(), _CAT_OVERRIDE_ETC)):
+        if not ov:
+            continue
+        m = df["goods_no"].isin(ov)
+        if not m.any():
+            continue
+        for col, val in zip(("cat_top", "cat_large", "cat_medium"), cat):
+            if col in df.columns:
+                df.loc[m, col] = val
     return df
 
 
