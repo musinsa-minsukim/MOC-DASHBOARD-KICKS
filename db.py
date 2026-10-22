@@ -448,7 +448,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
         ),
         ord AS (
           SELECT CAST(COALESCE(om.transaction_at, om.created_at) AS DATE) AS sales_date,
-                 om.shop_no, oo.goods_no, oo.company_id, oo.brand_id, oo.goods_name, oo.option_name,
+                 om.shop_no, oo.goods_no, oo.company_id, oo.brand_id, oo.goods_name, oo.option_name, oo.sku_id,
                  (CASE WHEN om.tax_refund_type IS NOT NULL AND om.tax_refund_type <> 'NONE' THEN 1 ELSE 0 END) AS is_foreign,
                  1 AS sgn, oo.quantity, oo.order_amount, oo.normal_amount, oo.pay_amount
           FROM ocmp.moss.order_option oo
@@ -462,7 +462,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
         ),
         ref AS (
           SELECT rc.refund_date AS sales_date,
-                 om.shop_no, oo.goods_no, oo.company_id, oo.brand_id, oo.goods_name, oo.option_name,
+                 om.shop_no, oo.goods_no, oo.company_id, oo.brand_id, oo.goods_name, oo.option_name, oo.sku_id,
                  (CASE WHEN om.tax_refund_type IS NOT NULL AND om.tax_refund_type <> 'NONE' THEN 1 ELSE 0 END) AS is_foreign,
                  -1 AS sgn, oo.quantity, oo.order_amount, oo.normal_amount, oo.pay_amount
           FROM refclaim rc
@@ -476,7 +476,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
                  COALESCE(br.brand_nm, '(미매칭)') AS brand_nm,
                  COALESCE(br.business_type, '기타') AS business_type,
                  CAST(l.goods_no AS BIGINT) AS goods_no, l.goods_name AS goods_nm,
-                 COALESCE(NULLIF(TRIM(l.option_name), ''), '(옵션없음)') AS option_nm,
+                 COALESCE(NULLIF(TRIM(l.option_name), ''), '(옵션없음)') AS option_nm, l.sku_id,
                  cat.cat_top, cat.cat_large, cat.cat_medium, cat.off_md_id,
                  l.is_foreign, l.sgn, l.quantity, l.order_amount, l.normal_amount, l.pay_amount
           FROM lines l
@@ -486,6 +486,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
         )
         SELECT sales_date, store_name, shop_type, business_type, brand_nm,
                CAST(goods_no AS BIGINT) AS goods_no, ANY_VALUE(goods_nm) AS goods_nm, option_nm,
+               MAX(CAST(sku_id AS STRING)) AS sku_id,
                cat_top, cat_large, cat_medium, off_md_id,
                CAST(SUM(sgn*quantity)     AS DOUBLE) AS qty,
                CAST(SUM(sgn*order_amount) AS DOUBLE) AS gmv,
@@ -502,7 +503,7 @@ def fetch_sales_option(since: str | None = None) -> pd.DataFrame:
     for c in ("qty", "gmv", "normal_amt", "pay", "foreign_gmv"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     for c in ("store_name", "shop_type", "business_type", "brand_nm", "goods_nm", "option_nm",
-              "cat_top", "cat_large", "cat_medium", "off_md_id"):
+              "sku_id", "cat_top", "cat_large", "cat_medium", "off_md_id"):
         df[c] = df[c].fillna("")
     df = apply_category_override(df)   # 크록스 지비츠(정상가 0~25900) Shoes→Acc 등 카탈로그 오탐 보정
     df = apply_running_flag(df)        # is_running: RUN 매장 취급 신발=러닝화
