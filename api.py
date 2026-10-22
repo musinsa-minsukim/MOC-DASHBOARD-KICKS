@@ -570,7 +570,11 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
     cut = store.query(
         f"SELECT max(hour) h FROM receipts WHERE CAST(sales_date AS DATE) = CAST(? AS DATE){sgn1}",
         [today.isoformat()]).iloc[0].h
-    cur_hour = min(int(cut), now_kst.hour - 1) if cut is not None else -1
+    try:                                  # 당일 데이터 없으면 MAX(hour)=NULL → pandas NAType(None 아님) → int() 폭발 방지
+        max_h = int(cut)
+    except (TypeError, ValueError):
+        max_h = None
+    cur_hour = min(max_h, now_kst.hour - 1) if max_h is not None else -1
     # ⚠️ 바인딩 순서 = SQL 내 ? 등장 순서: SELECT의 CASE(4개)가 WHERE(필터)보다 먼저 → [SELECT용] + 필터 + [IN용].
     df = store.query(
         f"""SELECT
