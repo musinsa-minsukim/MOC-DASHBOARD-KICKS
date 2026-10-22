@@ -683,6 +683,7 @@ def load_goods_master() -> pd.DataFrame:
                COALESCE(ANY_VALUE(b.brand_nm), ANY_VALUE(ig.brand_nm)) AS brand_nm,
                MIN(CAST(g.reg_dm AS DATE)) AS reg_date,          -- 등록일·스타일넘버는 bizest만 보유
                ANY_VALUE(g.style_no) AS style_no,
+               ANY_VALUE(g.img) AS img, ANY_VALUE(CAST(g.img_update AS STRING)) AS img_update,   -- 대표이미지(bizest)
                CAST(COALESCE(ANY_VALUE(g.normal_price), ANY_VALUE(px.online_basic), ANY_VALUE(ig.ig_basic)) AS DOUBLE) AS normal_price,
                -- 판매가 = 온라인 1차세일가 → bizest price → itgg sale → 정상가/basic 폴백 (모두 없으면 NULL)
                CAST(COALESCE(ANY_VALUE(px.online_sale), ANY_VALUE(g.price), ANY_VALUE(ig.ig_sale),
@@ -700,6 +701,8 @@ def load_goods_master() -> pd.DataFrame:
     d["brand_nm"] = d["brand_nm"].fillna("")
     d["reg_date"] = pd.to_datetime(d["reg_date"], errors="coerce")  # 상품 등록일(reg_dm) — 신규 판정 기준
     d["style_no"] = d["style_no"].fillna("")
+    d["img"] = d["img"].fillna("") if "img" in d.columns else ""
+    d["img_update"] = d["img_update"].fillna("") if "img_update" in d.columns else ""
     d["normal_price"] = pd.to_numeric(d["normal_price"], errors="coerce").fillna(0.0)   # 현재 정상가
     d["sale_price"] = pd.to_numeric(d["sale_price"], errors="coerce").fillna(0.0)       # 판매가 = 온라인 1차세일가(폴백 bizest→정상가)
     return d

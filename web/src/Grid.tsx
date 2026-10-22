@@ -114,6 +114,34 @@ export function colNum(field: string, header: string, fmt: Fmt = "num", opts: Pa
     valueFormatter: (p: any) => fmtVal(p.value, fmt), ...opts,
   };
 }
+// 상품 대표이미지 썸네일 열 — AG Grid 행 가상화 + loading="lazy" 로 '보이는 행만' 로드(가벼움). img_url 없으면 빈 셀.
+export function colThumb(field = "img_url", header = "이미지", opts: Partial<ColDef> = {}): ColDef {
+  return {
+    field, headerName: header, minWidth: 54, maxWidth: 60, sortable: false, filter: false, resizable: false,
+    cellStyle: { padding: "2px", display: "flex", alignItems: "center", justifyContent: "center" } as CellStyle,
+    cellRenderer: (p: any) => (p.value
+      ? <img src={p.value} loading="lazy" alt="" referrerPolicy="no-referrer"
+             style={{ height: 34, width: 34, objectFit: "cover", borderRadius: 4, background: "#f1f5f9" }} />
+      : null),
+    ...opts,
+  };
+}
+// 상품명 등에 MUSINSA 상품페이지 하이퍼링크(별도 열 없이 이름에 링크) — goods_no 기준.
+export function colGoodsLink(field: string, header: string, opts: Partial<ColDef> = {}): ColDef {
+  return {
+    field, headerName: header, minWidth: 110,
+    cellRenderer: (p: any) => {
+      if (!p.value) return null;
+      const g = p.data?.goods_no;
+      return g
+        ? <a href={`https://www.musinsa.com/products/${g}`} target="_blank" rel="noopener noreferrer"
+             style={{ color: "#2563eb", textDecoration: "underline", textUnderlineOffset: "2px" }}
+             title="MUSINSA 상품페이지">{p.value}</a>
+        : p.value;
+    },
+    ...opts,
+  };
+}
 // 신장율 등 색상 문자열 셀 (+초록 / -빨강 / 신규 파랑 / X·— 회색)
 export function colRatio(field: string, header: string, opts: Partial<ColDef> = {}): ColDef {
   return {

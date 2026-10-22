@@ -874,6 +874,7 @@ def _add_catalog(rows: list[dict]):
         r["style_no"] = c.get("style_no", "")
         r["normal_price"] = c.get("normal_price", 0)
         r["sale_price"] = c.get("sale_price", 0)
+        r["img_url"] = c.get("img_url", "")   # 대표이미지 썸네일(판매 상품 표 썸네일용)
     return rows
 
 
@@ -1299,7 +1300,7 @@ def _sales_goods_csv_impl(f: dict, io, csv):
     w = csv.writer(buf)
     if df is not None and not df.empty:
         cat = prodmeta.goods_catalog([int(x) for x in df["goods_no"].unique().tolist()])
-        w.writerow(["SKU ID", "매출일자", "매장", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명", "옵션",
+        w.writerow(["SKU ID", "매출일자", "매장", "대카테", "중카테", "브랜드", "UID", "스타일넘버", "상품명", "대표이미지", "옵션",
                     "정상가", "판매가(온라인)", "실판매가", "순판매수량", "GMV", "외국인GMV", "내국인GMV",
                     "정상가매출", "실결제", "순이익(NetTake)", "공헌이익(CP)", "점재고"])
         for r in df.itertuples():
@@ -1308,7 +1309,7 @@ def _sales_goods_csv_impl(f: dict, io, csv):
             gmv, fgn = int(_num(r.gmv)), int(_num(getattr(r, "foreign_gmv", 0)))
             w.writerow([str(getattr(r, "sku_id", "") or ""),
                         str(r.sales_date)[:10], r.store_name, r.cat_large, r.cat_medium, r.brand_nm,
-                        int(r.goods_no), c.get("style_no", ""), r.goods_nm, r.option_nm,
+                        int(r.goods_no), c.get("style_no", ""), r.goods_nm, c.get("img_url", ""), r.option_nm,
                         int(c.get("normal_price", 0)), int(c.get("sale_price", 0)),
                         int(_num(r.gmv) / q) if q else 0,
                         q, gmv, fgn, gmv - fgn,   # 외국인(면세 tax_refund) / 내국인 = GMV − 외국인

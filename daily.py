@@ -287,6 +287,20 @@ def compute(basis: str | None, seg: str | None, grp: str | None = None) -> dict:
     cat_brand = _cat_brand_rank(d0, d1, fsql, fp)
     cat_goods = _cat_goods_rank(d0, d1, fsql, fp)
 
+    # 대표이미지 썸네일 — 상품 리스트(급상승/급락/주목/goods/카테별상품) 일괄 enrich(한 쿼리)
+    try:
+        import prodmeta as _pm
+        _cg = [g for c in (cat_goods or []) if isinstance(c, dict) for g in (c.get("goods") or [])]
+        _allg = [x for lst in (risers, fallers, goods, notable) if lst for x in lst] + _cg
+        _allg = [x for x in _allg if isinstance(x, dict) and "goods_no" in x]
+        _gids = {x["goods_no"] for x in _allg}
+        if _gids:
+            _ic = _pm.goods_catalog(_gids)
+            for x in _allg:
+                x["img_url"] = _ic.get(x["goods_no"], {}).get("img_url", "")
+    except Exception:
+        pass
+
     return {
         "empty": False,
         "basis": basis or "전체", "seg": seg or "전체", "grp": grp or "전체",

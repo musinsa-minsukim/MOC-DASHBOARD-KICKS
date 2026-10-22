@@ -102,6 +102,14 @@ const NOTABLE_TAG: Record<string, { cls: string; icon: any; label: string }> = {
   급락: { cls: "bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400", icon: TrendingDown, label: "급락" },
 };
 
+// 상품 대표이미지 썸네일(lazy — 보이는 것만 로드) + MUSINSA 상품페이지 링크(이름에)
+const Thumb = ({ u }: { u?: string }) => (u
+  ? <img src={u} loading="lazy" alt="" referrerPolicy="no-referrer" className="h-7 w-7 shrink-0 rounded object-cover bg-slate-100 dark:bg-slate-800" />
+  : <span className="inline-block h-7 w-7 shrink-0 rounded bg-slate-50 dark:bg-slate-800/50" />);
+const pLink = (g: any, nm: any) => (g
+  ? <a href={`https://www.musinsa.com/products/${g}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">{nm}</a>
+  : nm);
+
 // 재고보충 전체 CSV: 인증 헤더가 필요하므로 fetch→blob 다운로드 (백엔드가 전체 행 생성)
 async function downloadRestockCsv(qs: string, latest: string) {
   const r = await fetch("/api/daily/restock.csv" + qs, {
@@ -333,7 +341,9 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                   <tbody>
                     {sec.rows.map((x: any) => (
                       <tr key={x.goods_no} className="border-b border-slate-50 dark:border-slate-800/50">
-                        <td className="max-w-[240px] truncate py-1.5 pr-2 text-slate-700 dark:text-slate-200" title={`${x.brand} · ${x.name}`}><span className="text-slate-400">{x.brand}</span> {x.name}</td>
+                        <td className="py-1.5 pr-2 text-slate-700 dark:text-slate-200" title={`${x.brand} · ${x.name}`}>
+                          <div className="flex items-center gap-2"><Thumb u={x.img_url} /><span className="min-w-0 max-w-[200px] truncate"><span className="text-slate-400">{x.brand}</span> {pLink(x.goods_no, x.name)}</span></div>
+                        </td>
                         <td className="py-1.5 text-right tabular-nums text-slate-700 dark:text-slate-200">{compact(x.gmv)}</td>
                         <td className={`py-1.5 text-right tabular-nums font-semibold ${sec.up ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{x.pct == null ? "신규" : (x.pct >= 0 ? "+" : "") + x.pct.toFixed(0) + "%"}</td>
                       </tr>
@@ -392,8 +402,9 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                     {c.goods.map((g: any, i: number) => (
                       <li key={g.goods_no} className="flex items-center gap-2 text-sm">
                         <span className="w-4 shrink-0 text-right text-xs font-semibold text-slate-300 dark:text-slate-500">{i + 1}</span>
+                        <Thumb u={g.img_url} />
                         <span className="min-w-0 flex-1 truncate" title={`${g.brand} · ${g.name}`}>
-                          <span className="text-slate-700 dark:text-slate-200">{g.name}</span>
+                          <span className="text-slate-700 dark:text-slate-200">{pLink(g.goods_no, g.name)}</span>
                           <span className="ml-1 text-[11px] text-slate-400 dark:text-slate-400">{g.brand}</span>
                         </span>
                         <span className="shrink-0 tabular-nums text-slate-600 dark:text-slate-300">{compact(g.gmv)}</span>
@@ -473,7 +484,9 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                       </td>
                       <td className="py-2 pr-3 whitespace-nowrap text-slate-500 dark:text-slate-400">{n.brand}</td>
                       <td className="py-2 pr-3 whitespace-nowrap tabular-nums text-slate-400 dark:text-slate-400">{n.goods_no}</td>
-                      <td className="max-w-[220px] truncate py-2 pr-3 text-slate-700 dark:text-slate-200" title={n.name}><FitText>{n.name}</FitText></td>
+                      <td className="py-2 pr-3 text-slate-700 dark:text-slate-200" title={n.name}>
+                        <div className="flex items-center gap-2"><Thumb u={n.img_url} /><span className="min-w-0 max-w-[200px] truncate">{pLink(n.goods_no, n.name)}</span></div>
+                      </td>
                       {n.days.map((q: number, i: number) => (
                         <td key={i} className={`py-2 pr-3 text-right tabular-nums ${i === 0 ? "font-semibold text-slate-800 dark:text-slate-100" : "text-slate-500 dark:text-slate-400"}`}>{num(q)}</td>
                       ))}
@@ -564,7 +577,9 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                     <tr key={g.goods_no} className="border-b border-slate-50 last:border-0 dark:border-slate-800/60">
                       <td className="py-2 pr-2 text-xs text-slate-300 dark:text-slate-500">{i + 1}</td>
                       <td className="py-2 pr-3 whitespace-nowrap text-slate-500 dark:text-slate-400">{g.brand}</td>
-                      <td className="max-w-[200px] truncate py-2 pr-3 text-slate-700 dark:text-slate-200" title={g.name}><FitText>{g.name}</FitText></td>
+                      <td className="py-2 pr-3 text-slate-700 dark:text-slate-200" title={g.name}>
+                        <div className="flex items-center gap-2"><Thumb u={g.img_url} /><span className="min-w-0 max-w-[200px] truncate">{pLink(g.goods_no, g.name)}</span></div>
+                      </td>
                       <td className="py-2 pr-3 text-right font-semibold tabular-nums text-slate-800 dark:text-slate-100">{compact(g.gmv)}</td>
                       <td className="py-2 text-right tabular-nums text-slate-500 dark:text-slate-400">{num(g.qty)}</td>
                     </tr>

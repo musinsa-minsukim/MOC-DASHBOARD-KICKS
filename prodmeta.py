@@ -8,11 +8,25 @@ from __future__ import annotations
 
 import os
 import math
+import re
 
 import pandas as pd
 
 import store
 import invtab
+
+_IMG_SIZE_RE = re.compile(r"_\d+\.jpg$", re.IGNORECASE)
+
+
+def img_url(img, img_update) -> str:
+    """bizest.goods img/img_update → 대표 이미지 50px 썸네일 URL.
+       예: //image.msscdn.net/images/goods_img/20250307/4871913/4871913_..._50.jpg?t=20261015113934"""
+    img = str(img or "")
+    if not img:
+        return ""
+    thumb = _IMG_SIZE_RE.sub("_50.jpg", img)         # 500px→50px 썸네일
+    t = re.sub(r"\D", "", str(img_update or ""))     # 2026-10-15 11:39:34 → 20261015113934
+    return "//image.msscdn.net" + thumb + (("?t=" + t) if t else "")
 
 _pv: dict = {"mtime": None, "by_goods": None, "by_brand": None, "store_cols": None}
 
@@ -64,21 +78,25 @@ def stock_by_brand(brands):
 
 
 def goods_catalog(goods_nos):
-    """{goods_no: {style_no, normal_price, sale_price(유효)}} — goods_master 현재가, 선택 goods만 스코프 조회."""
+    """{goods_no: {style_no, normal_price, sale_price(유효), img_url}} — goods_master 현재가·대표이미지, 선택 goods만 스코프 조회."""
     ids = list({int(x) for x in goods_nos})
     if not ids:
         return {}
+    try:   # 구 goods_master 캐시(img 컬럼 없음) 호환
+        has_img = "img" in set(store.query("SELECT * FROM goods_master LIMIT 0").columns)
+    except Exception:
+        has_img = False
+    cols = "goods_no, style_no, normal_price, sale_price" + (", img, img_update" if has_img else "")
     out = {}
     # IN 리스트가 매우 크면 분할
     for i in range(0, len(ids), 2000):
         chunk = ids[i:i + 2000]
         ph = ",".join(["?"] * len(chunk))
-        df = store.query(
-            f"SELECT goods_no, style_no, normal_price, sale_price FROM goods_master WHERE goods_no IN ({ph})",
-            chunk)
+        df = store.query(f"SELECT {cols} FROM goods_master WHERE goods_no IN ({ph})", chunk)
         for r in df.itertuples(index=False):
             npv, spv = _f(r.normal_price), _f(r.sale_price)
             out[int(r.goods_no)] = {"style_no": (r.style_no or ""),
                                     "normal_price": npv,
-                                    "sale_price": spv if spv > 0 else npv}  # 0=할인없음→정상가
+                                    "sale_price": spv if spv > 0 else npv,  # 0=할인없음→정상가
+                                    "img_url": img_url(getattr(r, "img", ""), getattr(r, "img_update", "")) if has_img else ""}
     return out

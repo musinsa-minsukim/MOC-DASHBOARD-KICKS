@@ -194,6 +194,18 @@ def compute(ref_str, clv, where, params, fwhere="", fparams=None):
                               "goods_nm": d["goods_nm"], "cat_top": d["cat_top"], "cat_medium": d["cat_medium"]},
                    floor, cap=300, recent=recent)
 
+    # 대표이미지 썸네일 — 상품 차원 enrich(한 쿼리)
+    try:
+        import prodmeta as _pm
+        _gids = {x["goods_no"] for x in goods_t if isinstance(x, dict) and "goods_no" in x}
+        if _gids:
+            _ic = _pm.goods_catalog(_gids)
+            for x in goods_t:
+                if isinstance(x, dict) and "goods_no" in x:
+                    x["img_url"] = _ic.get(x["goods_no"], {}).get("img_url", "")
+    except Exception:
+        pass
+
     return {
         "ref": str(ref), "clv": clv, "info": info,
         "cols": COLS, "win_order": WIN_ORDER, "ratio_cols": [r[0] for r in RATIOS],

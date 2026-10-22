@@ -32,7 +32,7 @@ import {
 } from "lucide-react";
 import { api, toQuery, won, num, compact, prevRange, getToken, type Filters } from "./lib";
 import { Card, CardBody, SectionTitle, Spinner, FitText, Chip } from "./ui";
-import DataGrid, { colText, colNum } from "./Grid";
+import DataGrid, { colText, colNum, colThumb, colGoodsLink } from "./Grid";
 import { HolidayTick } from "./holidays";
 import { trendLabel, pieLabel, CatTick } from "./chartlabels";
 
@@ -52,8 +52,9 @@ const BRAND_COLS = [
   colNum("discount_rate", "할인율", "num", { valueFormatter: pct1 }),
 ];
 const GOODS_COLS = [
+  colThumb("img_url", "이미지", { pinned: "left" }),
   colText("brand_nm", "브랜드", { pinned: "left", minWidth: 120 }),
-  colText("goods_nm", "상품", { pinned: "left", minWidth: 240 }),
+  colGoodsLink("goods_nm", "상품", { pinned: "left", minWidth: 240 }),
   colNum("goods_no", "UID", "int", { minWidth: 96, valueFormatter: (p: any) => String(p.value ?? "") }),
   colText("style_no", "스타일넘버", { minWidth: 120 }),
   colNum("normal_price", "정상가", "num", { minWidth: 88 }),

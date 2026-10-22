@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Download } from "lucide-react";
 import { api, won, num, pct, toQuery, daysBeforeISO, prevRange, type Filters } from "./lib";
 import { Card, CardBody, SectionTitle, Chip, Spinner, FitText } from "./ui";
-import DataGrid, { colText, colNum, colRatio } from "./Grid";
+import DataGrid, { colText, colNum, colRatio, colThumb, colGoodsLink } from "./Grid";
 
 type Meta = { date_min: string; date_max: string; shop_types: string[]; business_types: string[] };
 
@@ -38,7 +38,7 @@ function mergeName(aRows: any[], bRows: any[]) {
 // goods: /api/sales/goods 결과 rows를 goods_no로 병합
 function mergeGoods(aRows: any[], bRows: any[]) {
   const m = new Map<any, any>();
-  const base = (r: any) => ({ brand: r.brand_nm, goods_no: r.goods_no, goods_nm: r.goods_nm, cat_medium: r.cat_medium });
+  const base = (r: any) => ({ brand: r.brand_nm, goods_no: r.goods_no, goods_nm: r.goods_nm, cat_medium: r.cat_medium, img_url: r.img_url });
   for (const r of aRows || []) m.set(r.goods_no, { ...base(r), "A구간": r.gmv || 0, "B구간": 0 });
   for (const r of bRows || []) {
     const e = m.get(r.goods_no) || { ...base(r), "A구간": 0, "B구간": 0 };
@@ -68,7 +68,7 @@ function finalizeAB(rows: any[]) {
   return { total: { _total: true, "A구간": sa, "B구간": sb, "증감": abRatio(sa, sb) }, rows };
 }
 
-type LabelCol = { key: string; label: string; pinWidth?: number };
+type LabelCol = { key: string; label: string; pinWidth?: number; kind?: "thumb" | "link" };
 
 const hdr = (c: string) => c.replace("기준일gmv", "기준일").replace("gmv", "").replace("wtd", " 전기");
 
@@ -95,10 +95,12 @@ function CmpTable({ title, sub, table, labelCols, cols, ratioCols, csvName, heig
   };
   const columns = [
     ...labelCols.map((lc, i) =>
-      colText(lc.key, lc.label, {
-        pinned: "left", minWidth: lc.pinWidth ?? 110,
-        ...(i === 0 ? { valueGetter: (p: any) => (p.node?.rowPinned === "top" ? "합계" : p.data?.[lc.key]) } : {}),
-      })
+      lc.kind === "thumb" ? colThumb(lc.key, lc.label, { pinned: "left" })
+      : lc.kind === "link" ? colGoodsLink(lc.key, lc.label, { pinned: "left", minWidth: lc.pinWidth ?? 110 })
+      : colText(lc.key, lc.label, {
+          pinned: "left", minWidth: lc.pinWidth ?? 110,
+          ...(i === 0 ? { valueGetter: (p: any) => (p.node?.rowPinned === "top" ? "합계" : p.data?.[lc.key]) } : {}),
+        })
     ),
     ...cols.map((c) => (rset.has(c) ? colRatio(c, colHeaders?.[c] ?? hdr(c)) : colNum(c, colHeaders?.[c] ?? hdr(c), "compact"))),
   ];
@@ -281,7 +283,7 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
                 dark={dark}
                 title="상품별 비교" sub={`기준일(${d.ref}) 매출 상위 300 · 동기비 · 🔵신규=등록 90일 이내`}
                 table={d.goods}
-                labelCols={[{ key: "brand", label: "브랜드", pinWidth: 120 }, { key: "goods_no", label: "UID", pinWidth: 90 }, { key: "goods_nm", label: "상품", pinWidth: 240 }, { key: "cat_medium", label: "중카테", pinWidth: 110 }]}
+                labelCols={[{ key: "brand", label: "브랜드", pinWidth: 120 }, { key: "img_url", label: "이미지", kind: "thumb" }, { key: "goods_no", label: "UID", pinWidth: 90 }, { key: "goods_nm", label: "상품", pinWidth: 240, kind: "link" }, { key: "cat_medium", label: "중카테", pinWidth: 110 }]}
                 cols={cols} ratioCols={rc} csvName="compare_goods.csv" height={560}
               />
             </>
@@ -343,7 +345,7 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
                 dark={dark}
                 title="상품별 A/B 비교" sub={`각 구간 상위 400 합집합 · ${abSub}`}
                 table={ab.goods}
-                labelCols={[{ key: "brand", label: "브랜드", pinWidth: 120 }, { key: "goods_no", label: "UID", pinWidth: 90 }, { key: "goods_nm", label: "상품", pinWidth: 240 }, { key: "cat_medium", label: "중카테", pinWidth: 110 }]}
+                labelCols={[{ key: "brand", label: "브랜드", pinWidth: 120 }, { key: "img_url", label: "이미지", kind: "thumb" }, { key: "goods_no", label: "UID", pinWidth: 90 }, { key: "goods_nm", label: "상품", pinWidth: 240, kind: "link" }, { key: "cat_medium", label: "중카테", pinWidth: 110 }]}
                 cols={AB_COLS} ratioCols={AB_RC} colHeaders={abHeaders} csvName="compare_ab_goods.csv" height={560}
               />
             </>
