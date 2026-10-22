@@ -103,6 +103,7 @@ export const api = {
   floorSave: (body: any) => req("/floor", { method: "POST", body: JSON.stringify(body) }),
   floorSales: (qs: string) => req("/floor/sales" + qs),
   summary: (qs: string) => req("/summary" + qs),
+  today: (qs: string) => req("/today" + qs),
   aov: (qs: string) => req("/aov" + qs),
   hourly: (qs: string) => req("/hourly" + qs),
   dow: (qs: string) => req("/dow" + qs),

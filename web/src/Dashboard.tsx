@@ -155,8 +155,8 @@ function Delta({ v }: { v: number | null }) {
   );
 }
 
-function Kpi({ icon, label, value, delta, sub, accent }: {
-  icon: React.ReactNode; label: string; value: string; delta?: number | null; sub?: string; accent?: boolean;
+function Kpi({ icon, label, value, delta, sub, accent, footer }: {
+  icon: React.ReactNode; label: string; value: string; delta?: number | null; sub?: string; accent?: boolean; footer?: React.ReactNode;
 }) {
   return (
     <Card>
@@ -172,8 +172,31 @@ function Kpi({ icon, label, value, delta, sub, accent }: {
           {delta !== undefined && <Delta v={delta ?? null} />}
           {sub && <span className="truncate text-xs text-slate-400 dark:text-slate-400">{sub}</span>}
         </div>
+        {footer}
       </CardBody>
     </Card>
+  );
+}
+
+// GMV 카드 하단 일자 스냅샷 (기간 필터 무시: 오늘/어제/전일대비). tp = {today,yesterday,delta,today_date,yest_date}
+function TodayPulse({ tp }: { tp: any }) {
+  if (!tp) return null;
+  const md = (d?: string) => (d ? d.slice(5).replace("-", "/") : "");
+  return (
+    <div className="mt-2.5 space-y-1 border-t border-slate-100 pt-2 dark:border-slate-800">
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="text-slate-400 dark:text-slate-400">오늘 {md(tp.today_date)}</span>
+        <span className="font-semibold tabular-nums text-slate-700 dark:text-slate-200">{won(tp.today)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="text-slate-400 dark:text-slate-400">어제 {md(tp.yest_date)}</span>
+        <span className="tabular-nums text-slate-500 dark:text-slate-400">{won(tp.yesterday)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="text-slate-400 dark:text-slate-400">전일 대비</span>
+        {tp.delta == null ? <span className="text-slate-300 dark:text-slate-600">—</span> : <Delta v={tp.delta} />}
+      </div>
+    </div>
   );
 }
 
@@ -344,6 +367,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
   const [hourly, setHourly] = useState<any[]>([]);
   const [dow, setDow] = useState<any[]>([]);
   const [floorSales, setFloorSales] = useState<any>(null);  // {store: [{floor,gmv,qty,share}]} 킥스 홍대·성수 층별
+  const [todayPulse, setTodayPulse] = useState<any>(null);  // GMV 카드 하단 오늘/어제(기간필터 무시)
   const [cmpTrend, setCmpTrend] = useState<any[]>([]); // GMV 추이 직전 동기간(항상 표시)
   const [trend, setTrend] = useState<any[]>([]);
   const [byStore, setByStore] = useState<any[]>([]);
@@ -396,6 +420,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       api.by("concept", qNoConcept, 100),
       api.dow(qs),
       api.floorSales(qs),
+      api.today(qs),
     ]).then((res) => {
       if (!alive) return;
       const val = (i: number) => (res[i].status === "fulfilled" ? (res[i] as any).value : undefined);
@@ -410,6 +435,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       setConcept(val(14) ?? []);
       setDow(val(15) ?? []);
       setFloorSales(val(16) ?? null);
+      setTodayPulse(val(17) ?? null);
       const failed = res.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
       if (failed) setError(failed.reason?.message || "일부 데이터를 불러오지 못했습니다");
     }).finally(() => alive && setLoading(false));
@@ -533,7 +559,7 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
 
       {/* KPI */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Kpi icon={<TrendingUp size={16} />} label="GMV (판매가×수량)" accent value={cur ? won(cur.gmv) : "—"} delta={cur && prev ? pctDelta(cur.gmv, prev.gmv) : null} />
+        <Kpi icon={<TrendingUp size={16} />} label="GMV (판매가×수량)" accent value={cur ? won(cur.gmv) : "—"} delta={cur && prev ? pctDelta(cur.gmv, prev.gmv) : null} footer={<TodayPulse tp={todayPulse} />} />
         <Kpi icon={<Receipt size={16} />} label="객단가 (영수증당)" accent value={aov ? won(aov.aov) : "—"} delta={aov && aovPrev ? pctDelta(aov.aov, aovPrev.aov) : null} />
         <Kpi icon={<Tag size={16} />} label="정상가 매출" value={cur ? won(cur.normal_amt) : "—"} delta={cur && prev ? pctDelta(cur.normal_amt, prev.normal_amt) : null} />
         <Kpi icon={<ShoppingBag size={16} />} label="순판매수량" value={cur ? num(cur.qty) : "—"} delta={cur && prev ? pctDelta(cur.qty, prev.qty) : null} />

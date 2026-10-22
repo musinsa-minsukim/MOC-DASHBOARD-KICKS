@@ -529,6 +529,30 @@ def summary(f: dict = Depends(get_filters), _: str = Depends(require_user), __: 
     return out
 
 
+@app.get("/api/today")
+def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """GMV 카드용 일자 스냅샷: 오늘/어제 GMV + 전일 대비 신장율.
+       ★ 기간(날짜) 필터는 무시(항상 오늘/어제) · 그 외 필터(매장/브랜드/카테/컨셉 등)는 반영.
+       오늘=KST 당일, 어제=당일-1. 캐시 최신 갱신분 기준(장중엔 당일 누계)."""
+    import datetime as _dt
+    kst_today = (_dt.datetime.utcnow() + _dt.timedelta(hours=9)).date()
+    yest = kst_today - _dt.timedelta(days=1)
+    f2 = {**f, "date_from": None, "date_to": None}        # 기간 필터 무시
+    where, params = build_where(f2)
+    w = (where + " AND ") if where else " WHERE "
+    df = store.query(
+        f"""SELECT
+              CAST(sum(CASE WHEN sales_date >= CAST(? AS DATE) THEN gmv ELSE 0 END) AS DOUBLE) t,
+              CAST(sum(CASE WHEN sales_date >= CAST(? AS DATE) AND sales_date < CAST(? AS DATE) THEN gmv ELSE 0 END) AS DOUBLE) y
+            FROM sales{w}sales_date >= CAST(? AS DATE)""",
+        params + [kst_today.isoformat(), yest.isoformat(), kst_today.isoformat(), yest.isoformat()])
+    r = df.iloc[0]
+    t = _num(r.t); y = _num(r.y)
+    delta = ((t - y) / abs(y) * 100) if y else None
+    return {"today": t, "yesterday": y, "delta": delta,
+            "today_date": kst_today.isoformat(), "yest_date": yest.isoformat()}
+
+
 @app.get("/api/aov")
 def aov(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None = Depends(require_ready)):
     """객단가 = 판매가(order_amount) 합 ÷ 영수증수(distinct order_id). 기간·매장·매장타입·내외국인만 반영."""
