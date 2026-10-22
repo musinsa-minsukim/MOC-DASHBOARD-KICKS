@@ -179,11 +179,11 @@ function Kpi({ icon, label, value, delta, sub, accent, footer }: {
 }
 
 // GMV 카드 하단 스냅샷 (기간 필터 무시: 오늘 vs 전주 동요일, 동시간대 누계).
-//   tp = {today, last_week, delta, today_date, lw_date, hour}
+//   tp = {today, last_week, delta, today_date, lw_date, thru}  thru='~시까지'(적재 최신 시각 기준)
 function TodayPulse({ tp }: { tp: any }) {
   if (!tp) return null;
   const md = (d?: string) => (d ? d.slice(5).replace("-", "/") : "");
-  const hh = typeof tp.hour === "number" ? `${String(tp.hour).padStart(2, "0")}시까지` : "";
+  const hh = typeof tp.thru === "number" ? (tp.thru >= 24 ? "종일" : `${String(tp.thru).padStart(2, "0")}시까지`) : "";
   return (
     <div className="mt-2.5 space-y-1 border-t border-slate-100 pt-2 dark:border-slate-800">
       <div className="flex items-center justify-between gap-2 text-[11px]">

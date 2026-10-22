@@ -542,19 +542,27 @@ def summary(f: dict = Depends(get_filters), _: str = Depends(require_user), __: 
 
 @app.get("/api/today")
 def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """GMV 카드용: 오늘(당일 현재 시각까지)과 '전주 동요일 동시간대' GMV + 신장율.
-       ★ 기간(날짜) 필터는 무시 · 동시간대 = KST 현재 시(hour) 이하 누계로 양쪽 동일 집계.
-       receipts(거래시각) 소스라 매장/브랜드/카테(3단)/사업구분 필터만 반영(컨셉/러닝/md/상품 미반영).
-       캐시 최신 갱신분 기준(장중엔 당일 누계)."""
+    """GMV 카드용: 오늘과 '전주 동요일 동시간대' GMV(순매출) + 신장율.
+       ★ 기간(날짜) 필터 무시 · 매장/브랜드/카테(3단)/사업구분 필터만 반영(receipts 그레인).
+       ★ 동시간대 컷오프 = '오늘 실제 적재된 최신 시각'(= 오늘 주문행 MAX(hour)) → 전주 동요일에도
+         같은 시각까지만 비교. MOSS 배치가 매시 27분에 직전 시각을 적재하므로, 벽시계(now.hour)로
+         자르면 오늘은 미적재 시각이 빠지고 전주는 포함돼 어긋남 → 적재 최신 시각 기준으로 대칭 정합.
+       순매출(SUM(sgn*gmv))이라 헤드라인 GMV와 동일 기준(환불 반영)."""
     import datetime as _dt
     now_kst = _dt.datetime.utcnow() + _dt.timedelta(hours=9)
     today = now_kst.date()
-    cur_hour = now_kst.hour
     lw = today - _dt.timedelta(days=7)                    # 전주 동요일
     f2 = {**f, "date_from": None, "date_to": None}        # 기간 필터 무시
     where, params = build_where_receipts(f2)
     w = (where + " AND ") if where else " WHERE "
-    val = "sgn*gmv" if _receipts_has_sgn() else "gmv"     # 순매출(환불 반영) — 헤드라인 GMV와 동일 기준
+    has_sgn = _receipts_has_sgn()
+    sgn1 = " AND sgn = 1" if has_sgn else ""              # 컷오프는 주문행(적재 시각) 기준(환불시각 제외)
+    val = "sgn*gmv" if has_sgn else "gmv"                 # 순매출(환불 반영) — 헤드라인 GMV와 동일 기준
+    # 오늘 적재된 최신 주문 시각 = 컷오프. 없으면(당일 미적재) 양쪽 0.
+    cut = store.query(
+        f"SELECT max(hour) h FROM receipts{w}CAST(sales_date AS DATE) = CAST(? AS DATE){sgn1}",
+        params + [today.isoformat()]).iloc[0].h
+    cur_hour = int(cut) if cut is not None else -1
     df = store.query(
         f"""SELECT
               CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN {val} ELSE 0 END) AS DOUBLE) t,
@@ -564,8 +572,10 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
     r = df.iloc[0]
     t = _num(r.t); y = _num(r.y)
     delta = ((t - y) / abs(y) * 100) if y else None
+    # thru = '~시까지'(적재 최신 시각 다음 경계). 예: 오늘 주문 MAX(hour)=14 → 15시까지 반영.
     return {"today": t, "last_week": y, "delta": delta,
-            "today_date": today.isoformat(), "lw_date": lw.isoformat(), "hour": cur_hour}
+            "today_date": today.isoformat(), "lw_date": lw.isoformat(),
+            "thru": (cur_hour + 1 if cur_hour >= 0 else None)}
 
 
 @app.get("/api/aov")
