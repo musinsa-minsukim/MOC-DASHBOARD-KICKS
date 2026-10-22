@@ -566,12 +566,13 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
         f"SELECT max(hour) h FROM receipts{w}CAST(sales_date AS DATE) = CAST(? AS DATE){sgn1}",
         params + [today.isoformat()]).iloc[0].h
     cur_hour = int(cut) - 1 if cut is not None else -1
+    # ⚠️ 바인딩 순서 = SQL 내 ? 등장 순서: SELECT의 CASE(4개)가 WHERE(필터)보다 먼저 → [SELECT용] + 필터 + [IN용].
     df = store.query(
         f"""SELECT
               CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN {val} ELSE 0 END) AS DOUBLE) t,
               CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN {val} ELSE 0 END) AS DOUBLE) y
             FROM receipts{w}CAST(sales_date AS DATE) IN (CAST(? AS DATE), CAST(? AS DATE))""",
-        params + [today.isoformat(), cur_hour, lw.isoformat(), cur_hour, today.isoformat(), lw.isoformat()])
+        [today.isoformat(), cur_hour, lw.isoformat(), cur_hour] + params + [today.isoformat(), lw.isoformat()])
     r = df.iloc[0]
     t = _num(r.t); y = _num(r.y)
     delta = ((t - y) / abs(y) * 100) if y else None
