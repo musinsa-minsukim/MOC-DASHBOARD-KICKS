@@ -558,16 +558,19 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
     has_sgn = _receipts_has_sgn()
     sgn1 = " AND sgn = 1" if has_sgn else ""              # 컷오프는 주문행(적재 시각) 기준(환불시각 제외)
     val = "sgn*gmv" if has_sgn else "gmv"                 # 순매출(환불 반영) — 헤드라인 GMV와 동일 기준
-    # 오늘 적재된 최신 주문 시각(MAX hour) = 컷오프. ★ 전사(全社) 기준 — 필터 무관으로 뽑는다:
-    #   적재 신선도는 배치가 전 매장을 함께 올리는 전사 공통 속성. 필터(w)를 걸면 한산한 매장은
-    #   최신 시간대에 판매가 없어 MAX(hour)가 낮게 나와 '매장마다 컷오프가 달라지는' 버그 발생.
-    #   배치가 매시 :27에 '현재 시간대'를 일부만 적재 → 그 시간대는 부분(미완료) → 전주의 '완전한'
-    #   같은 시간대와 비교하면 어긋남 → 직전 완료 시간대까지만: cutoff = MAX(hour) - 1, 라벨 thru = MAX(hour).
-    #   (예: 최신 16:01 → MAX=16 → cutoff=15(15시 완료분) → 전주도 15시까지 → 라벨 '16시까지'.)
+    # 컷오프 = min(적재 MAX(hour), 현재시 now_h - 1). ★ 전사(全社) MAX(hour) — 필터 무관으로 뽑는다
+    #   (적재 신선도는 배치가 전 매장을 함께 올리는 전사 공통 속성. 필터 걸면 한산한 매장은 최신
+    #    시간대 판매가 없어 MAX가 낮게 나와 '매장마다 컷오프 상이' 버그).
+    #   두 조건의 교집합:
+    #     - 적재 MAX(hour): 그 시각까지만 데이터가 들어와 있음.
+    #     - now_h - 1: '이미 끝난(완료) 시각'. 진행 중인 현재 시간대(now_h)는 전주의 완전한 같은
+    #       시간대와 비교하면 불공정하므로 제외.
+    #   → 끝난 시간대는 포함, 진행 중 시간대만 제외. (16:27·데이터 16시대 → now_h=16 → cutoff=15=16시까지.
+    #     19:0x·데이터 18시대 → now_h=19 → cutoff=min(18,18)=18=19시까지 → 끝난 18시대 포함.)
     cut = store.query(
         f"SELECT max(hour) h FROM receipts WHERE CAST(sales_date AS DATE) = CAST(? AS DATE){sgn1}",
         [today.isoformat()]).iloc[0].h
-    cur_hour = int(cut) - 1 if cut is not None else -1
+    cur_hour = min(int(cut), now_kst.hour - 1) if cut is not None else -1
     # ⚠️ 바인딩 순서 = SQL 내 ? 등장 순서: SELECT의 CASE(4개)가 WHERE(필터)보다 먼저 → [SELECT용] + 필터 + [IN용].
     df = store.query(
         f"""SELECT
@@ -578,7 +581,7 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
     r = df.iloc[0]
     t = _num(r.t); y = _num(r.y)
     delta = ((t - y) / abs(y) * 100) if y else None
-    # thru = '~시까지' = MAX(hour)(=직전 완료시각 +1 경계). 예: 최신 16:01 → MAX=16 → '16시까지'(15시 완료분).
+    # thru = '~시까지' = cutoff + 1(= 포함된 마지막 완료시각 다음 경계). 끝난 시간대 포함 시 헤드라인과 일치.
     return {"today": t, "last_week": y, "delta": delta,
             "today_date": today.isoformat(), "lw_date": lw.isoformat(),
             "thru": (cur_hour + 1 if cur_hour >= 0 else None)}
