@@ -152,6 +152,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
 
   const hubcols: string[] = d?.hubcols ?? [];
   const invCols = useMemo(() => [
+    colText("sku_id", "SKU ID", { pinned: "left", minWidth: 124, headerTooltip: "SCM-HUB SKU ID (옵션·바코드 단위) · 매입·위탁 모두 · 미매핑은 공란" }),
     colText("brand_nm", "브랜드", { pinned: "left", minWidth: 110 }),
     colText("goods_nm", "상품", { pinned: "left", minWidth: 190 }),
     colText("매장명", "매장명", {
@@ -245,7 +246,7 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
   const invTotal = useMemo(() => {
     const rr = d?.rows ?? [];
     if (!rr.length) return [];
-    const t: any = { brand_nm: "합계", goods_nm: "", 매장명: "", goods_no: "", style_no: "", goods_opt: "", business_type: "", cat_top: "", cat_large: "", cat_medium: "" };
+    const t: any = { sku_id: "", brand_nm: "합계", goods_nm: "", 매장명: "", goods_no: "", style_no: "", goods_opt: "", business_type: "", cat_top: "", cat_large: "", cat_medium: "" };
     const hubCols = ["허브합계", ...hubcols];
     let jaego = 0, expected = 0, outgoing = 0; for (const c of hubCols) t[c] = 0;
     const seen = new Set<string>();

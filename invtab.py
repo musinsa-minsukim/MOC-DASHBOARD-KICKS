@@ -15,7 +15,7 @@ import pandas as pd
 
 import store
 
-_META_ASCII = {"barcode", "goods_no", "goods_opt", "brand_nm", "goods_nm", "cat_top", "cat_large",
+_META_ASCII = {"barcode", "sku_id", "goods_no", "goods_opt", "brand_nm", "goods_nm", "cat_top", "cat_large",
                "cat_medium", "off_md_id", "company_id", "brand_id", "business_type", "concept",
                "is_running"}
 
@@ -584,13 +584,15 @@ def _option_rows(df, vis, hubcols, limit):
     txt = [c for c in ("brand_nm", "goods_nm", "goods_opt", "business_type",
                        "cat_top", "cat_large", "cat_medium") if c in df.columns]
     hubnum = list(hubcols)
-    cols = txt + ["goods_no", "barcode", "__hub", "__jaego", "__color_key"] + hubnum + vis
+    has_sku = "sku_id" in df.columns
+    cols = txt + ["goods_no", "barcode"] + (["sku_id"] if has_sku else []) + ["__hub", "__jaego", "__color_key"] + hubnum + vis
 
     def _tot(gno):   # 상품 그룹 정렬 키 = 총 점재고 + 총 이동중(입고예정+출고예정) → 신규입고·반품 상품도 상위로
         return _f(jaego_by_goods.get(gno, 0)) + _f(move_by_goods.get(gno, 0))
 
     def _mk(d0, store_name, jaego, expected, outgoing, broken, ingu, gno):
-        r = {c: ("" if pd.isna(d0.get(c)) else d0.get(c)) for c in txt}
+        r = {"sku_id": ("" if pd.isna(d0.get("sku_id")) else str(d0.get("sku_id")))}   # SKU ID(SCM-HUB) 첫 열
+        r.update({c: ("" if pd.isna(d0.get(c)) else d0.get(c)) for c in txt})
         r["goods_no"] = int(gno)
         r["매장명"] = store_name
         r["점재고"] = int(round(_f(jaego)))
@@ -672,7 +674,9 @@ def csv_rows(f=None):
        열 = 상품속성 + 위치구분(매장/허브) + 위치(매장·창고명) + 재고수량 + 브로큰(매장 위치는 그 매장 기준, 허브는 공란).
        재고 0인 위치는 제외 → '브로큰=Y'만 필터하면 매장별 브로큰 SKU를 정확히 발라낼 수 있음."""
     df, vis, hubcols, hcol = _prep(f)
-    base = [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
+    # SKU ID(SCM-HUB)를 가장 첫 열로.
+    base = (["sku_id"] if "sku_id" in df.columns else []) + \
+           [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
                         "cat_top", "cat_large", "cat_medium") if c in df.columns]
     header = base + ["위치구분", "위치", "재고수량", "브로큰"]
     if df.empty:

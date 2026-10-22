@@ -1601,6 +1601,34 @@ def load_inventory_pivot() -> pd.DataFrame:
     if "barcode" not in df.columns:
         df = df.rename(columns={df.columns[0]: "barcode"})
     df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
+    # SKU ID(SCM-HUB) — 공급처바코드 → ocmp.scm_hub.barcode.fk_sku_id → sku.sku_id (매입·위탁 모두; 실측 커버 위탁100%/매입96%).
+    #   재고 탭 상품옵션 표·CSV 첫 열용. 인벤토리 범위(editorial 매장 ∪ ERP 허브) 바코드로 한정 조회.
+    try:
+        skumap = run_df("WITH " + DIM_STORE + r""",
+            l  AS (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary),
+            le AS (SELECT MAX(dt) d FROM team.partner.raw_erp_stock),
+            bc AS (
+              SELECT DISTINCT s.barcode AS barcode
+              FROM team.sales.dsh_d_upt_editorial_stock_summary s
+              JOIN l ON s.ord_state_date = l.d JOIN dim_store st ON st.shop_no = s.shop_no
+              WHERE s.barcode IS NOT NULL
+              UNION
+              SELECT DISTINCT r.barcode FROM team.partner.raw_erp_stock r JOIN le ON r.dt = le.d
+              WHERE r.barcode IS NOT NULL
+                AND ((r.store_cd='1000' AND r.lgort IN ('2000','2010','2020','2060')) OR (r.store_cd='1700' AND r.lgort='2000')))
+            SELECT b.supplier_barcode AS barcode, ANY_VALUE(CAST(s.sku_id AS STRING)) AS sku_id
+            FROM ocmp.scm_hub.barcode b
+            JOIN ocmp.scm_hub.sku_barcode sb ON sb.fk_barcode_id = b._id
+            JOIN ocmp.scm_hub.sku s ON s._id = sb.fk_sku_id
+            WHERE b.supplier_barcode IN (SELECT barcode FROM bc)
+            GROUP BY b.supplier_barcode
+        """)
+        sku_by_bc = dict(zip(skumap["barcode"].astype(str), skumap["sku_id"].astype(str)))
+        df["sku_id"] = df["barcode"].astype(str).map(sku_by_bc).fillna("")
+    except Exception as _e:
+        import logging as _lg
+        _lg.warning("sku_id 매핑 조회 실패(빈값 처리): %s", _e)
+        df["sku_id"] = ""
     # 상품명·브랜드명 메인 소스 = 상품마스터(bizest.goods), 없으면 기존(editorial/scm)
     # ⚠️ 전체 load_goods_master(600만×다컬럼)는 st.cache pickle 시 OOM → 이름 3컬럼만 슬림 조회(캐시 없음, arrow).
     gm = run_df(r"""
@@ -1641,7 +1669,7 @@ def load_inventory_pivot() -> pd.DataFrame:
 def load_inventory_goods() -> pd.DataFrame:
     """재고 피벗을 상품(goods_no) 단위로 합산 — 판매 상세에 매장별/허브 재고를 붙이기 위함."""
     inv = load_inventory_pivot()
-    meta = {"barcode", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
+    meta = {"barcode", "sku_id", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
             "cat_top", "cat_large", "cat_medium", "off_md_id", "concept", "is_running",
             "company_id", "brand_id", "점재고합계", "허브합계", *HUB_ALL}   # 상세 파트도 store 오인 방지
     store_cols = [c for c in inv.columns if c not in meta]
