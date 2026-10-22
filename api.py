@@ -183,6 +183,15 @@ def build_where_receipts(f: dict):
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
+def _receipts_has_sgn() -> bool:
+    """receipts에 sgn(주문+1/환불-1) 컬럼이 있으면 True. 구 캐시(환불 미반영) 호환용.
+       gross 소비처(객단가/시간대/요일)는 sgn=1 필터, net 소비처(일자 스냅샷)는 SUM(sgn*gmv)."""
+    try:
+        return "sgn" in store.query("SELECT * FROM receipts LIMIT 0").columns
+    except Exception:
+        return False
+
+
 # settlement(순이익/CP) 뷰가 지원하는 IN 필터: 매장타입·매장만(브랜드·카테·사업구분·md는 뷰에 없음 → goods_no 조인으로 간접 반영).
 _STL_IN_COLS = {"type": "shop_type", "store": "store_name"}
 
@@ -284,6 +293,8 @@ def _aov(f: dict):
     """receipts 뷰에서 객단가 계산(전체/내국인/외국인). receipts 캐시가 아직 없으면 None."""
     try:
         where, params = build_where_receipts(f)
+        if _receipts_has_sgn():   # 객단가=gross(영수증 시점) 유지 → 환불행 제외
+            where = where + (" AND " if where else " WHERE ") + "sgn = 1"
         r = store.query(f"""
             SELECT CAST(COUNT(DISTINCT order_id) AS DOUBLE) r, CAST(sum(gmv) AS DOUBLE) g,
                    CAST(COUNT(DISTINCT CASE WHEN is_foreign=1 THEN order_id END) AS DOUBLE) fr,
@@ -543,10 +554,11 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
     f2 = {**f, "date_from": None, "date_to": None}        # 기간 필터 무시
     where, params = build_where_receipts(f2)
     w = (where + " AND ") if where else " WHERE "
+    val = "sgn*gmv" if _receipts_has_sgn() else "gmv"     # 순매출(환불 반영) — 헤드라인 GMV와 동일 기준
     df = store.query(
         f"""SELECT
-              CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN gmv ELSE 0 END) AS DOUBLE) t,
-              CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN gmv ELSE 0 END) AS DOUBLE) y
+              CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN {val} ELSE 0 END) AS DOUBLE) t,
+              CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN {val} ELSE 0 END) AS DOUBLE) y
             FROM receipts{w}CAST(sales_date AS DATE) IN (CAST(? AS DATE), CAST(? AS DATE))""",
         params + [today.isoformat(), cur_hour, lw.isoformat(), cur_hour, today.isoformat(), lw.isoformat()])
     r = df.iloc[0]
@@ -572,6 +584,8 @@ def hourly(f: dict = Depends(get_filters), _: str = Depends(require_user), __: N
        기간·매장·매장타입·사업구분·브랜드·카테(3단) 필터 반영(build_where_receipts). 10~23시 전 구간 반환(빈 시각은 0)."""
     where, params = build_where_receipts(f)
     w = where + (" AND " if where else " WHERE ") + "hour BETWEEN 10 AND 23"
+    if _receipts_has_sgn():   # 시간대별=gross(영수증 시점) 유지 → 환불행 제외
+        w += " AND sgn = 1"
     def _q(qsel):   # receipts 캐시에 qty 없던 구버전 대비 폴백(qty=0)
         return (f"SELECT hour, CAST(sum(gmv) AS DOUBLE) gmv, "
                 f"CAST(sum(CASE WHEN is_foreign=1 THEN gmv ELSE 0 END) AS DOUBLE) foreign_gmv, {qsel} "
@@ -600,6 +614,8 @@ def dow(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None
        기간·매장·매장타입·사업구분·브랜드·카테(3단) 필터 반영(build_where_receipts). 7요일 전 구간 반환(빈 요일은 0).
        (시간대별=/api/hourly 과 동일 소스·집계, 그룹만 isodow.)"""
     where, params = build_where_receipts(f)
+    if _receipts_has_sgn():   # 요일별=gross(영수증 시점) 유지 → 환불행 제외
+        where = where + (" AND " if where else " WHERE ") + "sgn = 1"
     def _q(qsel):   # receipts 캐시에 qty 없던 구버전 대비 폴백(qty=0)
         return (f"SELECT isodow(sales_date) AS dow, CAST(sum(gmv) AS DOUBLE) gmv, "
                 f"CAST(sum(CASE WHEN is_foreign=1 THEN gmv ELSE 0 END) AS DOUBLE) foreign_gmv, {qsel} "

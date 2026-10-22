@@ -152,6 +152,11 @@ def _incremental(name: str, fetch_fn, window_days: int, full: bool):
         keep = cur[cur["sales_date"].dt.date < since]    # window 밖(과거)은 그대로 유지
         df = pd.concat([keep, new], ignore_index=True)   # window 교체 → 중복 불가
         mode = f"incremental(since {since})"
+    # 구 parquet(sgn 컬럼 없던 시절)과 증분 concat 시 과거행 sgn=NaN → 전부 주문행이므로 1로 보정.
+    #   (과거 날짜 환불행은 window 밖이라 없음. net 소비처는 최근 window만 보므로 영향 없음.
+    #    전 기간 정확 net이 필요하면 full 리프레시로 전체 환불행 재적재.)
+    if "sgn" in df.columns:
+        df["sgn"] = pd.to_numeric(df["sgn"], errors="coerce").fillna(1).astype("int64")
     # sales_date로 정렬 후 저장 → parquet row group이 날짜순 클러스터링되어(아래 row_group_size와 함께)
     # 날짜 범위 필터가 관련 row group만 스캔(존맵 프루닝). 거의 모든 조회가 기간 필터를 쓰므로 체감 큼.
     if "sales_date" in df.columns:

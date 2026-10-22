@@ -478,10 +478,14 @@ def fetch_receipts(since: str | None = None) -> pd.DataFrame:
        ※ order_id 단위로 저장하고 분모를 COUNT(DISTINCT)로 세므로, 한 주문이 여러 카테/브랜드에
          걸쳐 여러 행이 돼도 전체/멀티선택 객단가가 중복합산 없이 정확히 보존된다(검증 2026-06-29:
          전체 객단가 신=구 93,112 일치).
-       모집단 = 완료주문(dummy_order=0, status=50, 오프라인). 환불 미반영(영수증 시점 금액).
+       모집단 = 완료주문(dummy_order=0, status=50, 오프라인). 주문행 sgn=+1(gross), 환불행 sgn=-1.
+         · 객단가/시간대/요일 = gross(sgn=1만) — 기존과 동일(영수증 시점 금액).
+         · 순매출(일자 스냅샷 등) = SUM(sgn*gmv) — fetch_sales와 동일 기준(환불 반영).
+         환불행: sales_date=환불처리일(claim.created_at), hour=그날 환불시각(대표=MAX), 금액=원주문액(fetch_sales ref와 동일 그레인).
        브랜드/카테 해석은 fetch_sales와 동일(brand=goods_master 우선→dim_brand, cat=catmap).
-       since='YYYY-MM-DD' 주면 증분(그 날짜 이후 거래)."""
+       since='YYYY-MM-DD' 주면 증분(그 날짜 이후 거래/환불)."""
     ordf = f"AND CAST(COALESCE(om.transaction_at, om.created_at) AS DATE) >= '{since}'" if since else ""
+    reff = f"AND CAST(created_at AS DATE) >= '{since}'" if since else ""
     q = "WITH " + DIM_STORE + r""",
         dim_brand AS (   -- fetch_sales와 동일
           SELECT cb.com_id, cb.brand AS brand_code, b.brand_nm,
@@ -498,49 +502,66 @@ def fetch_receipts(since: str | None = None) -> pd.DataFrame:
             ON s2.ord_state_date = lc.d
           GROUP BY goods_no
         ),
-        ord AS (
+        ord AS (   -- 총주문 라인(sgn=+1). 거래시각 시(KST).
           SELECT om.order_id,
                  CAST(COALESCE(om.transaction_at, om.created_at) AS DATE) AS sales_date,
-                 HOUR(COALESCE(om.transaction_at, om.created_at)) AS hour,   -- 거래시각 시(KST) — 시간대별 매출용
+                 HOUR(COALESCE(om.transaction_at, om.created_at)) AS hour,
                  om.shop_no, oo.goods_no, oo.company_id, oo.brand_id,
                  (CASE WHEN om.tax_refund_type IS NOT NULL AND om.tax_refund_type <> 'NONE' THEN 1 ELSE 0 END) AS is_foreign,
-                 oo.order_amount, oo.quantity
+                 oo.order_amount, oo.quantity, 1 AS sgn
           FROM ocmp.moss.order_option oo
           JOIN ocmp.moss.order_master om ON om.order_id = oo.order_id
           WHERE om.dummy_order = 0 AND om.order_status = 50 """ + ordf + r"""
         ),
-        gmbrand AS (   -- 상품마스터 브랜드(fetch_sales 우선순위와 동일). 주문에 등장한 goods만.
+        refclaim AS (   -- 환불 처리일·대표시각(그날 최종 환불시각). fetch_sales와 동일 그레인(order×환불일).
+          SELECT order_id, CAST(created_at AS DATE) AS refund_date, MAX(HOUR(created_at)) AS refund_hour
+          FROM ocmp.moss.claim WHERE claim_type = 'REFUND' """ + reff + r"""
+          GROUP BY order_id, CAST(created_at AS DATE)
+        ),
+        ref AS (   -- 환불 라인(sgn=-1). 원주문 옵션 금액을 환불처리일/시각에 음수 귀속.
+          SELECT om.order_id, rc.refund_date AS sales_date, rc.refund_hour AS hour,
+                 om.shop_no, oo.goods_no, oo.company_id, oo.brand_id,
+                 (CASE WHEN om.tax_refund_type IS NOT NULL AND om.tax_refund_type <> 'NONE' THEN 1 ELSE 0 END) AS is_foreign,
+                 oo.order_amount, oo.quantity, -1 AS sgn
+          FROM refclaim rc
+          JOIN ocmp.moss.order_master om ON om.order_id = rc.order_id
+          JOIN ocmp.moss.order_option oo ON oo.order_id = rc.order_id
+          WHERE om.dummy_order = 0
+        ),
+        lines AS (SELECT * FROM ord UNION ALL SELECT * FROM ref),
+        gmbrand AS (   -- 상품마스터 브랜드(fetch_sales 우선순위와 동일). 주문/환불에 등장한 goods만.
           SELECT CAST(g.goods_no AS BIGINT) AS goods_no, ANY_VALUE(b2.brand_nm) AS gm_brand_nm
           FROM musinsa.bizest.goods g
           LEFT JOIN musinsa.partnerportal.brand b2 ON b2.brand = g.brand
-          WHERE CAST(g.goods_no AS BIGINT) IN (SELECT DISTINCT CAST(goods_no AS BIGINT) FROM ord)
+          WHERE CAST(g.goods_no AS BIGINT) IN (SELECT DISTINCT CAST(goods_no AS BIGINT) FROM lines)
           GROUP BY g.goods_no
         )
         SELECT order_id, sales_date, store_name, shop_type, is_foreign,
-               business_type, brand_nm, cat_top, cat_large, cat_medium, hour,
+               business_type, brand_nm, cat_top, cat_large, cat_medium, hour, sgn,
                CAST(SUM(order_amount) AS DOUBLE) AS gmv, CAST(SUM(quantity) AS DOUBLE) AS qty
         FROM (
-          SELECT o.order_id, o.sales_date, o.hour, st.store_name, st.shop_type, o.is_foreign,
+          SELECT o.order_id, o.sales_date, o.hour, o.sgn, st.store_name, st.shop_type, o.is_foreign,
                  COALESCE(br.business_type, '기타') AS business_type,
                  COALESCE(NULLIF(gm.gm_brand_nm, ''), br.brand_nm, '(미매칭)') AS brand_nm,
                  COALESCE(cat.cat_top, '미분류')    AS cat_top,
                  COALESCE(cat.cat_large, '미분류')  AS cat_large,
                  COALESCE(cat.cat_medium, '미분류') AS cat_medium,
                  o.order_amount, o.quantity
-          FROM ord o
+          FROM lines o
           JOIN dim_store st ON st.shop_no = o.shop_no
           LEFT JOIN dim_brand br ON br.com_id = o.company_id AND br.brand_code = o.brand_id
           LEFT JOIN catmap   cat ON cat.goods_no = o.goods_no
           LEFT JOIN gmbrand  gm  ON gm.goods_no = CAST(o.goods_no AS BIGINT)
         ) t
         GROUP BY order_id, sales_date, store_name, shop_type, is_foreign,
-                 business_type, brand_nm, cat_top, cat_large, cat_medium, hour
+                 business_type, brand_nm, cat_top, cat_large, cat_medium, hour, sgn
     """
     df = run_df(q)
     df["order_id"] = df["order_id"].astype(str)
     df["sales_date"] = pd.to_datetime(df["sales_date"])
     df["hour"] = pd.to_numeric(df["hour"], errors="coerce").fillna(-1).astype("int64")  # 거래시각 시(0~23, 불명 -1)
     df["is_foreign"] = pd.to_numeric(df["is_foreign"]).fillna(0).astype("int64")
+    df["sgn"] = pd.to_numeric(df["sgn"], errors="coerce").fillna(1).astype("int64")  # +1 주문 / -1 환불
     df["gmv"] = pd.to_numeric(df["gmv"]).fillna(0.0)
     if "qty" in df.columns:
         df["qty"] = pd.to_numeric(df["qty"]).fillna(0.0)
