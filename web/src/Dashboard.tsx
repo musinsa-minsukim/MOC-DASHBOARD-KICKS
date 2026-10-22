@@ -178,23 +178,25 @@ function Kpi({ icon, label, value, delta, sub, accent, footer }: {
   );
 }
 
-// GMV 카드 하단 일자 스냅샷 (기간 필터 무시: 오늘/어제/전일대비). tp = {today,yesterday,delta,today_date,yest_date}
+// GMV 카드 하단 스냅샷 (기간 필터 무시: 오늘 vs 전주 동요일, 동시간대 누계).
+//   tp = {today, last_week, delta, today_date, lw_date, hour}
 function TodayPulse({ tp }: { tp: any }) {
   if (!tp) return null;
   const md = (d?: string) => (d ? d.slice(5).replace("-", "/") : "");
+  const hh = typeof tp.hour === "number" ? `${String(tp.hour).padStart(2, "0")}시까지` : "";
   return (
     <div className="mt-2.5 space-y-1 border-t border-slate-100 pt-2 dark:border-slate-800">
       <div className="flex items-center justify-between gap-2 text-[11px]">
-        <span className="text-slate-400 dark:text-slate-400">오늘 {md(tp.today_date)}</span>
-        <span className="font-semibold tabular-nums text-slate-700 dark:text-slate-200">{won(tp.today)}</span>
+        <span className="truncate text-slate-400 dark:text-slate-400">오늘 {md(tp.today_date)} {hh}</span>
+        <span className="shrink-0 font-semibold tabular-nums text-slate-700 dark:text-slate-200">{won(tp.today)}</span>
       </div>
       <div className="flex items-center justify-between gap-2 text-[11px]">
-        <span className="text-slate-400 dark:text-slate-400">어제 {md(tp.yest_date)}</span>
-        <span className="tabular-nums text-slate-500 dark:text-slate-400">{won(tp.yesterday)}</span>
+        <span className="truncate text-slate-400 dark:text-slate-400">전주 동요일 {md(tp.lw_date)} {hh}</span>
+        <span className="shrink-0 tabular-nums text-slate-500 dark:text-slate-400">{won(tp.last_week)}</span>
       </div>
       <div className="flex items-center justify-between gap-2 text-[11px]">
-        <span className="text-slate-400 dark:text-slate-400">전일 대비</span>
-        {tp.delta == null ? <span className="text-slate-300 dark:text-slate-600">—</span> : <Delta v={tp.delta} />}
+        <span className="truncate text-slate-400 dark:text-slate-400">전주 동요일 동시간대 대비</span>
+        {tp.delta == null ? <span className="shrink-0 text-slate-300 dark:text-slate-600">—</span> : <Delta v={tp.delta} />}
       </div>
     </div>
   );

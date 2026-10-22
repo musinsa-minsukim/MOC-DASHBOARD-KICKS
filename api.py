@@ -531,26 +531,29 @@ def summary(f: dict = Depends(get_filters), _: str = Depends(require_user), __: 
 
 @app.get("/api/today")
 def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """GMV 카드용 일자 스냅샷: 오늘/어제 GMV + 전일 대비 신장율.
-       ★ 기간(날짜) 필터는 무시(항상 오늘/어제) · 그 외 필터(매장/브랜드/카테/컨셉 등)는 반영.
-       오늘=KST 당일, 어제=당일-1. 캐시 최신 갱신분 기준(장중엔 당일 누계)."""
+    """GMV 카드용: 오늘(당일 현재 시각까지)과 '전주 동요일 동시간대' GMV + 신장율.
+       ★ 기간(날짜) 필터는 무시 · 동시간대 = KST 현재 시(hour) 이하 누계로 양쪽 동일 집계.
+       receipts(거래시각) 소스라 매장/브랜드/카테(3단)/사업구분 필터만 반영(컨셉/러닝/md/상품 미반영).
+       캐시 최신 갱신분 기준(장중엔 당일 누계)."""
     import datetime as _dt
-    kst_today = (_dt.datetime.utcnow() + _dt.timedelta(hours=9)).date()
-    yest = kst_today - _dt.timedelta(days=1)
+    now_kst = _dt.datetime.utcnow() + _dt.timedelta(hours=9)
+    today = now_kst.date()
+    cur_hour = now_kst.hour
+    lw = today - _dt.timedelta(days=7)                    # 전주 동요일
     f2 = {**f, "date_from": None, "date_to": None}        # 기간 필터 무시
-    where, params = build_where(f2)
+    where, params = build_where_receipts(f2)
     w = (where + " AND ") if where else " WHERE "
     df = store.query(
         f"""SELECT
-              CAST(sum(CASE WHEN sales_date >= CAST(? AS DATE) THEN gmv ELSE 0 END) AS DOUBLE) t,
-              CAST(sum(CASE WHEN sales_date >= CAST(? AS DATE) AND sales_date < CAST(? AS DATE) THEN gmv ELSE 0 END) AS DOUBLE) y
-            FROM sales{w}sales_date >= CAST(? AS DATE)""",
-        params + [kst_today.isoformat(), yest.isoformat(), kst_today.isoformat(), yest.isoformat()])
+              CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN gmv ELSE 0 END) AS DOUBLE) t,
+              CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN gmv ELSE 0 END) AS DOUBLE) y
+            FROM receipts{w}CAST(sales_date AS DATE) IN (CAST(? AS DATE), CAST(? AS DATE))""",
+        params + [today.isoformat(), cur_hour, lw.isoformat(), cur_hour, today.isoformat(), lw.isoformat()])
     r = df.iloc[0]
     t = _num(r.t); y = _num(r.y)
     delta = ((t - y) / abs(y) * 100) if y else None
-    return {"today": t, "yesterday": y, "delta": delta,
-            "today_date": kst_today.isoformat(), "yest_date": yest.isoformat()}
+    return {"today": t, "last_week": y, "delta": delta,
+            "today_date": today.isoformat(), "lw_date": lw.isoformat(), "hour": cur_hour}
 
 
 @app.get("/api/aov")
