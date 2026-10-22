@@ -544,13 +544,21 @@ def summary(f: dict = Depends(get_filters), _: str = Depends(require_user), __: 
 def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), __: None = Depends(require_ready)):
     """GMV 카드용: 오늘과 '전주 동요일 동시간대' GMV(순매출) + 신장율.
        ★ 기간(날짜) 필터 무시 · 매장/브랜드/카테(3단)/사업구분 필터만 반영(receipts 그레인).
-       ★ 동시간대 컷오프 = '오늘 실제 적재된 최신 시각'(= 오늘 주문행 MAX(hour)) → 전주 동요일에도
-         같은 시각까지만 비교. MOSS 배치가 매시 27분에 직전 시각을 적재하므로, 벽시계(now.hour)로
-         자르면 오늘은 미적재 시각이 빠지고 전주는 포함돼 어긋남 → 적재 최신 시각 기준으로 대칭 정합.
+       ★ 영업일 롤오버: 판매 첫 갱신(11:30) 전엔 '데이터 있는 어제'를 오늘로(전 시간대), 이후엔 당일(진행중).
+       ★ 동시간대 컷오프 = min(전사 적재 MAX(hour), hour_cap) → 전주 동요일도 같은 시각까지만 비교.
+         hour_cap: 당일=now_h-1(진행중 현재 시간대 제외), 전일앵커=24(완료일, 전 시간대).
        순매출(SUM(sgn*gmv))이라 헤드라인 GMV와 동일 기준(환불 반영)."""
     import datetime as _dt
     now_kst = _dt.datetime.utcnow() + _dt.timedelta(hours=9)
-    today = now_kst.date()
+    # 영업일 롤오버: 판매 데이터 첫 갱신(11:30) 전에는 당일 데이터가 없으므로 '데이터 있는 어제'를 오늘로.
+    #   - 11:30 전: today=전일(완료일) → 전 시간대 비교(hour_cap=24, 진행중 시간대 없음).
+    #   - 11:30 이후: today=당일(진행중) → 완료 시각까지만(hour_cap = now_h - 1).
+    if (now_kst.hour, now_kst.minute) < (11, 30):
+        today = (now_kst - _dt.timedelta(days=1)).date()
+        hour_cap = 24
+    else:
+        today = now_kst.date()
+        hour_cap = now_kst.hour - 1
     lw = today - _dt.timedelta(days=7)                    # 전주 동요일
     f2 = {**f, "date_from": None, "date_to": None}        # 기간 필터 무시
     where, params = build_where_receipts(f2)
@@ -558,15 +566,15 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
     has_sgn = _receipts_has_sgn()
     sgn1 = " AND sgn = 1" if has_sgn else ""              # 컷오프는 주문행(적재 시각) 기준(환불시각 제외)
     val = "sgn*gmv" if has_sgn else "gmv"                 # 순매출(환불 반영) — 헤드라인 GMV와 동일 기준
-    # 컷오프 = min(적재 MAX(hour), 현재시 now_h - 1). ★ 전사(全社) MAX(hour) — 필터 무관으로 뽑는다
+    # 컷오프 = min(적재 MAX(hour), hour_cap). ★ 전사(全社) MAX(hour) — 필터 무관으로 뽑는다
     #   (적재 신선도는 배치가 전 매장을 함께 올리는 전사 공통 속성. 필터 걸면 한산한 매장은 최신
     #    시간대 판매가 없어 MAX가 낮게 나와 '매장마다 컷오프 상이' 버그).
     #   두 조건의 교집합:
     #     - 적재 MAX(hour): 그 시각까지만 데이터가 들어와 있음.
-    #     - now_h - 1: '이미 끝난(완료) 시각'. 진행 중인 현재 시간대(now_h)는 전주의 완전한 같은
-    #       시간대와 비교하면 불공정하므로 제외.
-    #   → 끝난 시간대는 포함, 진행 중 시간대만 제외. (16:27·데이터 16시대 → now_h=16 → cutoff=15=16시까지.
-    #     19:0x·데이터 18시대 → now_h=19 → cutoff=min(18,18)=18=19시까지 → 끝난 18시대 포함.)
+    #     - hour_cap: 당일앵커=now_h-1(진행 중 현재 시간대 제외, 전주의 완전한 시간대와 불공정 방지),
+    #                 전일앵커=24(완료일이라 전 시간대 포함).
+    #   → 끝난 시간대는 포함, 진행 중 시간대만 제외. (16:27·데이터 16시대 → cutoff=15=16시까지.
+    #     19:0x·데이터 18시대 → cutoff=min(18,18)=18=19시까지 → 끝난 18시대 포함.)
     cut = store.query(
         f"SELECT max(hour) h FROM receipts WHERE CAST(sales_date AS DATE) = CAST(? AS DATE){sgn1}",
         [today.isoformat()]).iloc[0].h
@@ -574,7 +582,7 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
         max_h = int(cut)
     except (TypeError, ValueError):
         max_h = None
-    cur_hour = min(max_h, now_kst.hour - 1) if max_h is not None else -1
+    cur_hour = min(max_h, hour_cap) if max_h is not None else -1
     # ⚠️ 바인딩 순서 = SQL 내 ? 등장 순서: SELECT의 CASE(4개)가 WHERE(필터)보다 먼저 → [SELECT용] + 필터 + [IN용].
     df = store.query(
         f"""SELECT
