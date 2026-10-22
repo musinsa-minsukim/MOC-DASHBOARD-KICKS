@@ -558,11 +558,14 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
     has_sgn = _receipts_has_sgn()
     sgn1 = " AND sgn = 1" if has_sgn else ""              # 컷오프는 주문행(적재 시각) 기준(환불시각 제외)
     val = "sgn*gmv" if has_sgn else "gmv"                 # 순매출(환불 반영) — 헤드라인 GMV와 동일 기준
-    # 오늘 적재된 최신 주문 시각 = 컷오프. 없으면(당일 미적재) 양쪽 0.
+    # 오늘 적재된 최신 주문 시각(MAX hour). 배치가 매시 :27에 '현재 시간대'를 일부만 적재하므로
+    #   그 시간대는 부분(미완료) → 전주의 '완전한' 같은 시간대와 비교하면 또 어긋남.
+    #   → 직전 완료 시간대까지만 비교: cutoff = MAX(hour) - 1. 라벨 thru = MAX(hour)('~시까지').
+    #   (예: 최신 16:01 → MAX=16 → cutoff=15(15시까지 완료분) → 전주도 15시까지 → 라벨 '16시까지'.)
     cut = store.query(
         f"SELECT max(hour) h FROM receipts{w}CAST(sales_date AS DATE) = CAST(? AS DATE){sgn1}",
         params + [today.isoformat()]).iloc[0].h
-    cur_hour = int(cut) if cut is not None else -1
+    cur_hour = int(cut) - 1 if cut is not None else -1
     df = store.query(
         f"""SELECT
               CAST(sum(CASE WHEN CAST(sales_date AS DATE) = CAST(? AS DATE) AND hour <= ? THEN {val} ELSE 0 END) AS DOUBLE) t,
@@ -572,7 +575,7 @@ def today_pulse(f: dict = Depends(get_filters), _: str = Depends(require_user), 
     r = df.iloc[0]
     t = _num(r.t); y = _num(r.y)
     delta = ((t - y) / abs(y) * 100) if y else None
-    # thru = '~시까지'(적재 최신 시각 다음 경계). 예: 오늘 주문 MAX(hour)=14 → 15시까지 반영.
+    # thru = '~시까지' = MAX(hour)(=직전 완료시각 +1 경계). 예: 최신 16:01 → MAX=16 → '16시까지'(15시 완료분).
     return {"today": t, "last_week": y, "delta": delta,
             "today_date": today.isoformat(), "lw_date": lw.isoformat(),
             "thru": (cur_hour + 1 if cur_hour >= 0 else None)}
