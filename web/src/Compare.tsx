@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download } from "lucide-react";
-import { api, won, num, pct, toQuery, daysBeforeISO, prevRange, type Filters } from "./lib";
+import { api, won, num, compact, pct, toQuery, daysBeforeISO, prevRange, type Filters } from "./lib";
 import { Card, CardBody, SectionTitle, Chip, Spinner, FitText } from "./ui";
 import DataGrid, { colText, colNum, colRatio, colThumb, colGoodsLink } from "./Grid";
 
@@ -23,6 +23,32 @@ function abRatio(a: number, b: number): string {
   if (!b) return a > 0 ? "신규" : "-";
   const p = ((a - b) / b) * 100;
   return (p > 0 ? "+" : "") + p.toFixed(1) + "%";
+}
+// 날짜 범위(from~to) 전체 일자 목록(판매 0인 날도 포함 — 일차별 정렬 정확성)
+function dateRangeList(from: string, to: string): string[] {
+  if (!from || !to) return [];
+  const [y, m, d] = from.split("-").map(Number);
+  const [ey, em, ed] = to.split("-").map(Number);
+  const cur = new Date(y, m - 1, d), end = new Date(ey, em - 1, ed);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const out: string[] = [];
+  while (cur <= end) { out.push(`${cur.getFullYear()}-${p(cur.getMonth() + 1)}-${p(cur.getDate())}`); cur.setDate(cur.getDate() + 1); }
+  return out;
+}
+// 일자별 A/B 비교: A·B 구간을 '일차(day index)'로 페어링(A 1일차 ↔ B 1일차 …). trend(/api/trend gran=day) 사용.
+function buildDailyAB(aFrom: string, aTo: string, bFrom: string, bTo: string, trA: any[], trB: any[]) {
+  const aDates = dateRangeList(aFrom, aTo), bDates = dateRangeList(bFrom, bTo);
+  const aMap = new Map((trA || []).map((r: any) => [String(r.bucket).slice(0, 10), Number(r.gmv) || 0]));
+  const bMap = new Map((trB || []).map((r: any) => [String(r.bucket).slice(0, 10), Number(r.gmv) || 0]));
+  const n = Math.max(aDates.length, bDates.length);
+  const rows: any[] = []; let sa = 0, sb = 0;
+  for (let i = 0; i < n; i++) {
+    const ad = aDates[i] || "", bd = bDates[i] || "";
+    const ag = ad ? (aMap.get(ad) || 0) : 0, bg = bd ? (bMap.get(bd) || 0) : 0;
+    sa += ag; sb += bg;
+    rows.push({ idx: i + 1, aDate: ad, aGmv: ag, bDate: bd, bGmv: bg });
+  }
+  return { rows, total: { aGmv: sa, bGmv: sb } };
 }
 // store/brand/category: /api/by 결과 [{name, gmv}] 두 구간을 name으로 병합
 function mergeName(aRows: any[], bRows: any[]) {
@@ -134,6 +160,72 @@ function SummaryKpi({ label, value, delta }: { label: string; value: string; del
   );
 }
 
+const _WD = ["일", "월", "화", "수", "목", "금", "토"];
+const _wd = (s: string) => { if (!s) return ""; const [y, m, d] = s.split("-").map(Number); return _WD[new Date(y, m - 1, d).getDay()]; };
+const _md = (s: string) => (s ? s.slice(5) : "-");
+
+// 일자별 A/B 비교 표 — A·B 구간을 '일차'로 페어링(1일차↔1일차 …), 일별 GMV + 증감
+function DailyAB({ data, csvName }: { data: any; csvName: string }) {
+  if (!data?.rows?.length) return null;
+  const { rows, total } = data;
+  const dcell = (a: number, b: number) => {
+    if (!b) return <span className="text-slate-400">{a > 0 ? "신규" : "-"}</span>;
+    const p = ((a - b) / b) * 100, up = p >= 0;
+    return <span className={`font-semibold ${up ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{(up ? "+" : "") + p.toFixed(1)}%</span>;
+  };
+  const csv = () => {
+    const esc = (v: any) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const rline = (idx: any, ad: string, ag: number, bd: string, bg: number) =>
+      [idx, ad, _wd(ad), Math.round(ag), bd, _wd(bd), Math.round(bg), bg ? abRatio(ag, bg) : (ag > 0 ? "신규" : "-")].map(esc).join(",");
+    const lines = ["﻿" + ["일차", "A일", "A요일", "A GMV", "B일", "B요일", "B GMV", "증감"].join(","), rline("합계", "", total.aGmv, "", total.bGmv)];
+    for (const r of rows) lines.push(rline(`${r.idx}일차`, r.aDate, r.aGmv, r.bDate, r.bGmv));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = csvName; a.click(); URL.revokeObjectURL(a.href);
+  };
+  return (
+    <Card><CardBody>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <SectionTitle title="일자별 A/B 비교" sub="A·B 구간을 일차(1일차 ↔ 1일차 …)로 페어링 · 일별 GMV · 증감=(A−B)/B · 판매 0일 포함" />
+        <button onClick={csv} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"><Download size={13} /> CSV</button>
+      </div>
+      <div className="max-h-[460px] overflow-auto">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-white dark:bg-slate-900">
+            <tr className="border-b border-slate-100 text-left text-xs text-slate-400 dark:border-slate-800 dark:text-slate-500">
+              <th className="py-2 pr-2 font-medium">일차</th>
+              <th className="py-2 pr-2 font-medium">A일</th>
+              <th className="py-2 pr-3 text-right font-medium">A GMV</th>
+              <th className="py-2 pr-2 font-medium">B일</th>
+              <th className="py-2 pr-3 text-right font-medium">B GMV</th>
+              <th className="py-2 text-right font-medium">증감</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-b border-slate-200 font-semibold dark:border-slate-700">
+              <td className="py-2 pr-2 text-slate-700 dark:text-slate-200">합계</td>
+              <td className="py-2 pr-2" />
+              <td className="py-2 pr-3 text-right tabular-nums text-slate-800 dark:text-slate-100">{compact(total.aGmv)}</td>
+              <td className="py-2 pr-2" />
+              <td className="py-2 pr-3 text-right tabular-nums text-slate-500 dark:text-slate-400">{compact(total.bGmv)}</td>
+              <td className="py-2 text-right tabular-nums">{dcell(total.aGmv, total.bGmv)}</td>
+            </tr>
+            {rows.map((r: any) => (
+              <tr key={r.idx} className="border-b border-slate-50 last:border-0 dark:border-slate-800/60">
+                <td className="py-1.5 pr-2 tabular-nums text-slate-400 dark:text-slate-500">{r.idx}일차</td>
+                <td className="py-1.5 pr-2 whitespace-nowrap text-slate-600 dark:text-slate-300">{_md(r.aDate)}<span className="ml-1 text-xs text-slate-400">({_wd(r.aDate)})</span></td>
+                <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-slate-800 dark:text-slate-100">{compact(r.aGmv)}</td>
+                <td className="py-1.5 pr-2 whitespace-nowrap text-slate-500 dark:text-slate-400">{_md(r.bDate)}<span className="ml-1 text-xs text-slate-400">({_wd(r.bDate)})</span></td>
+                <td className="py-1.5 pr-3 text-right tabular-nums text-slate-500 dark:text-slate-400">{compact(r.bGmv)}</td>
+                <td className="py-1.5 text-right tabular-nums">{dcell(r.aGmv, r.bGmv)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </CardBody></Card>
+  );
+}
+
 export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; filters: Filters; dark: boolean; onPick?: (k: keyof Filters, v: string) => void }) {
   const dmax = meta.date_max?.slice(0, 10) || "";
   const dmin = meta.date_min?.slice(0, 10) || "";
@@ -194,7 +286,8 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
       api.by("brand", qA, 300), api.by("brand", qB, 300),
       api.salesGoods(qA, 400), api.salesGoods(qB, 400),
       api.footfall(qA), api.footfall(qB),
-    ]).then(([sa, sb, stA, stB, caA, caB, brA, brB, gA, gB, ffA, ffB]: any[]) => {
+      api.trend(qA), api.trend(qB),
+    ]).then(([sa, sb, stA, stB, caA, caB, brA, brB, gA, gB, ffA, ffB, trA, trB]: any[]) => {
       if (!alive) return;
       setAb({
         sa, sb,
@@ -203,6 +296,7 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
         brand: mergeName(brA, brB),
         goods: mergeGoods(gA?.rows, gB?.rows),
         visStore: mergeFootfall(ffA, ffB),
+        daily: buildDailyAB(aFrom, aTo, bFrom, bTo, trA, trB),
       });
     }).catch((e) => alive && setError(e.message)).finally(() => alive && setAbLoading(false));
     return () => { alive = false; };
@@ -329,6 +423,8 @@ export default function Compare({ meta, filters, dark, onPick }: { meta: Meta; f
                 <SummaryKpi label="외국인 매출(면세)" value={won(ab.sa.foreign_gmv)} delta={kd(ab.sa.foreign_gmv, ab.sb.foreign_gmv)} />
                 <SummaryKpi label="정상가 매출" value={won(ab.sa.normal_amt)} delta={kd(ab.sa.normal_amt, ab.sb.normal_amt)} />
               </div>
+
+              <DailyAB data={ab.daily} csvName="compare_ab_daily.csv" />
 
               <CmpTable dark={dark} title="매장별 A/B 비교" sub={abSub} table={ab.store} labelCols={[{ key: "name", label: "매장", pinWidth: 150 }]} cols={AB_COLS} ratioCols={AB_RC} colHeaders={abHeaders} csvName="compare_ab_store.csv" height={460} onRowPick={onPick ? (v) => onPick("store", v) : undefined} />
 
