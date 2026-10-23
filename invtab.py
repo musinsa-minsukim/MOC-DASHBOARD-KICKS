@@ -671,17 +671,19 @@ def _option_rows(df, vis, hubcols, limit):
 
 def csv_rows(f=None):
     """재고 CSV — **tidy/long**: (상품옵션 × 위치)당 1행. 화면 피벗(매장=열)을 풀어 매장/창고별 행으로.
-       열 = 상품속성 + 위치구분(매장/허브) + 위치(매장·창고명) + 재고수량 + 브로큰(매장 위치는 그 매장 기준, 허브는 공란).
+       열 순서 = 스토어코드(SCM-HUB storage_id) / SKU ID / 운영상태 / 상품속성 / 위치구분(매장/허브) /
+                 위치(매장·창고명) / 재고수량 / 브로큰. (스토어코드·운영상태·브로큰은 매장 위치만, 허브는 공란)
        재고 0인 위치는 제외 → '브로큰=Y'만 필터하면 매장별 브로큰 SKU를 정확히 발라낼 수 있음."""
     df, vis, hubcols, hcol = _prep(f)
-    # SKU ID(SCM-HUB)를 가장 첫 열로.
-    base = (["sku_id"] if "sku_id" in df.columns else []) + \
-           [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
+    has_sku = "sku_id" in df.columns
+    meta = [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
                         "cat_top", "cat_large", "cat_medium") if c in df.columns]
-    header = base + ["위치구분", "위치", "스토어코드", "운영상태", "재고수량", "브로큰"]
+    base = (["sku_id"] if has_sku else []) + meta                  # df 선택/정리용(출력 순서는 header 참고)
+    # 스토어코드 / SKU ID / 운영상태 를 앞으로, 상품속성(meta)·위치·수량은 뒤로.
+    header = ["스토어코드"] + (["sku_id"] if has_sku else []) + ["운영상태"] + meta + \
+             ["위치구분", "위치", "재고수량", "브로큰"]
     if df.empty:
         return header, []
-    has_sku = "sku_id" in df.columns
     status_map = store.get_store_sku_status() if has_sku else {}   # {(store_name, sku_id): 운영중/미운영}, 없으면 미지정
     code_map = store.get_store_code_map()                          # {store_name: SCM-HUB storage_id}, 매장 위치만
     per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
@@ -697,7 +699,7 @@ def csv_rows(f=None):
     storeset = set(vis)
     out = []
     for d in sub.to_dict(orient="records"):
-        basevals = [d[c] for c in base]
+        metavals = [d[c] for c in meta]
         ck = d["__color_key"]
         sku = str(d.get("sku_id") or "") if has_sku else ""
         for loc in loccols:                         # 위치(매장/창고) 컬럼을 행으로 melt
@@ -710,5 +712,6 @@ def csv_rows(f=None):
                 status = ("" if not is_store else
                           (status_map.get((loc, sku), "미지정") if sku else "미지정"))
                 brk = "Y" if (is_store and ck in per_store_broken.get(loc, set())) else ""
-                out.append(basevals + ["매장" if is_store else "허브", loc, store_code, status, qty, brk])
+                out.append([store_code] + ([sku] if has_sku else []) + [status] + metavals +
+                           ["매장" if is_store else "허브", loc, qty, brk])
     return header, out
