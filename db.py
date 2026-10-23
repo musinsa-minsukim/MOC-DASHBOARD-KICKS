@@ -1973,3 +1973,22 @@ def fetch_store_sku_status() -> dict:
         if sid:
             out[(str(r.store_name), sid)] = "운영중" if int(r.op or 0) == 1 else "미운영"
     return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_store_code_map() -> dict:
+    """오프라인 매장명 → SCM-HUB 스토어 코드(storage_id=ocmp.scm_hub.storage._id) {store_name: '130', ...}.
+       재고 탭 CSV '스토어코드' 열용. 매장↔storage_id는 거의 불변이라 1일 캐시. 조회 실패 시 {}(공란)."""
+    q = ("WITH " + DIM_STORE + r"""
+        SELECT ds.store_name AS store_name, CAST(sid.storage_id AS STRING) AS store_code
+        FROM dim_store ds
+        JOIN team.commercepm.offline_shopno_storageid sid ON CAST(sid.shop_no AS INT) = ds.shop_no
+        WHERE sid.storage_id IS NOT NULL
+    """)
+    try:
+        d = run_df(q)
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("스토어코드(storage_id) 조회 실패(공란 처리): %s", e)
+        return {}
+    return {str(r.store_name): str(r.store_code) for r in d.itertuples(index=False) if str(r.store_code)}

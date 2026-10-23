@@ -357,6 +357,14 @@ def get_store_sku_status() -> dict:
         return {}
 
 
+def get_store_code_map() -> dict:
+    """매장명 → SCM-HUB 스토어 코드(storage_id) {store_name: '130', ...} (라이브+1일캐시). 실패 시 {}."""
+    try:
+        return db.fetch_store_code_map()
+    except Exception:
+        return {}
+
+
 def get_inventory_goods() -> pd.DataFrame:
     return _read_cached("inventory_goods", lambda df: df.assign(goods_no=pd.to_numeric(df["goods_no"]).astype("int64")))
 

@@ -678,11 +678,12 @@ def csv_rows(f=None):
     base = (["sku_id"] if "sku_id" in df.columns else []) + \
            [c for c in ("brand_nm", "goods_nm", "goods_no", "goods_opt", "business_type",
                         "cat_top", "cat_large", "cat_medium") if c in df.columns]
-    header = base + ["위치구분", "위치", "운영상태", "재고수량", "브로큰"]
+    header = base + ["위치구분", "위치", "스토어코드", "운영상태", "재고수량", "브로큰"]
     if df.empty:
         return header, []
     has_sku = "sku_id" in df.columns
     status_map = store.get_store_sku_status() if has_sku else {}   # {(store_name, sku_id): 운영중/미운영}, 없으면 미지정
+    code_map = store.get_store_code_map()                          # {store_name: SCM-HUB storage_id}, 매장 위치만
     per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
     loccols = vis + hubcols                         # 매장 컬럼 + 허브(MFS/1000/1700)
     df = df.sort_values(["__jaego", "__hub"], ascending=[False, False])
@@ -703,9 +704,11 @@ def csv_rows(f=None):
             qty = d[loc]
             if qty:                                 # 재고 있는 위치만 (0/NaN 제외)
                 is_store = loc in storeset
+                # 스토어코드: 매장 위치만 SCM-HUB storage_id(허브는 공란).
+                store_code = code_map.get(loc, "") if is_store else ""
                 # 운영상태: 매장 위치만(허브는 공란). storage_sku 행 없음=미지정.
                 status = ("" if not is_store else
                           (status_map.get((loc, sku), "미지정") if sku else "미지정"))
                 brk = "Y" if (is_store and ck in per_store_broken.get(loc, set())) else ""
-                out.append(basevals + ["매장" if is_store else "허브", loc, status, qty, brk])
+                out.append(basevals + ["매장" if is_store else "허브", loc, store_code, status, qty, brk])
     return header, out
