@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import { ModuleRegistry, AllCommunityModule, themeQuartz } from "ag-grid-community";
 import type { ColDef, CellStyle } from "ag-grid-community";
@@ -83,34 +83,8 @@ function fmtVal(v: any, fmt: Fmt): string {
   return numFmt(v); // num / int
 }
 
-// 셀 텍스트가 칸을 넘으면 "…"로 자르는 대신 글자 크기를 줄여 한 줄에 맞춤(엑셀 '셀에 맞춤'과 유사).
-// 칸 너비(=셀 콘텐츠 폭)에 맞춰 base 13px를 비율 축소(최소 8px). 컬럼 리사이즈 시 ResizeObserver로 재계산.
-function FitText(props: any) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const text = props.valueFormatted ?? props.value ?? "";
-  useLayoutEffect(() => {
-    const el = ref.current; if (!el) return;
-    const cell = el.parentElement; if (!cell) return;
-    const fit = () => {
-      el.style.fontSize = ""; // 테마 기본(PC 13 / 모바일 11)으로 리셋 후 자연 폭 측정
-      const base = parseFloat(getComputedStyle(el).fontSize) || 13;   // 현재 테마 셀 글자 크기
-      const cs = getComputedStyle(cell);
-      const avail = cell.clientWidth - parseFloat(cs.paddingLeft || "0") - parseFloat(cs.paddingRight || "0");
-      const natural = el.scrollWidth;
-      if (avail > 0 && natural > avail) {
-        el.style.fontSize = `${Math.max(8, Math.min(base, (avail / natural) * base))}px`;
-      }
-    };
-    fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(cell);
-    return () => ro.disconnect();
-  }, [text]);
-  return <span ref={ref} style={{ display: "inline-block", whiteSpace: "nowrap" }} title={String(text)}>{String(text)}</span>;
-}
-
 // ---- 컬럼 정의 헬퍼 ----
-// 텍스트 컬럼. 모바일에선 글자 축소(shrink-to-fit), PC에선 내용 길이에 맞춰 열 너비 자동조정 → DataGrid에서 분기.
+// 텍스트 컬럼. 열 너비는 내용 길이에 맞춰 자동조정(모바일·PC 공통) → 화면을 넘치면 가로 스크롤로 본다.
 export function colText(field: string, header: string, opts: Partial<ColDef> = {}): ColDef {
   return { field, headerName: header, minWidth: 110, ...opts };
 }
@@ -125,9 +99,10 @@ export function colThumb(field = "img_url", header = "이미지", opts: Partial<
   return {
     field, headerName: header, minWidth: 54, maxWidth: 60, sortable: false, filter: false, resizable: false,
     cellStyle: { padding: "2px", display: "flex", alignItems: "center", justifyContent: "center" } as CellStyle,
+    // 행 높이에 맞춰 축소(모바일 촘촘한 행에서도 안 넘침), 최대 34px·정사각 유지.
     cellRenderer: (p: any) => (p.value
       ? <img src={p.value} loading="lazy" alt="" referrerPolicy="no-referrer"
-             style={{ height: 34, width: 34, objectFit: "cover", borderRadius: 4, background: "#f1f5f9" }} />
+             style={{ height: "100%", maxHeight: 34, aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 4, background: "#f1f5f9" }} />
       : null),
     ...opts,
   };
@@ -206,7 +181,7 @@ export default function DataGrid({
   const keyRef = useRef<string>("");
   const tRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
-  // 모바일(좁은 화면): 글자 축소 / PC: 열 너비를 내용에 맞춰 자동 확장
+  // 모바일(좁은 화면): 글자·행높이 축소(가로 스크롤로 열 탐색) / PC: 기본 크기. 열 너비 자동조정은 공통.
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 767px)");
@@ -215,9 +190,9 @@ export default function DataGrid({
     return () => mq.removeEventListener("change", h);
   }, []);
 
-  // PC: 데이터가 바뀌면 각 열을 내용(헤더 포함) 길이에 맞춰 자동 너비 조정
+  // 데이터가 바뀌면 각 열을 내용(헤더 포함) 길이에 맞춰 자동 너비 조정(모바일·PC 공통).
+  //   모바일은 글자가 작아 열이 더 좁지만, 넘치는 만큼 가로 스크롤로 탐색(글자 축소 대신).
   const autoSize = () => {
-    if (isMobile) return;
     const api = apiRef.current; if (!api) return;
     try {
       api.autoSizeAllColumns(false);
@@ -225,7 +200,6 @@ export default function DataGrid({
     } catch { /* noop */ }
   };
   useEffect(() => {
-    if (isMobile) return;
     const id = requestAnimationFrame(autoSize);
     return () => cancelAnimationFrame(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -366,23 +340,19 @@ export default function DataGrid({
     };
   }, []);
 
-  // 범위 하이라이트용 cellClassRules 주입 + 모바일이면 텍스트 열에 글자축소(FitText) 렌더러 주입
+  // 범위 하이라이트용 cellClassRules 주입
   const gridCols = useMemo(
-    () => columns.map((c) => {
-      const isText = (c as any).type !== "numericColumn" && !(c as any).cellRenderer;
-      return {
-        ...c,
-        ...(isMobile && isText ? { cellRenderer: FitText } : {}),
-        cellClassRules: {
-          ...((c as any).cellClassRules || {}),
-          "mu-range": (p: any) => {
-            const rg = rangeRef.current;
-            return !!rg && !p?.node?.rowPinned && p.rowIndex >= rg.r0 && p.rowIndex <= rg.r1 && rg.colIds.has(p.column.getColId());
-          },
+    () => columns.map((c) => ({
+      ...c,
+      cellClassRules: {
+        ...((c as any).cellClassRules || {}),
+        "mu-range": (p: any) => {
+          const rg = rangeRef.current;
+          return !!rg && !p?.node?.rowPinned && p.rowIndex >= rg.r0 && p.rowIndex <= rg.r1 && rg.colIds.has(p.column.getColId());
         },
-      };
-    }),
-    [columns, isMobile],
+      },
+    })),
+    [columns],
   );
 
   return (
@@ -412,8 +382,8 @@ export default function DataGrid({
         suppressDragLeaveHidesColumns
         suppressColumnVirtualisation
         animateRows={false}
-        headerHeight={40}
-        rowHeight={38}
+        headerHeight={isMobile ? 32 : 40}
+        rowHeight={isMobile ? 30 : 38}
         ensureDomOrder
         onGridReady={(e: any) => { apiRef.current = e.api; }}
         onFirstDataRendered={autoSize}
