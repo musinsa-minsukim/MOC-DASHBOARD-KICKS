@@ -23,7 +23,7 @@ import bcrypt
 from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 import store
@@ -714,6 +714,23 @@ def drill_ep(level: str = "shop", f: dict = Depends(get_filters), limit: int = 5
     return drill.rows(level, f, int(limit))
 
 
+def _csv_response(data: bytes, filename: str) -> StreamingResponse:
+    """CSV를 **청크 전송(StreamingResponse)**으로 반환 — Content-Length 없이 chunked.
+       Cloud Run은 비스트리밍(Content-Length) HTTP/1 응답을 32MiB로 제한하므로, 큰 CSV는
+       단일 Response(content=bytes)로 보내면 거부/절단됨 → 청크 전송으로 그 한도를 우회한다.
+       (메모리엔 전체 bytes가 있지만 전송만 분할 — 동작/내용은 기존과 동일.)"""
+    step = 4 * 1024 * 1024   # 4MB씩 — 생성기라 Starlette가 chunked transfer-encoding 사용(Content-Length 미설정)
+
+    def gen():
+        for i in range(0, len(data), step):
+            yield data[i:i + step]
+        if not data:            # 빈 CSV도 최소 1청크(헤더 없는 경우 방지)
+            yield b""
+
+    return StreamingResponse(gen(), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 @app.get("/api/drill.csv")
 def drill_csv_ep(level: str = "shop", f: dict = Depends(get_filters),
                  _: str = Depends(require_user), __: None = Depends(require_ready)):
@@ -721,8 +738,7 @@ def drill_csv_ep(level: str = "shop", f: dict = Depends(get_filters),
     if level not in drill.LEVEL_COL:
         raise HTTPException(status_code=400, detail=f"unknown level: {level}")
     data = drill.csv_bytes(level, f)
-    return Response(content=data, media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="drill_{level}.csv"'})
+    return _csv_response(data, f"drill_{level}.csv")
 
 
 @app.get("/api/target")
@@ -953,8 +969,7 @@ def inventory_csv(f: dict = Depends(get_filters),
     w.writerow(header)
     w.writerows(rows)
     data = ("﻿" + buf.getvalue()).encode("utf-8")
-    return Response(content=data, media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": 'attachment; filename="offline_inventory_long.csv"'})
+    return _csv_response(data, "offline_inventory_long.csv")
 
 
 @app.get("/api/inventory/brands.csv")
@@ -968,8 +983,7 @@ def inventory_brands_csv(f: dict = Depends(get_filters),
     w.writerow(header)
     w.writerows(rows)
     data = ("﻿" + buf.getvalue()).encode("utf-8")
-    return Response(content=data, media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": 'attachment; filename="inventory_by_brand_store.csv"'})
+    return _csv_response(data, "inventory_by_brand_store.csv")
 
 
 @app.get("/api/customer")
@@ -1334,8 +1348,7 @@ def _sales_goods_csv_impl(f: dict, io, csv):
                         int(_num(r.net_take)), int(_num(r.cp)), int(_num(r.stock))])
         fname = "offline_sales_by_store_goods.csv"
     data = ("﻿" + buf.getvalue()).encode("utf-8")
-    return Response(content=data, media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    return _csv_response(data, fname)
 
 
 @app.get("/api/sales/brands.csv")
@@ -1386,8 +1399,7 @@ def sales_brands_csv(f: dict = Depends(get_filters),
                         int(_num(r.pay)), int(_num(r.foreign_gmv)),
                         round((1 - gmv / normal) * 100, 1) if normal else 0, int(_num(r.stock))])
         data = ("﻿" + buf.getvalue()).encode("utf-8")
-        return Response(content=data, media_type="text/csv; charset=utf-8",
-                        headers={"Content-Disposition": 'attachment; filename="offline_sales_by_brand_store.csv"'})
+        return _csv_response(data, "offline_sales_by_brand_store.csv")
     except Exception as e:
         logging.error("sales_brands_csv failed: %s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"브랜드 CSV 오류: {type(e).__name__}: {e}")
@@ -1585,8 +1597,7 @@ def daily_restock_csv(basis: str | None = None, seg: str | None = None, grp: str
                     int(r["sold"]), int(r["store_stock"]), int(r["hub_total"])])
     data = ("﻿" + buf.getvalue()).encode("utf-8")     # BOM → Excel 한글 정상
     fname = f"restock_{d0 or 'empty'}.csv"
-    return Response(content=data, media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    return _csv_response(data, fname)
 
 
 # 통합 IPS — 브랜드×구분(매입/위탁) 단일 뷰. 공통 필터 미적용(독립 탭). CP는 Phase1에서 숨김.
