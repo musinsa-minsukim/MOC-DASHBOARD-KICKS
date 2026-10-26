@@ -47,26 +47,31 @@ function HeaderWithPin(props: any) {
   );
 }
 
-const common = {
+const baseCommon = {
   fontFamily: "inherit",
-  fontSize: 13,
-  headerFontSize: 12,
   headerFontWeight: 600,
   wrapperBorderRadius: 14,
-  cellHorizontalPadding: 14,
   rowVerticalPaddingScale: 0.95,
   spacing: 7,
 };
-const lightTheme = themeQuartz.withParams({
-  ...common, accentColor: "#4f46e5", backgroundColor: "#ffffff", foregroundColor: "#334155",
+// 글자 크기 — 모바일은 셀/헤더 글자를 전체적으로 축소해 가로형 뷰 가독성↑.
+//   (행 높이·spacing은 유지 → 썸네일 34px 등 레이아웃 보호. FitText 기준값도 이 fontSize를 따름.)
+const sizeDesktop = { fontSize: 13, headerFontSize: 12, cellHorizontalPadding: 14 };
+const sizeMobile = { fontSize: 11, headerFontSize: 10, cellHorizontalPadding: 9 };
+const lightParams = {
+  accentColor: "#4f46e5", backgroundColor: "#ffffff", foregroundColor: "#334155",
   borderColor: "#eef2f7", headerBackgroundColor: "#f8fafc", headerTextColor: "#64748b",
   rowHoverColor: "#f5f6fb", oddRowBackgroundColor: "#ffffff", wrapperBorder: "#e7ebf1",
-});
-const darkTheme = themeQuartz.withParams({
-  ...common, accentColor: "#818cf8", backgroundColor: "#0f172a", foregroundColor: "#cbd5e1",
+};
+const darkParams = {
+  accentColor: "#818cf8", backgroundColor: "#0f172a", foregroundColor: "#cbd5e1",
   borderColor: "#1e293b", headerBackgroundColor: "#111c31", headerTextColor: "#94a3b8",
   rowHoverColor: "#1b2740", oddRowBackgroundColor: "#0f172a", wrapperBorder: "#1e293b",
-});
+};
+const lightTheme = themeQuartz.withParams({ ...baseCommon, ...sizeDesktop, ...lightParams });
+const lightThemeM = themeQuartz.withParams({ ...baseCommon, ...sizeMobile, ...lightParams });
+const darkTheme = themeQuartz.withParams({ ...baseCommon, ...sizeDesktop, ...darkParams });
+const darkThemeM = themeQuartz.withParams({ ...baseCommon, ...sizeMobile, ...darkParams });
 
 export type { ColDef };
 
@@ -87,12 +92,13 @@ function FitText(props: any) {
     const el = ref.current; if (!el) return;
     const cell = el.parentElement; if (!cell) return;
     const fit = () => {
-      el.style.fontSize = ""; // base(13px)로 리셋 후 자연 폭 측정
+      el.style.fontSize = ""; // 테마 기본(PC 13 / 모바일 11)으로 리셋 후 자연 폭 측정
+      const base = parseFloat(getComputedStyle(el).fontSize) || 13;   // 현재 테마 셀 글자 크기
       const cs = getComputedStyle(cell);
       const avail = cell.clientWidth - parseFloat(cs.paddingLeft || "0") - parseFloat(cs.paddingRight || "0");
       const natural = el.scrollWidth;
       if (avail > 0 && natural > avail) {
-        el.style.fontSize = `${Math.max(8, Math.min(13, (avail / natural) * 13))}px`;
+        el.style.fontSize = `${Math.max(8, Math.min(base, (avail / natural) * base))}px`;
       }
     };
     fit();
@@ -382,7 +388,7 @@ export default function DataGrid({
   return (
     <div ref={wrapRef} style={{ width: "100%", height, position: "relative", userSelect: "none" }}>
       <AgGridReact
-        theme={dark ? darkTheme : lightTheme}
+        theme={dark ? (isMobile ? darkThemeM : darkTheme) : (isMobile ? lightThemeM : lightTheme)}
         rowData={rows}
         columnDefs={gridCols}
         pinnedTopRowData={pinnedTop}
