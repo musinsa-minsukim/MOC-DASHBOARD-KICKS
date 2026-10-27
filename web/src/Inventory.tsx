@@ -3,7 +3,7 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 import { Boxes, Warehouse, Package, Tags, Download, Palette, Grid2x2, RefreshCw } from "lucide-react";
 import { api, num, getToken, toQuery, type Filters } from "./lib";
 import { Card, CardBody, SectionTitle, Spinner, FitText } from "./ui";
-import DataGrid, { colText, colNum } from "./Grid";
+import DataGrid, { colText, colNum, colThumb, colGoodsLink } from "./Grid";
 import { CatTick } from "./chartlabels";
 
 type Meta = { shop_types: string[]; business_types: string[] };
@@ -153,9 +153,10 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
 
   const hubcols: string[] = d?.hubcols ?? [];
   const invCols = useMemo(() => [
+    colThumb("img_url", "이미지", { pinned: "left" }),
     colText("sku_id", "SKU ID", { pinned: "left", minWidth: 124, headerTooltip: "SCM-HUB SKU ID (옵션·바코드 단위) · 매입·위탁 모두 · 미매핑은 공란" }),
     colText("brand_nm", "브랜드", { pinned: "left", minWidth: 110 }),
-    colText("goods_nm", "상품", { pinned: "left", minWidth: 190 }),
+    colGoodsLink("goods_nm", "상품", { pinned: "left", minWidth: 190 }),
     colText("매장명", "매장명", {
       pinned: "left", minWidth: 118, headerTooltip: "매장별 행 · '(창고 대기)'=선택 매장 재고 없이 허브에만 있는 상품",
       cellStyle: (p: any): any => (p.value === "(창고 대기)" ? { color: dark ? "#94a3b8" : "#94a3b8", fontStyle: "italic" } : { fontWeight: 600 }),
