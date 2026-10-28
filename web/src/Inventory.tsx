@@ -115,7 +115,10 @@ async function brandCsv(qs: string) {
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "inventory_by_brand_store.csv"; a.click(); URL.revokeObjectURL(a.href);
 }
 
-export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta; dark: boolean; filters: Filters; onPick?: (k: keyof Filters, v: string) => void }) {
+// "YYYY-MM-DDTHH:MM" → "MM-DD HH:MM" (없으면 —)
+const fmtRt = (s?: string | null) => (s ? s.slice(5).replace("T", " ") : "—");
+
+export default function Inventory({ meta, dark, filters, status, onPick }: { meta: Meta; dark: boolean; filters: Filters; status?: any; onPick?: (k: keyof Filters, v: string) => void }) {
   void meta;
   const activeStores = filters.store || [];
   const storeOp = (name: string) => (activeStores.length ? (activeStores.includes(name) ? 1 : 0.28) : 1);
@@ -272,6 +275,12 @@ export default function Inventory({ meta, dark, filters, onPick }: { meta: Meta;
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-slate-400 dark:text-slate-400">최신 스냅샷 · 상품·옵션(barcode) 단위 · 위탁 점재고=SCM-HUB 실시간(판매가능재고) · 창고: MFS / 허브1000(온라인·오프라인·반품) / 허브1700 · 기간 필터 미적용</p>
         <div className="flex items-center gap-2">
+          {/* 재고 REFRESH가 실제 갱신하는 대상(위탁 실시간 재고·STO 이동)의 최근 갱신 시각.
+              상단 '재고 데이터'는 야간 전체 스냅샷(editorial inventory_pivot)이라 이 버튼과 무관. */}
+          <span className="hidden text-[11px] leading-tight text-slate-400 sm:inline dark:text-slate-500"
+                title="재고 REFRESH 버튼이 갱신하는 위탁 실시간 재고(SCM-HUB)·STO 이동의 최근 갱신 시각 (GitHub Actions, 완료까지 수 분). 상단의 '재고 데이터 기준일/갱신'은 야간 editorial 전체 스냅샷이라 이 버튼으로는 바뀌지 않음">
+            위탁 실시간 갱신 {fmtRt(status?.scm_store_stock_refreshed_at)} · 이동 {fmtRt(status?.store_moves_refreshed_at)}
+          </span>
           {refreshMsg && <span className="text-xs text-slate-500 dark:text-slate-400">{refreshMsg}</span>}
           {loading && <Spinner className="h-4 w-4" />}
           <button onClick={doRefresh} disabled={refreshing}

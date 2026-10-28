@@ -264,6 +264,8 @@ def status() -> dict:
     # (갱신시각 = parquet 파일 mtime, 판매 데이터일 = 캐시 라이브 MAX)
     for nm, key in (("sales", "sales_refreshed_at"),
                     ("inventory_pivot", "inventory_pivot_refreshed_at"),
+                    ("scm_store_stock", "scm_store_stock_refreshed_at"),   # 재고 REFRESH 버튼이 실제 갱신하는 위탁 실시간 재고
+                    ("store_moves", "store_moves_refreshed_at"),           # 〃 STO 이동/이력
                     ("customer", "customer_refreshed_at"),
                     ("goods_master", "goods_master_refreshed_at")):
         t = _mtime_kst(nm)

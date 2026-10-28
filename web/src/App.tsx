@@ -292,7 +292,7 @@ export default function App() {
             {view === "sales" && <Dashboard key={dataVersion} meta={meta} dark={dark} filters={filters} onPick={crossFilter} />}
             {view === "drill" && <Drill key={dataVersion} meta={meta} dark={dark} filters={filters} onPick={crossFilter} />}
             {view === "customer" && <Customer key={dataVersion} meta={meta} dark={dark} filters={filters} onPick={crossFilter} />}
-            {view === "inventory" && <Inventory key={dataVersion} meta={meta} dark={dark} filters={filters} onPick={crossFilter} />}
+            {view === "inventory" && <Inventory key={dataVersion} meta={meta} dark={dark} filters={filters} status={status} onPick={crossFilter} />}
             {view === "compare" && <Compare key={dataVersion} meta={meta} filters={filters} dark={dark} onPick={crossFilter} />}
             {view === "target" && <Target key={dataVersion} meta={meta} dark={dark} />}
             {view === "pnl" && <Pnl key={dataVersion} meta={meta} dark={dark} filters={filters} />}
