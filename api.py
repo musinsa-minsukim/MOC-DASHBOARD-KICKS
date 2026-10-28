@@ -349,39 +349,54 @@ def refresh_sales_ep(_: str = Depends(require_user), __: None = Depends(require_
     return {"started": True, "running": True}
 
 
-@app.post("/api/refresh/snapshot")
-def refresh_snapshot_ep(_: str = Depends(require_user)):
-    """재고 REFRESH — GitHub Actions 재고 갱신(refresh-stock.yml) 워크플로를 dispatch로 트리거.
-       무거운 위탁 실시간 재고(scm_store_stock)+STO 이동(store_moves)만 16GB 러너에서 재빌드 → GCS 갱신 →
-       다음 조회부터 반영(Cloud Run 4Gi OOM 회피). 토큰 GH_DISPATCH_TOKEN(actions:write) 필요(Secret Manager)."""
+# GitHub Actions 워크플로 dispatch — 토큰은 GH_DISPATCH_TOKEN(Secret Manager, actions:write) 한 곳에서만 관리.
+#   재고 REFRESH 버튼(/api/refresh/snapshot)과 Cloud Scheduler(/api/cron/dispatch)가 공용.
+#   화이트리스트로만 트리거(임의 워크플로 dispatch 방지).
+_GH_WORKFLOWS = {
+    "sales": "refresh-sales.yml",   # 판매·영수증 증분(시간별)
+    "stock": "refresh-stock.yml",   # 위탁 실시간 재고 + STO 이동(재고 버튼)
+    "full": "refresh.yml",          # 야간 전체(판매 증분 + 스냅샷 전체)
+    "ips": "refresh-ips.yml",       # 통합 IPS
+}
+
+
+def _gh_dispatch(workflow_file: str) -> int:
+    """지정 워크플로를 main 브랜치에서 dispatch. 성공 시 GitHub 응답코드(보통 204), 실패 시 HTTPException.
+       토큰은 GH_DISPATCH_TOKEN(Secret Manager). .strip()으로 시크릿 끝 개행/공백 제거(→ 401 방지)."""
     import urllib.request
     import urllib.error
     import json as _json
-    token = os.environ.get("GH_DISPATCH_TOKEN", "").strip()   # 시크릿 끝 개행/공백 제거(echo 저장 시 \n 혼입 → 401 방지)
+    token = os.environ.get("GH_DISPATCH_TOKEN", "").strip()
     repo = os.environ.get("GH_REPO", "musinsa-minsukim/MOC-DASHBOARD-KICKS")
     if not token:
         raise HTTPException(status_code=503, detail="GH_DISPATCH_TOKEN 미설정 — Cloud Run 시크릿 추가 필요")
-    url = f"https://api.github.com/repos/{repo}/actions/workflows/refresh-stock.yml/dispatches"
-    body = _json.dumps({"ref": "main"}).encode()   # 위탁 재고+이동 스냅샷만 재빌드(분리됨)
-    req = urllib.request.Request(url, data=body, method="POST", headers={
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/dispatches"
+    req = urllib.request.Request(url, data=_json.dumps({"ref": "main"}).encode(), method="POST", headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "mok-dashboard"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            code = resp.status
-        return {"ok": True, "status": code, "message": "재고 갱신 요청됨 — 수 분 후 반영(GitHub Actions)"}
+            return resp.status
     except urllib.error.HTTPError as e:
         body = ""
         try:
             body = e.read().decode("utf-8", "replace")[:300]
         except Exception:
             pass
-        logging.error("snapshot dispatch HTTPError %s: %s", e.code, body)
-        # GitHub 응답 메시지 노출: 401 Bad credentials=토큰 무효/만료, 403=권한부족, 404=토큰이 레포 접근불가
+        logging.error("gh dispatch(%s) HTTPError %s: %s", workflow_file, e.code, body)
+        # 401 Bad credentials=토큰 무효/만료, 403=권한부족, 404=토큰이 레포 접근불가
         raise HTTPException(status_code=502, detail=f"dispatch 실패: HTTP {e.code} — {body or e.reason}")
     except Exception as e:
-        logging.exception("snapshot dispatch failed")
+        logging.exception("gh dispatch(%s) failed", workflow_file)
         raise HTTPException(status_code=502, detail=f"dispatch 실패: {str(e)[:200]}")
+
+
+@app.post("/api/refresh/snapshot")
+def refresh_snapshot_ep(_: str = Depends(require_user)):
+    """재고 REFRESH — refresh-stock.yml dispatch(위탁 실시간 재고+STO 이동 재빌드 → GCS → 다음 조회 반영).
+       Cloud Run 4Gi OOM 회피 위해 무거운 재빌드는 GitHub Actions(16GB)에서 수행."""
+    code = _gh_dispatch(_GH_WORKFLOWS["stock"])
+    return {"ok": True, "status": code, "message": "재고 갱신 요청됨 — 수 분 후 반영(GitHub Actions)"}
 
 
 # ----------------------------------------------------------------- Cron 갱신 (Cloud Scheduler)
@@ -428,6 +443,18 @@ def cron_refresh(mode: str = Query("sales"), names: str = Query(""), _: None = D
     finally:
         _refresh["running"] = False
         _refresh["finished_at"] = store.now_kst_min()
+
+
+@app.post("/api/cron/dispatch")
+def cron_dispatch(wf: str = Query("sales"), _: None = Depends(require_cron)):
+    """Cloud Scheduler 전용 — 지정 GitHub 워크플로를 dispatch(토큰은 Cloud Run의 Secret Manager GH_DISPATCH_TOKEN).
+       스케줄러가 PAT를 직접 들지 않게 해 토큰을 Secret Manager 한 곳에서만 관리(만료/노출/개행 깨짐 방지).
+       인증은 X-Cron-Token(require_cron). wf ∈ sales|stock|full|ips."""
+    workflow = _GH_WORKFLOWS.get(wf)
+    if not workflow:
+        raise HTTPException(status_code=400, detail=f"unknown wf: {wf} (allowed: {','.join(_GH_WORKFLOWS)})")
+    code = _gh_dispatch(workflow)
+    return {"ok": True, "wf": wf, "workflow": workflow, "status": code}
 
 
 # 자동 갱신 스케줄러 — 배포 환경에서 PC 없이 상시 최신 유지 (env AUTO_REFRESH_MINUTES).
