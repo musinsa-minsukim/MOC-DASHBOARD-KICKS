@@ -355,8 +355,9 @@ def refresh_snapshot_ep(_: str = Depends(require_user)):
        무거운 위탁 실시간 재고(scm_store_stock)+STO 이동(store_moves)만 16GB 러너에서 재빌드 → GCS 갱신 →
        다음 조회부터 반영(Cloud Run 4Gi OOM 회피). 토큰 GH_DISPATCH_TOKEN(actions:write) 필요(Secret Manager)."""
     import urllib.request
+    import urllib.error
     import json as _json
-    token = os.environ.get("GH_DISPATCH_TOKEN", "")
+    token = os.environ.get("GH_DISPATCH_TOKEN", "").strip()   # 시크릿 끝 개행/공백 제거(echo 저장 시 \n 혼입 → 401 방지)
     repo = os.environ.get("GH_REPO", "musinsa-minsukim/MOC-DASHBOARD-KICKS")
     if not token:
         raise HTTPException(status_code=503, detail="GH_DISPATCH_TOKEN 미설정 — Cloud Run 시크릿 추가 필요")
@@ -369,6 +370,15 @@ def refresh_snapshot_ep(_: str = Depends(require_user)):
         with urllib.request.urlopen(req, timeout=15) as resp:
             code = resp.status
         return {"ok": True, "status": code, "message": "재고 갱신 요청됨 — 수 분 후 반영(GitHub Actions)"}
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            pass
+        logging.error("snapshot dispatch HTTPError %s: %s", e.code, body)
+        # GitHub 응답 메시지 노출: 401 Bad credentials=토큰 무효/만료, 403=권한부족, 404=토큰이 레포 접근불가
+        raise HTTPException(status_code=502, detail=f"dispatch 실패: HTTP {e.code} — {body or e.reason}")
     except Exception as e:
         logging.exception("snapshot dispatch failed")
         raise HTTPException(status_code=502, detail=f"dispatch 실패: {str(e)[:200]}")
