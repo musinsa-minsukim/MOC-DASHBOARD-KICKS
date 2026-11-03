@@ -22,9 +22,11 @@ from databricks import sql
 
 def _new_connection():
     # 배포(서버/Cloud Run): 환경변수 우선. 로컬: .streamlit/secrets.toml 폴백.
-    host = os.environ.get("DATABRICKS_HOST")
-    http_path = os.environ.get("DATABRICKS_HTTP_PATH")
-    token = os.environ.get("DATABRICKS_TOKEN")
+    #   .strip(): 시크릿/env에 끝 개행·공백이 섞이면(예: GitHub Secret·echo 저장 시 \n) access token이
+    #   'dapi...\n'이 돼 Databricks가 'Invalid access token'으로 거부 → 사전 제거로 방지.
+    host = (os.environ.get("DATABRICKS_HOST") or "").strip() or None
+    http_path = (os.environ.get("DATABRICKS_HTTP_PATH") or "").strip() or None
+    token = (os.environ.get("DATABRICKS_TOKEN") or "").strip() or None
     if not (host and http_path and token):
         c = st.secrets["databricks"]
         host, http_path, token = c["host"], c["http_path"], c["token"]
