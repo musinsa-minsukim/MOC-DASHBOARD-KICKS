@@ -1391,22 +1391,43 @@ def _sales_goods_csv_impl(f: dict, io, csv):
 @app.get("/api/sales/brands.csv")
 def sales_brands_csv(f: dict = Depends(get_filters),
                      _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """브랜드별 상세 CSV — 매장별 long. (브랜드 × 매장)당 1행: 그 매장의 GMV·판매수량과 그 매장의 재고.
-       GMV/판매는 기간필터 반영, 재고(점재고)는 스냅샷(카테/브랜드/상품명 필터의 goods만, 기간 무관)."""
+    """브랜드별 상세 CSV — **연·월 × 브랜드 × 매장** long. (연도·월·업체코드·브랜드코드·브랜드·매장)당 1행.
+       GMV/판매는 기간필터 반영을 연·월로 분해. 업체코드=company_id, 브랜드코드=brand_id.
+       재고(점재고)는 '현재 스냅샷'(월 무관) — 각 월 행에 같은 현재고가 반복되니 월 합산 금지.
+       판매 없이 재고만 있는 (브랜드×매장)은 연도·월·코드 공란으로 표기(기존 FULL OUTER 유지)."""
     import io, csv, traceback
+
+    def _code(v):   # company_id/brand_id(문자열 코드) → 공란 안전
+        if v is None:
+            return ""
+        if isinstance(v, float) and math.isnan(v):
+            return ""
+        return str(v)
+
+    def _ym(v):     # 연/월(INT, 재고전용행은 NULL) → 공란 안전
+        if v is None:
+            return ""
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return ""
+        return "" if math.isnan(fv) else int(fv)
+
     try:
         where, psales = build_where(f)
         f_nodate = {**f, "date_from": None, "date_to": None}   # 재고 goods 스코프는 날짜 제외(현재고)
         wnd, pnd = build_where(f_nodate)
         df = store.query(f"""
             WITH s AS (
-                SELECT business_type, brand_nm, store_name,
+                SELECT CAST(year(sales_date) AS INT) AS yr, CAST(month(sales_date) AS INT) AS mo,
+                       business_type, company_id, brand_id, brand_nm, store_name,
                        CAST(sum(qty) AS DOUBLE) qty, CAST(sum(gmv) AS DOUBLE) gmv,
                        CAST(sum(normal_amt) AS DOUBLE) normal_amt, CAST(sum(pay) AS DOUBLE) pay,
                        CAST(sum(foreign_gmv) AS DOUBLE) foreign_gmv
-                FROM sales{where} GROUP BY 1, 2, 3 HAVING sum(qty) <> 0 OR sum(gmv) <> 0
+                FROM sales{where} GROUP BY 1, 2, 3, 4, 5, 6, 7 HAVING sum(qty) <> 0 OR sum(gmv) <> 0
             ),
             bbiz AS (SELECT brand_nm, any_value(business_type) bt FROM s GROUP BY brand_nm),
+            bcode AS (SELECT brand_nm, any_value(company_id) cid, any_value(brand_id) bid FROM s GROUP BY brand_nm),
             gset AS (SELECT DISTINCT goods_no FROM sales{wnd}),
             dmap AS (SELECT DISTINCT goods_no, brand_nm FROM sales),
             k AS (
@@ -1417,7 +1438,10 @@ def sales_brands_csv(f: dict = Depends(get_filters),
                   AND dmap.brand_nm IN (SELECT brand_nm FROM s)
                 GROUP BY 1, 2
             )
-            SELECT COALESCE(bbiz.bt, '') business_type,
+            SELECT s.yr AS yr, s.mo AS mo,
+                   COALESCE(bbiz.bt, '') business_type,
+                   COALESCE(s.company_id, bcode.cid) company_id,
+                   COALESCE(s.brand_id, bcode.bid) brand_id,
                    COALESCE(s.brand_nm, k.brand_nm) brand_nm,
                    COALESCE(s.store_name, k.store_name) store_name,
                    COALESCE(s.qty, 0) qty, COALESCE(s.gmv, 0) gmv, COALESCE(s.normal_amt, 0) normal_amt,
@@ -1425,18 +1449,20 @@ def sales_brands_csv(f: dict = Depends(get_filters),
                    COALESCE(k.stock, 0) stock
             FROM s FULL OUTER JOIN k ON k.brand_nm = s.brand_nm AND k.store_name = s.store_name
             LEFT JOIN bbiz ON bbiz.brand_nm = COALESCE(s.brand_nm, k.brand_nm)
-            ORDER BY brand_nm, gmv DESC, store_name""", psales + pnd)
+            LEFT JOIN bcode ON bcode.brand_nm = COALESCE(s.brand_nm, k.brand_nm)
+            ORDER BY brand_nm, yr NULLS LAST, mo NULLS LAST, gmv DESC, store_name""", psales + pnd)
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["사업구분", "브랜드", "매장", "순판매수량", "GMV", "정상가매출", "실결제",
-                    "외국인GMV", "할인율%", "점재고"])
+        w.writerow(["연도", "월", "사업구분", "업체코드", "브랜드코드", "브랜드", "매장", "순판매수량", "GMV",
+                    "정상가매출", "실결제", "외국인GMV", "할인율%", "점재고"])
         for r in df.itertuples():
             gmv, normal = _num(r.gmv), _num(r.normal_amt)
-            w.writerow([r.business_type, r.brand_nm, r.store_name, int(_num(r.qty)), int(gmv), int(normal),
+            w.writerow([_ym(r.yr), _ym(r.mo), r.business_type, _code(r.company_id), _code(r.brand_id),
+                        r.brand_nm, r.store_name, int(_num(r.qty)), int(gmv), int(normal),
                         int(_num(r.pay)), int(_num(r.foreign_gmv)),
                         round((1 - gmv / normal) * 100, 1) if normal else 0, int(_num(r.stock))])
         data = ("﻿" + buf.getvalue()).encode("utf-8")
-        return _csv_response(data, "offline_sales_by_brand_store.csv")
+        return _csv_response(data, "offline_sales_by_brand_store_ym.csv")
     except Exception as e:
         logging.error("sales_brands_csv failed: %s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"브랜드 CSV 오류: {type(e).__name__}: {e}")
