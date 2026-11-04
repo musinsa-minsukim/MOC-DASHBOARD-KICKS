@@ -1391,27 +1391,18 @@ def _sales_goods_csv_impl(f: dict, io, csv):
 @app.get("/api/sales/brands.csv")
 def sales_brands_csv(f: dict = Depends(get_filters),
                      _: str = Depends(require_user), __: None = Depends(require_ready)):
-    """브랜드별 상세 CSV — **연·월 × 브랜드 × 매장** long. (연도·월·업체코드·브랜드코드·브랜드·매장)당 1행.
-       GMV/판매는 기간필터 반영을 연·월로 분해. 업체코드=company_id, 브랜드코드=brand_id.
+    """브랜드별 상세 CSV — **연월(YYYY-MM) × 브랜드 × 매장** long. (연월·업체코드·브랜드코드·브랜드·매장)당 1행.
+       GMV/판매는 기간필터 반영을 연월로 분해. 업체코드=company_id, 브랜드코드=brand_id.
        재고(점재고)는 '현재 스냅샷'(월 무관) — 각 월 행에 같은 현재고가 반복되니 월 합산 금지.
-       판매 없이 재고만 있는 (브랜드×매장)은 연도·월·코드 공란으로 표기(기존 FULL OUTER 유지)."""
+       판매 없이 재고만 있는 (브랜드×매장)은 연월·코드 공란으로 표기(기존 FULL OUTER 유지)."""
     import io, csv, traceback
 
-    def _code(v):   # company_id/brand_id(문자열 코드) → 공란 안전
+    def _code(v):   # company_id/brand_id/연월(문자열) → 공란 안전
         if v is None:
             return ""
         if isinstance(v, float) and math.isnan(v):
             return ""
         return str(v)
-
-    def _ym(v):     # 연/월(INT, 재고전용행은 NULL) → 공란 안전
-        if v is None:
-            return ""
-        try:
-            fv = float(v)
-        except (TypeError, ValueError):
-            return ""
-        return "" if math.isnan(fv) else int(fv)
 
     try:
         where, psales = build_where(f)
@@ -1419,12 +1410,12 @@ def sales_brands_csv(f: dict = Depends(get_filters),
         wnd, pnd = build_where(f_nodate)
         df = store.query(f"""
             WITH s AS (
-                SELECT CAST(year(sales_date) AS INT) AS yr, CAST(month(sales_date) AS INT) AS mo,
+                SELECT strftime(sales_date, '%Y-%m') AS ym,
                        business_type, company_id, brand_id, brand_nm, store_name,
                        CAST(sum(qty) AS DOUBLE) qty, CAST(sum(gmv) AS DOUBLE) gmv,
                        CAST(sum(normal_amt) AS DOUBLE) normal_amt, CAST(sum(pay) AS DOUBLE) pay,
                        CAST(sum(foreign_gmv) AS DOUBLE) foreign_gmv
-                FROM sales{where} GROUP BY 1, 2, 3, 4, 5, 6, 7 HAVING sum(qty) <> 0 OR sum(gmv) <> 0
+                FROM sales{where} GROUP BY 1, 2, 3, 4, 5, 6 HAVING sum(qty) <> 0 OR sum(gmv) <> 0
             ),
             bbiz AS (SELECT brand_nm, any_value(business_type) bt FROM s GROUP BY brand_nm),
             bcode AS (SELECT brand_nm, any_value(company_id) cid, any_value(brand_id) bid FROM s GROUP BY brand_nm),
@@ -1438,7 +1429,7 @@ def sales_brands_csv(f: dict = Depends(get_filters),
                   AND dmap.brand_nm IN (SELECT brand_nm FROM s)
                 GROUP BY 1, 2
             )
-            SELECT s.yr AS yr, s.mo AS mo,
+            SELECT s.ym AS ym,
                    COALESCE(bbiz.bt, '') business_type,
                    COALESCE(s.company_id, bcode.cid) company_id,
                    COALESCE(s.brand_id, bcode.bid) brand_id,
@@ -1450,14 +1441,14 @@ def sales_brands_csv(f: dict = Depends(get_filters),
             FROM s FULL OUTER JOIN k ON k.brand_nm = s.brand_nm AND k.store_name = s.store_name
             LEFT JOIN bbiz ON bbiz.brand_nm = COALESCE(s.brand_nm, k.brand_nm)
             LEFT JOIN bcode ON bcode.brand_nm = COALESCE(s.brand_nm, k.brand_nm)
-            ORDER BY brand_nm, yr NULLS LAST, mo NULLS LAST, gmv DESC, store_name""", psales + pnd)
+            ORDER BY brand_nm, ym NULLS LAST, gmv DESC, store_name""", psales + pnd)
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["연도", "월", "사업구분", "업체코드", "브랜드코드", "브랜드", "매장", "순판매수량", "GMV",
+        w.writerow(["연월", "사업구분", "업체코드", "브랜드코드", "브랜드", "매장", "순판매수량", "GMV",
                     "정상가매출", "실결제", "외국인GMV", "할인율%", "점재고"])
         for r in df.itertuples():
             gmv, normal = _num(r.gmv), _num(r.normal_amt)
-            w.writerow([_ym(r.yr), _ym(r.mo), r.business_type, _code(r.company_id), _code(r.brand_id),
+            w.writerow([_code(r.ym), r.business_type, _code(r.company_id), _code(r.brand_id),
                         r.brand_nm, r.store_name, int(_num(r.qty)), int(gmv), int(normal),
                         int(_num(r.pay)), int(_num(r.foreign_gmv)),
                         round((1 - gmv / normal) * 100, 1) if normal else 0, int(_num(r.stock))])
