@@ -95,6 +95,9 @@ export function emptyFilters(dateFrom: string, dateTo: string): Filters {
 export const api = {
   login: (username: string, password: string) =>
     req("/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  config: () => req("/config"),
+  googleLogin: (credential: string) =>
+    req("/auth/google", { method: "POST", body: JSON.stringify({ credential }) }),
   meta: () => req("/meta"),
   status: () => req("/status"),
   refreshSales: () => req("/refresh/sales", { method: "POST" }),

@@ -107,6 +107,20 @@ class LoginBody(BaseModel):
     password: str
 
 
+class GoogleAuthBody(BaseModel):
+    credential: str
+
+
+# 사내 구글 로그인(OAuth/OIDC) — 클라이언트ID는 공개값(비밀 아님), 환경변수 주입.
+#   GOOGLE_HD: 허용 도메인(@musinsa.com만 접근). DISABLE_PASSWORD_LOGIN=1 이면 비밀번호 로그인 차단(구글 전용).
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_HD = os.environ.get("GOOGLE_HD", "musinsa.com").strip().lower()
+
+
+def _password_login_enabled() -> bool:
+    return os.environ.get("DISABLE_PASSWORD_LOGIN") != "1"
+
+
 # ----------------------------------------------------------------- 필터 → WHERE
 _IN_COLS = {
     "biz": "business_type", "type": "shop_type", "store": "store_name", "brand": "brand_nm",
@@ -505,12 +519,40 @@ def _start_auto_refresh():
         logging.warning("auto-refresh enabled: every %s min (snapshots daily)", m)
 
 
+@app.get("/api/config")
+def client_config():
+    """로그인 UI용 공개 설정(비밀 아님) — 구글 클라이언트ID·허용 도메인·비밀번호 로그인 가능 여부."""
+    return {"google_client_id": GOOGLE_CLIENT_ID, "google_hd": GOOGLE_HD,
+            "password_login": _password_login_enabled()}
+
+
 @app.post("/api/login")
 def login(body: LoginBody):
+    if not _password_login_enabled():
+        raise HTTPException(status_code=403, detail="비밀번호 로그인 비활성화 — 구글 로그인을 사용하세요.")
     u = _users().get(body.username)
     if not u or not bcrypt.checkpw(body.password.encode(), str(u["password"]).encode()):
         raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
     return {"token": make_token(body.username), "name": u.get("name", body.username)}
+
+
+@app.post("/api/auth/google")
+def auth_google(body: GoogleAuthBody):
+    """Google Identity Services ID 토큰 검증 → @{GOOGLE_HD} 계정만 기존 세션 토큰(HMAC) 발급.
+       클라이언트ID(aud)·서명·만료·발급자는 google-auth가 검증, 도메인은 email로 2차 확인."""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="구글 로그인 미설정(GOOGLE_CLIENT_ID 환경변수)")
+    try:
+        from google.oauth2 import id_token as _gidt
+        from google.auth.transport import requests as _greq
+        info = _gidt.verify_oauth2_token(body.credential, _greq.Request(), GOOGLE_CLIENT_ID)
+    except Exception as e:
+        logging.warning("google id_token 검증 실패: %s", e)
+        raise HTTPException(status_code=401, detail="구글 인증 실패")
+    email = str(info.get("email", "")).lower()
+    if not info.get("email_verified") or not email.endswith("@" + GOOGLE_HD):
+        raise HTTPException(status_code=403, detail=f"{GOOGLE_HD} 계정만 접근할 수 있습니다.")
+    return {"token": make_token(email), "name": info.get("name") or email}
 
 
 @app.get("/api/meta")

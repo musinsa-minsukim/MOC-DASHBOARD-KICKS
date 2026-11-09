@@ -6,3 +6,5 @@ truststore>=0.9
 duckdb>=1.0
 streamlit-authenticator>=0.4
 PyYAML>=6.0
+google-auth>=2.0
+requests>=2.28
