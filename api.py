@@ -86,14 +86,52 @@ def verify_token(token: str) -> str | None:
         return None
 
 
+# ── 서비스 토큰(기계용, MCP 등) — 사람 세션과 별도 키로 서명. 읽기 전용·장수명(기본 1년).
+#    SERVICE_TOKEN_KEY가 cookie-key와 달라 사람 세션을 전부 끊어도(쿠키키 회전) 독립 유지.
+SERVICE_TOKEN_KEY = os.environ.get("SERVICE_TOKEN_KEY", "").strip()
+SVC_ROLE = "svc:ro"   # read-only 서비스 ID
+
+
+def make_service_token(days: int = 365) -> str:
+    exp = int(time.time()) + days * 86400
+    msg = f"{SVC_ROLE}|{exp}"
+    sig = hmac.new(SERVICE_TOKEN_KEY.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{msg}|{sig}".encode()).decode()
+
+
+def verify_service_token(token: str) -> str | None:
+    if not SERVICE_TOKEN_KEY:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(token.encode()).decode()
+        role, exp, sig = raw.split("|")
+        if role != SVC_ROLE or int(exp) < time.time():
+            return None
+        good = hmac.new(SERVICE_TOKEN_KEY.encode(), f"{role}|{exp}".encode(), hashlib.sha256).hexdigest()
+        return SVC_ROLE if hmac.compare_digest(good, sig) else None
+    except Exception:
+        return None
+
+
 def require_user(authorization: str = Header(default="")) -> str:
     # 인증 우회는 명시적 비프로덕션(APP_ENV)에서만 허용 — 프로덕션에선 플래그를 무시하고 항상 토큰 요구.
     if os.environ.get("API_NO_AUTH") == "1" and os.environ.get("APP_ENV", "").lower() in {"dev", "test", "local"}:
         logging.warning("AUTH BYPASS active (API_NO_AUTH=1, APP_ENV non-prod)")
         return "dev"
-    user = verify_token(authorization.replace("Bearer ", "").strip())
-    if not user:
-        raise HTTPException(status_code=401, detail="unauthorized")
+    tok = authorization.replace("Bearer ", "").strip()
+    user = verify_token(tok)
+    if user:
+        return user
+    svc = verify_service_token(tok)   # 기계용 읽기전용 서비스 토큰(변경 엔드포인트에서 별도 차단)
+    if svc:
+        return svc
+    raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def require_writer(user: str = Depends(require_user)) -> str:
+    """변경(쓰기) 엔드포인트용 — 읽기 전용 서비스 토큰(svc:ro)은 거부."""
+    if user == SVC_ROLE:
+        raise HTTPException(status_code=403, detail="읽기 전용 서비스 토큰은 변경 작업을 할 수 없습니다.")
     return user
 
 
@@ -355,7 +393,7 @@ def _run_sales_refresh():
 
 
 @app.post("/api/refresh/sales")
-def refresh_sales_ep(_: str = Depends(require_user), __: None = Depends(require_ready)):
+def refresh_sales_ep(_: str = Depends(require_writer), __: None = Depends(require_ready)):
     """판매 데이터 증분 갱신을 백엔드에서 실행(백그라운드 스레드, 동시 1회). 진행상황은 /api/status."""
     if _refresh["running"]:
         return {"started": False, "running": True}
@@ -406,7 +444,7 @@ def _gh_dispatch(workflow_file: str) -> int:
 
 
 @app.post("/api/refresh/snapshot")
-def refresh_snapshot_ep(_: str = Depends(require_user)):
+def refresh_snapshot_ep(_: str = Depends(require_writer)):
     """재고 REFRESH — refresh-stock.yml dispatch(위탁 실시간 재고+STO 이동 재빌드 → GCS → 다음 조회 반영).
        Cloud Run 4Gi OOM 회피 위해 무거운 재빌드는 GitHub Actions(16GB)에서 수행."""
     code = _gh_dispatch(_GH_WORKFLOWS["stock"])
@@ -524,6 +562,17 @@ def client_config():
     """로그인 UI용 공개 설정(비밀 아님) — 구글 클라이언트ID·허용 도메인·비밀번호 로그인 가능 여부."""
     return {"google_client_id": GOOGLE_CLIENT_ID, "google_hd": GOOGLE_HD,
             "password_login": _password_login_enabled()}
+
+
+@app.post("/api/token/service")
+def issue_service_token(user: str = Depends(require_writer), days: int = 365):
+    """기계용(MCP 등) 읽기 전용 서비스 토큰 발급 — 로그인한 사람만 호출 가능(읽기전용 토큰으론 불가).
+       SERVICE_TOKEN_KEY로 서명(사람 세션 cookie-key와 독립). 기본 365일 만료. 값은 안전히 보관·필요시 키 교체로 무효화."""
+    if not SERVICE_TOKEN_KEY:
+        raise HTTPException(status_code=503, detail="SERVICE_TOKEN_KEY 미설정 — Cloud Run 환경변수 추가 필요")
+    d = max(1, min(int(days), 3650))   # 1일~10년 범위
+    return {"token": make_service_token(d), "scope": "read-only", "expires_days": d,
+            "issued_by": user, "note": "Authorization: Bearer <token> 로 읽기 전용 API 호출. 변경(refresh) 불가."}
 
 
 @app.post("/api/login")
