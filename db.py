@@ -1695,6 +1695,121 @@ def load_inventory_store_long() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# [신규·경량] 통합 재고 원장 team.scm.stock (SLS·IVL, 2026-11 이관) — 매입+위탁, 매장(STORE)+센터(FC)가 한 테이블.
+#   기존 5원천(editorial / sap_inventory / raw_erp_stock / mfs_stock_daily / scm_hub_goods_meta) 조인을 1쿼리로 대체하기 위한
+#   '추가' 로더. 기존 load_inventory* 는 그대로 둔다(소비처 전환은 설계 확정 후 탭 단위로).
+#   · grain = 거점(매장 or 센터) × goods_no.  team.scm.stock 은 SKU 단위라 barcode/옵션은 없음(→ team.scm.stock_detail).
+#   · 매장 = namespace 'STORE', root_node_id(문자) == shop_no → dim_store 로 대시보드 매장만.
+#   · 센터 = namespace 'FC' (여주/안성/이천… 20곳, root_node_id = 문자코드 NWH01 등).
+#   · 보유 = total_quantity (= 레거시 editorial sellable_qty / raw_erp wqty), 실가용 = remaining_quantity (할당 제외).
+#   · 매입/위탁 = goods_no → bizest.goods.com_id → partnerportal.company.margin_type (WONGA=매입, FEE=위탁).
+#   ⚠️ sku→goods 매핑은 is_rep_uid_musinsa=TRUE 만으로는 1:N 이 남는다(같은 uid·option_code 여러 개 = 1,626 SKU,
+#      2026-11-11 실측: 그대로 조인 시 STORE +18,585 / FC +318,584 과대) → 반드시 DISTINCT (sku_id, uid).
+#   ⚠️ total_quantity 는 음수가 있다(예: 쇼핑백 goods 3781910 이 매장마다 −수천). total_qty=원장 그대로,
+#      total_qty_pos=SKU×거점 단위로 음수를 0 처리한 합 — 어느 쪽을 화면에 쓸지는 소비처에서 고른다.
+# ---------------------------------------------------------------------------
+_STOCK_SKU_MAP = r"""
+sku_map AS (
+  SELECT DISTINCT sku_id, uid
+  FROM team.scm.mst_sku_mapping_uid_option_code
+  WHERE platform = 'MUSINSA' AND is_rep_uid_musinsa = TRUE
+)
+"""
+
+STOCK_LONG_COLS = ["namespace", "node_id", "node_name", "shop_type", "goods_no", "business_type",
+                   "total_qty", "total_qty_pos", "remaining_qty", "alloc_qty"]
+
+
+def _stock_long_sql(fc_scope: str = "store_goods") -> str:
+    """통합 원장 1쿼리. fc_scope: 'store_goods'=매장에 있는 상품의 센터재고만(기존 피벗 행 기준과 같은 취지) /
+       'all'=센터 전 상품 / 'none'=매장만."""
+    fc_filter = "AND m.uid IN (SELECT goods_no FROM st WHERE goods_no IS NOT NULL)" if fc_scope == "store_goods" else ""
+    fc_union = "" if fc_scope == "none" else f"""
+        UNION ALL
+        SELECT 'FC' AS namespace, s.root_node_id AS node_id, MAX(s.node_name) AS node_name, 'FC' AS shop_type,
+               m.uid AS goods_no,
+               SUM(s.total_quantity) AS total_qty, SUM(GREATEST(s.total_quantity, 0)) AS total_qty_pos,
+               SUM(s.remaining_quantity) AS remaining_qty,
+               SUM(s.allocation_quantity + s.virtual_allocation_quantity) AS alloc_qty
+        FROM team.scm.stock s
+        LEFT JOIN sku_map m ON m.sku_id = s.sku_id
+        WHERE s.namespace = 'FC' {fc_filter}
+        GROUP BY s.root_node_id, m.uid"""
+    return ("WITH " + DIM_STORE + "," + _STOCK_SKU_MAP + r""",
+        st AS (
+          SELECT 'STORE' AS namespace, CAST(ds.shop_no AS STRING) AS node_id, ds.store_name AS node_name,
+                 ds.shop_type AS shop_type, m.uid AS goods_no,
+                 SUM(s.total_quantity) AS total_qty, SUM(GREATEST(s.total_quantity, 0)) AS total_qty_pos,
+                 SUM(s.remaining_quantity) AS remaining_qty,
+                 SUM(s.allocation_quantity + s.virtual_allocation_quantity) AS alloc_qty
+          FROM team.scm.stock s
+          JOIN dim_store ds ON CAST(ds.shop_no AS STRING) = s.root_node_id   -- STORE root_node_id == shop_no
+          LEFT JOIN sku_map m ON m.sku_id = s.sku_id                         -- 미매핑 SKU 유지(goods_no NULL)
+          WHERE s.namespace = 'STORE'
+          GROUP BY ds.shop_no, ds.store_name, ds.shop_type, m.uid),
+        u AS (
+          SELECT * FROM st""" + fc_union + r""")
+        SELECT u.namespace, u.node_id, u.node_name, u.shop_type,
+               CAST(COALESCE(u.goods_no, 0) AS BIGINT) AS goods_no,
+               CASE c.margin_type WHEN 'WONGA' THEN '매입' WHEN 'FEE' THEN '위탁' ELSE '기타' END AS business_type,
+               CAST(u.total_qty AS DOUBLE)     AS total_qty,
+               CAST(u.total_qty_pos AS DOUBLE) AS total_qty_pos,
+               CAST(u.remaining_qty AS DOUBLE) AS remaining_qty,
+               CAST(u.alloc_qty AS DOUBLE)     AS alloc_qty
+        FROM u
+        LEFT JOIN musinsa.bizest.goods g          ON CAST(g.goods_no AS BIGINT) = u.goods_no
+        LEFT JOIN musinsa.partnerportal.company c ON c.com_id = g.com_id
+        WHERE u.total_qty <> 0 OR u.remaining_qty <> 0
+    """)
+
+
+def fetch_stock_long(fc_scope: str = "store_goods") -> pd.DataFrame:
+    """[신규·경량] 통합 재고(매장+센터, 매입+위탁) 롱포맷 — 거점 × goods_no 당 1행, Databricks 1쿼리.
+       열: namespace('STORE'|'FC') / node_id(매장=shop_no 문자, 센터=코드) / node_name(매장=dim_store store_name, 센터=센터명) /
+           shop_type / goods_no(미매핑 SKU=0) / business_type(매입|위탁|기타) /
+           total_qty(보유) / total_qty_pos(음수 SKU 0처리 보유) / remaining_qty(실가용) / alloc_qty(진할당+가할당).
+       attrs['data_ts'] = 원장 최신 갱신시각(KST 문자열). 캐시 데코레이터 없음(스냅샷/대사 전용 — store 가 parquet 로 보관)."""
+    df = run_df(_stock_long_sql(fc_scope))
+    if df is None or df.empty:
+        return pd.DataFrame(columns=STOCK_LONG_COLS)
+    df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
+    for c in ("total_qty", "total_qty_pos", "remaining_qty", "alloc_qty"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    for c in ("namespace", "node_id", "node_name", "shop_type", "business_type"):
+        df[c] = df[c].fillna("").astype(str)
+    df = df[STOCK_LONG_COLS]
+    try:   # 원장 기준시각(매시 적재) — 데이터 기준 표기용
+        ts = run_df("SELECT date_format(from_utc_timestamp(MAX(updated_at), 'Asia/Seoul'), 'yyyy-MM-dd HH:mm') t "
+                    "FROM team.scm.stock WHERE namespace IN ('STORE','FC')").iloc[0, 0]
+        df.attrs["data_ts"] = str(ts)
+        df.attrs["data_date"] = str(ts)[:10]
+    except Exception:
+        pass
+    return df
+
+
+def stock_store_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFrame:
+    """fetch_stock_long 결과 → 매장 와이드(goods_no × 매장 열). 추가 조회 없음(pandas).
+       qty = 'total_qty'(보유, 레거시 sellable 대응) | 'total_qty_pos' | 'remaining_qty'(실가용)."""
+    st_ = long_df[long_df["namespace"] == "STORE"]
+    if st_.empty:
+        return pd.DataFrame(columns=["goods_no"])
+    return (st_.pivot_table(index="goods_no", columns="node_name", values=qty, aggfunc="sum", fill_value=0.0)
+            .rename_axis(columns=None).reset_index())
+
+
+def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFrame:
+    """fetch_stock_long 결과 → 센터 와이드(goods_no × 센터명 열) + 'FC합계'. 추가 조회 없음(pandas)."""
+    fc = long_df[long_df["namespace"] == "FC"]
+    if fc.empty:
+        return pd.DataFrame(columns=["goods_no", "FC합계"])
+    w = fc.pivot_table(index="goods_no", columns="node_name", values=qty, aggfunc="sum", fill_value=0.0)
+    w = w.rename_axis(columns=None)
+    w["FC합계"] = w.sum(axis=1)
+    return w.reset_index()
+
+
+# ---------------------------------------------------------------------------
 # 매장 STO '이동중'(입고예정=창고→매장, 출고예정=매장→창고 반품) — 매입(ERP)+위탁(SCM).
 #   입고예정 = 이동중(출고확정 shipped − 매장입고확정 received, 양수). 출고예정 = 반품 이동중.
 #   ※ '출고확정前(요청)'은 누적값이라 제외(실측: 미출고 아닌 누적까지 잡혀 과대) — 이동중만 신뢰.
