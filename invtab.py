@@ -139,7 +139,8 @@ def _f(v) -> float:
 
 
 _HUB1000_ORDER = {"허브1000-온라인": 0, "허브1000-오프라인": 1, "허브1000-반품": 2}
-LOGI_COL = store.db.LOGI_COL   # '물류 재고' — 통합 원장 스냅샷의 단일 창고 열(센터 FC 합). 레거시 스냅샷엔 없음.
+LOGI_COL = store.db.LOGI_COL   # '물류 재고' — 통합 원장 스냅샷의 창고 열(센터 FC 합). 레거시 스냅샷엔 없음.
+LOGI_COLS = store.db.LOGI_COLS # 물류 열 목록(db.LOGI_MEASURES 정의 순서). 열을 나누면 여기에 자동 반영.
 
 
 def _cols(columns):
@@ -155,10 +156,10 @@ def _cols(columns):
                        key=lambda c: _HUB1000_ORDER.get(c, 9))
     agg1000 = next((c for c in cols if c == "허브1000"), None)
     show1000 = parts1000 if parts1000 else ([agg1000] if agg1000 else [])
-    logi = next((c for c in cols if c == LOGI_COL), None)   # 통합 스냅샷: 창고 열은 '물류 재고' 하나
-    hubcols = [c for c in ([logi, mfs] + show1000 + [h1700]) if c]
+    logis = [c for c in LOGI_COLS if c in cols]             # 통합 스냅샷: 창고 열 = 물류 열(들)
+    hubcols = [c for c in (logis + [mfs] + show1000 + [h1700]) if c]
     # 집계 허브1000은 미표시여도 매장 컬럼 오인 방지 위해 항상 skip
-    skip = (set(_META_ASCII) | {hub_total, jaego_total, agg1000, logi}
+    skip = (set(_META_ASCII) | {hub_total, jaego_total, agg1000} | set(LOGI_COLS)
             | set(hubcols) | set(parts1000))
     skip.discard(None)
     store_cols = [c for c in cols if c not in skip and not c.startswith("__")]   # __파생열(컬러키 등) 매장 오인 방지
@@ -721,7 +722,7 @@ def csv_rows(f=None):
                           (status_map.get((loc, sku), "미지정") if sku else "미지정"))
                 brk = "Y" if (is_store and ck in per_store_broken.get(loc, set())) else ""
                 # 위치구분: 매장 / 물류(통합 스냅샷의 '물류 재고' 1열) / 허브(레거시 스냅샷의 MFS·허브1000·허브1700)
-                kind = "매장" if is_store else ("물류" if loc == LOGI_COL else "허브")
+                kind = "매장" if is_store else ("물류" if loc in LOGI_COLS else "허브")
                 out.append([store_code] + ([sku] if has_sku else []) + [status] + metavals +
                            [kind, loc, qty, brk])
     return header, out

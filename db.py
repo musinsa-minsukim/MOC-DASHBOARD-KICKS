@@ -1822,6 +1822,14 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 #   쿼리 3개(수량 / 메타 / 상품명) + 기존 보정 4개 + 기준시각 1개. bizest.goods 700만 전량 수신·raw_erp·mfs·goods_meta 스캔 없음.
 # ---------------------------------------------------------------------------
 LOGI_COL = "물류 재고"
+# 물류 재고에서 제외할 센터(FC root_node_id). 비워두면 FC 20곳 전체.
+#   후보(매장 출고 이력이 사실상 없는 센터): 'RTN01'(안성반품센터), 'NWH09'(여주글로벌센터) — 사용자 확정 후 여기만 바꾸면 된다.
+LOGI_EXCLUDE_FC: tuple = ()
+# 물류 재고 열 정의: {열 이름: team.scm.stock_detail(d) 수량식}. 첫 항목이 '허브합계'(창고 합계 키)가 된다.
+#   열을 나눠 보려면 여기에 한 줄 추가(invtab·파생 스냅샷·화면이 LOGI_COLS 를 따라 자동 반영). 예:
+#     "물류 가용": "CASE WHEN d.saleable THEN d.remaining_quantity ELSE 0 END"   # 판매가능 로케이션의 할당 제외 수량
+LOGI_MEASURES = {LOGI_COL: "d.total_quantity"}
+LOGI_COLS = list(LOGI_MEASURES)
 
 _EDITORIAL_LATEST = r"""
 el AS (   -- 파티션(ord_state_date_st, 'yyyyMMdd') 프루닝: 최근 10일 안에서 최신일
@@ -1834,6 +1842,14 @@ el AS (   -- 파티션(ord_state_date_st, 'yyyyMMdd') 프루닝: 최근 10일 �
 def _unified_pivot_frames():
     """통합 피벗 재료 3종(수량 long / editorial 메타 / 상품명·사업구분) 조회."""
     head = "WITH " + DIM_STORE + "," + _STOCK_SKU_MAP + "," + _EDITORIAL_LATEST
+    # 센터(FC) 수량식들을 m0, m1… 로 한 번에 집계한 뒤 열 이름별 행으로 풀어 낸다(LOGI_MEASURES).
+    fc_sums = ", ".join(f"SUM({expr}) AS m{i}" for i, expr in enumerate(LOGI_MEASURES.values()))
+    fc_excl = ("" if not LOGI_EXCLUDE_FC else
+               " AND d.root_node_id NOT IN (" + ",".join("'" + str(c).replace("'", "") + "'" for c in LOGI_EXCLUDE_FC) + ")")
+    fc_union = "".join(
+        f"""UNION ALL
+        SELECT 1 AS ord, barcode, '{name}' AS loc, sku_id, goods_no, CAST(m{i} AS DOUBLE) AS qty FROM fc WHERE m{i} <> 0
+        """ for i, name in enumerate(LOGI_MEASURES))
     qty = run_df(head + r""",
         sd AS (
           SELECT d.barcode, ds.store_name AS loc,
@@ -1851,17 +1867,15 @@ def _unified_pivot_frames():
           JOIN el ON s.ord_state_date_st = el.d JOIN dim_store st ON st.shop_no = s.shop_no
           WHERE s.barcode IS NOT NULL),
         fc AS (
-          SELECT d.barcode, '""" + LOGI_COL + r"""' AS loc,
+          SELECT d.barcode,
                  MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS goods_no,
-                 SUM(d.total_quantity) AS qty
+                 """ + fc_sums + r"""
           FROM team.scm.stock_detail d
           LEFT JOIN sku_map m ON m.sku_id = d.sku_id
-          WHERE d.namespace = 'FC' AND d.barcode IN (SELECT barcode FROM spine)
+          WHERE d.namespace = 'FC' AND d.barcode IN (SELECT barcode FROM spine)""" + fc_excl + r"""
           GROUP BY d.barcode)
         SELECT 0 AS ord, barcode, loc, sku_id, goods_no, CAST(qty AS DOUBLE) AS qty FROM sd WHERE qty <> 0
-        UNION ALL
-        SELECT 1 AS ord, barcode, loc, sku_id, goods_no, CAST(qty AS DOUBLE) AS qty FROM fc WHERE qty <> 0
-    """)
+        """ + fc_union)
     meta = run_df(head + r"""
         SELECT barcode, goods_no, goods_opt, brand_nm, goods_nm, cat_top, cat_large, cat_medium,
                off_md_id, company_id, brand_id, business_type
@@ -1913,10 +1927,11 @@ def load_inventory_pivot_unified() -> pd.DataFrame:
     qty["qty"] = pd.to_numeric(qty["qty"], errors="coerce").fillna(0.0)
     piv = qty.pivot_table(index="barcode", columns="loc", values="qty", aggfunc="sum", fill_value=0.0)
     piv = piv.rename_axis(columns=None)
-    store_cols = [c for c in piv.columns if c != LOGI_COL]
-    if LOGI_COL not in piv.columns:
-        piv[LOGI_COL] = 0.0
-    piv = piv[store_cols + [LOGI_COL]]
+    store_cols = [c for c in piv.columns if c not in LOGI_COLS]
+    for lc in LOGI_COLS:
+        if lc not in piv.columns:
+            piv[lc] = 0.0
+    piv = piv[store_cols + LOGI_COLS]
 
     # 바코드 → sku_id / 대표 goods_no(uid): 매장 행 우선, 없으면 센터 행(first = 열별 첫 비결측).
     ids = qty.sort_values("ord", kind="stable").groupby("barcode")[["sku_id", "goods_no"]].first().reindex(piv.index)
@@ -1953,13 +1968,13 @@ def load_inventory_pivot_unified() -> pd.DataFrame:
 
     df = m[meta_cols].join(piv)
     df["점재고합계"] = df[store_cols].sum(axis=1)
-    df["허브합계"] = df[LOGI_COL]                       # 단일 창고 열의 합계 = 그 값(키 호환)
+    df["허브합계"] = df[LOGI_COLS[0]]                   # 창고 합계 키(호환) = 첫 물류 열(보유)
     df["sku_id"] = ids["sku_id"].fillna("").astype(str)
     df = df.reset_index().rename(columns={"index": "barcode"})
     df = apply_category_override(df)
     df = apply_running_flag(df)
     df = apply_concept(df)
-    for c in store_cols + [LOGI_COL, "점재고합계", "허브합계"]:
+    for c in store_cols + LOGI_COLS + ["점재고합계", "허브합계"]:
         df[c] = pd.to_numeric(df[c]).fillna(0.0)
     df.attrs["store_cols"] = store_cols
     try:   # 원장 기준시각(매시 적재, KST) — '재고 데이터' 표기용
@@ -1975,9 +1990,9 @@ def _inventory_goods_from(inv: pd.DataFrame) -> pd.DataFrame:
     """피벗 → 상품(goods_no) 단위 합산. load_inventory_goods 와 같은 열 구성(매장열 + 점재고합계 + 허브합계 + 창고열 + goods_nm)."""
     meta = {"barcode", "sku_id", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
             "cat_top", "cat_large", "cat_medium", "off_md_id", "concept", "is_running",
-            "company_id", "brand_id", "점재고합계", "허브합계", LOGI_COL, *HUB_ALL}
+            "company_id", "brand_id", "점재고합계", "허브합계", *LOGI_COLS, *HUB_ALL}
     store_cols = [c for c in inv.columns if c not in meta]
-    hub = [c for c in (LOGI_COL, *HUB_COLS) if c in inv.columns]
+    hub = [c for c in (*LOGI_COLS, *HUB_COLS) if c in inv.columns]
     cols = store_cols + ["점재고합계", "허브합계"] + hub
     num = inv.groupby("goods_no")[cols].sum()
     nm = inv.groupby("goods_no")["goods_nm"].first()
@@ -1993,7 +2008,7 @@ def load_inventory_store_long_unified() -> pd.DataFrame:
     """(goods_no, store_name, 점재고) 롱포맷(inventory_store_long 스냅샷용) — 통합 피벗 기준."""
     g = load_inventory_goods_unified()
     store_cols = [c for c in g.columns
-                  if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계", LOGI_COL} | set(HUB_ALL))]
+                  if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계", *LOGI_COLS} | set(HUB_ALL))]
     return g.melt(id_vars="goods_no", value_vars=store_cols, var_name="store_name", value_name="점재고")
 
 
