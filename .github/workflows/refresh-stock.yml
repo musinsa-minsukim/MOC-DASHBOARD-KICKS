@@ -1,6 +1,7 @@
 name: Refresh stock (heavy)
 
-# 재고 탭 무거운 원천만 독립 갱신 — 위탁 실시간 재고(scm_store_stock) + STO 이동/이력(store_moves).
+# 재고 탭 원천 독립 갱신 — (통합 원장 이행 후) 재고 피벗 3종(inventory_*, 매시 원장) + STO 이동/이력(store_moves).
+#   레거시(INVENTORY_SOURCE=legacy): 위탁 실시간 재고(scm_store_stock) + store_moves.
 # ⚠️ scm_hub_inventory_status_v 뷰가 초헤비(~5~15분)라 야간 full(refresh.yml)·시간별 판매와 분리.
 #    _DECOUPLED에 등록되어 daily --snapshots에서는 제외됨 → 여기서만 갱신.
 # 흐름: _meta.json 내려받기 → refresh.py --stock (scm_store_stock·store_moves parquet 재생성) → GCS 업로드 → 슬랙(실패시).
@@ -63,8 +64,11 @@ jobs:
         run: |
           B="gs://${{ vars.GCS_CACHE_BUCKET }}"
           # 있을 때만 업로드(빌드 실패해도 core 캐시는 안 건드림).
-          if [ -f ./cache/scm_store_stock.parquet ]; then gcloud storage cp ./cache/scm_store_stock.parquet "$B/"; fi
-          if [ -f ./cache/store_moves.parquet ]; then gcloud storage cp ./cache/store_moves.parquet "$B/"; fi
+          #   통합 원장(기본): inventory_pivot·inventory_goods·inventory_store_long + store_moves 가 생성됨.
+          #   INVENTORY_SOURCE=legacy 로 돌리면 scm_store_stock + store_moves (기존과 동일).
+          for f in inventory_pivot inventory_goods inventory_store_long scm_store_stock store_moves; do
+            if [ -f "./cache/$f.parquet" ]; then gcloud storage cp "./cache/$f.parquet" "$B/"; fi
+          done
           gcloud storage cp ./cache/_meta.json "$B/" || true
 
       - name: Slack notify — 실패 시에만

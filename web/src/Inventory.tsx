@@ -155,6 +155,8 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
   }, [qs, reloadKey]);
 
   const hubcols: string[] = d?.hubcols ?? [];
+  // 통합 원장 스냅샷: 창고 열이 '물류 재고' 하나(=허브합계와 같은 값) → 허브합계 열은 중복이라 숨김. 레거시 스냅샷이면 기존 그대로.
+  const unified = hubcols.includes("물류 재고");
   const invCols = useMemo(() => [
     colThumb("img_url", "이미지", { pinned: "left" }),
     colText("sku_id", "SKU ID", { pinned: "left", minWidth: 124, headerTooltip: "SCM-HUB SKU ID (옵션·바코드 단위) · 매입·위탁 모두 · 미매핑은 공란" }),
@@ -192,8 +194,10 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
     colText("cat_medium", "중카테", { minWidth: 92 }),
     colNum("normal_price", "정상가", "num", { minWidth: 84 }),
     colNum("sale_price", "판매가", "num", { minWidth: 84 }),
-    ...hubcols.map((h) => colNum(h, h, "num", { headerTooltip: "창고(허브) 재고 · 매장 무관(그 상품 barcode 기준) · 합계는 상품 중복 없이 1회만 반영" })),
-    colNum("허브합계", "허브합계", "num", { headerTooltip: "MFS+허브1000(온라인+오프라인+반품)+허브1700 · 매장행마다 반복 표시(합계는 barcode당 1회만)" }),
+    ...hubcols.map((h) => colNum(h, h, "num", { headerTooltip: h === "물류 재고"
+      ? "물류센터(FC) 재고 합 · 매입+위탁 통합 원장 · 매장 무관(그 상품 barcode 기준) · 매장행마다 반복 표시(합계는 barcode당 1회만)"
+      : "창고(허브) 재고 · 매장 무관(그 상품 barcode 기준) · 합계는 상품 중복 없이 1회만 반영" })),
+    ...(unified ? [] : [colNum("허브합계", "허브합계", "num", { headerTooltip: "MFS+허브1000(온라인+오프라인+반품)+허브1700 · 매장행마다 반복 표시(합계는 barcode당 1회만)" })]),
   ], [hubcols.join(","), dark]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 브랜드별 점재고·GMV·SOB 표 (그래프 대체) — 재고 과다 판단
@@ -273,13 +277,15 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-slate-400 dark:text-slate-400">최신 스냅샷 · 상품·옵션(barcode) 단위 · 위탁 점재고=SCM-HUB 실시간(판매가능재고) · 창고: MFS / 허브1000(온라인·오프라인·반품) / 허브1700 · 기간 필터 미적용</p>
+        <p className="text-xs text-slate-400 dark:text-slate-400">{unified
+          ? "최신 스냅샷 · 상품·옵션(barcode) 단위 · 점재고=통합 재고 원장(매입+위탁, 매시) · 창고: 물류 재고(센터 합) · 기간 필터 미적용"
+          : "최신 스냅샷 · 상품·옵션(barcode) 단위 · 위탁 점재고=SCM-HUB 실시간(판매가능재고) · 창고: MFS / 허브1000(온라인·오프라인·반품) / 허브1700 · 기간 필터 미적용"}</p>
         <div className="flex items-center gap-2">
           {/* 재고 REFRESH가 실제 갱신하는 대상(위탁 실시간 재고·STO 이동)의 최근 갱신 시각.
               상단 '재고 데이터'는 야간 전체 스냅샷(editorial inventory_pivot)이라 이 버튼과 무관. */}
           <span className="hidden text-[11px] leading-tight text-slate-400 sm:inline dark:text-slate-500"
                 title="재고 REFRESH 버튼이 갱신하는 위탁 실시간 재고(SCM-HUB)·STO 이동의 최근 갱신 시각 (GitHub Actions, 완료까지 수 분). 상단의 '재고 데이터 기준일/갱신'은 야간 editorial 전체 스냅샷이라 이 버튼으로는 바뀌지 않음">
-            위탁 실시간 갱신 {fmtRt(status?.scm_store_stock_refreshed_at)} · 이동 {fmtRt(status?.store_moves_refreshed_at)}
+            {unified ? "재고 원장 갱신" : "위탁 실시간 갱신"} {fmtRt(unified ? status?.inventory_pivot_refreshed_at : status?.scm_store_stock_refreshed_at)} · 이동 {fmtRt(status?.store_moves_refreshed_at)}
           </span>
           {refreshMsg && <span className="text-xs text-slate-500 dark:text-slate-400">{refreshMsg}</span>}
           {loading && <Spinner className="h-4 w-4" />}
@@ -300,7 +306,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
             <Kpi icon={<Boxes size={16} />} label="점재고 합계 (선택 매장)" value={num(d.kpis.jaego)} />
-            <Kpi icon={<Warehouse size={16} />} label="창고(허브) 합계" value={num(d.kpis.hub)} />
+            <Kpi icon={<Warehouse size={16} />} label={unified ? "물류 재고 합계" : "창고(허브) 합계"} value={num(d.kpis.hub)} />
             <Kpi icon={<Palette size={16} />} label="컬러 SKU 수 (UID×컬러)" value={num(d.kpis.color_sku ?? 0)} />
             <Kpi icon={<Grid2x2 size={16} />} label="바코드 SKU (옵션·barcode)" value={num(d.kpis.options)} />
             <Kpi icon={<Tags size={16} />} label="상품 수 (UID·goods)" value={num(d.kpis.goods)} />
@@ -315,7 +321,11 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
             <br />
             <span className="font-semibold text-amber-600 dark:text-amber-400">입고예정·출고예정·입고구분(상품옵션별)</span> · <b className="text-emerald-600 dark:text-emerald-400">입고예정</b>=그 매장으로 오는 이동중(STO) 수량 / <b className="text-rose-600 dark:text-rose-400">출고예정</b>=창고로 나가는 반품. <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=그 매장에 <b>입고 이력이 없는 첫 입고</b> / <b className="text-amber-600 dark:text-amber-400">필업</b>=<b>입고 이력 있음</b>(완판됐다가 재입고도 필업) / <b>(공란)</b>=입고 없음. (현재 재고 0이 아니라 입고확정 이력 기준) <b>출고예정</b>=반품 <b>위탁만</b>(출고요청 단계부터, requested−received). <b>매입은 제외</b> — 창고 입고확정을 매장별로 차감할 신호가 없어 누적·과대가 되고 조회도 무거워 반영하지 않음.
             <br />
-            <span className="font-semibold text-slate-600 dark:text-slate-300">허브1000 분해</span> · plant1000 창고를 lgort로 나눔 — <b>온라인</b>(2000) / <b>오프라인</b>(2020·2060) / <b>반품</b>(2010). 세 열의 합 = 기존 허브1000이며 허브합계도 동일(중복 없음).
+            {unified ? (<>
+              <span className="font-semibold text-slate-600 dark:text-slate-300">물류 재고</span> · 물류센터(FC) 보유 재고 합 — 기존 <b>MFS·허브1000·허브1700</b>을 한 열로 합침(매입+위탁 통합 원장). 점재고·물류 재고 모두 <b>원장 수량 그대로</b>(음수 포함)이며 매시 갱신.
+            </>) : (<>
+              <span className="font-semibold text-slate-600 dark:text-slate-300">허브1000 분해</span> · plant1000 창고를 lgort로 나눔 — <b>온라인</b>(2000) / <b>오프라인</b>(2020·2060) / <b>반품</b>(2010). 세 열의 합 = 기존 허브1000이며 허브합계도 동일(중복 없음).
+            </>)}
           </div>
 
           {(d.cats?.cat_top?.length || d.cats?.cat_large?.length || d.cats?.cat_medium?.length) ? (

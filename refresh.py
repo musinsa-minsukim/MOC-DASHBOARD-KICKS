@@ -40,8 +40,11 @@ def main():
     if "--stock" in args:
         # 재고 탭 무거운 원천만 독립 갱신 — 위탁 실시간 재고(scm_store_stock) + STO 이동/이력(store_moves).
         # scm_hub_inventory_status_v 뷰가 초헤비(~5~15분)라 야간 full과 분리. 재고 REFRESH 버튼이 이걸 트리거.
-        print("  stock:", store.refresh_named(["scm_store_stock", "store_moves"]))
-        print("완료(stock):", {k: store.status().get(k) for k in ("scm_store_stock_refreshed_at", "store_moves_refreshed_at")})
+        #   통합 원장 이행 후(기본): 재고 피벗 3종(inventory_*) + store_moves. scm_store_stock(초헤비 뷰)은 원장이 대체해 생략.
+        #   INVENTORY_SOURCE=legacy 면 기존대로 scm_store_stock + store_moves.
+        print("  stock:", store.refresh_named(list(store.STOCK_REFRESH_NAMES)))
+        print("완료(stock):", {k: store.status().get(k) for k in (
+            "inventory_pivot_refreshed_at", "scm_store_stock_refreshed_at", "store_moves_refreshed_at")})
         return
     if "--settlement" in args:
         # 정산(순이익/CP) 3종만 증분 갱신 — CSV(매출일자×옵션) 캐시 복구용. 다른 스냅샷 미변경.

@@ -1810,6 +1810,194 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 
 
 # ---------------------------------------------------------------------------
+# [신규] 통합 원장 기반 재고 피벗 — load_inventory_pivot 과 같은 출력 계약(barcode × 매장 + 창고)으로,
+#   수량 원천만 team.scm.stock_detail(매장·센터, 매입+위탁, 매시) 로 바꾼 것. (2026-11 사용자 결정)
+#   · 매장 열      = stock_detail STORE total_quantity (음수 그대로 — '원장 그대로' 결정). editorial/sap1700/SCM 오버레이 대체.
+#   · LOGI_COL     = '물류 재고' = 센터(FC 20곳) total_quantity 합. 기존 MFS/허브1000/허브1700(+분해 3열)을 한 열로 합침.
+#   · 허브합계      = LOGI_COL 과 같은 값(다운스트림 키 호환용으로 유지: daily/api 의 hub_total·hub).
+#   · 메타(옵션명·오프라인 카테고리·MD·업체/브랜드코드·사업구분)와 바코드→상품번호 귀속은 editorial 최신 스냅샷에서 가져온다
+#     (신규 원장엔 없음. 상품번호는 오프라인 판매 번호와 맞아야 판매 조인이 유지됨).
+#     editorial 에 없는 바코드는 상품마스터(이름·브랜드)·company.margin_type(사업구분)로 보강, 옵션/카테고리는 공란/미분류.
+#   · 행 = 매장 또는 센터에 수량(≠0)이 있는 바코드. 센터 재고는 '오프라인 취급 바코드'(매장 원장 ∪ editorial)로 한정.
+#   쿼리 3개(수량 / 메타 / 상품명) + 기존 보정 4개 + 기준시각 1개. bizest.goods 700만 전량 수신·raw_erp·mfs·goods_meta 스캔 없음.
+# ---------------------------------------------------------------------------
+LOGI_COL = "물류 재고"
+
+_EDITORIAL_LATEST = r"""
+el AS (   -- 파티션(ord_state_date_st, 'yyyyMMdd') 프루닝: 최근 10일 안에서 최신일
+  SELECT MAX(ord_state_date_st) d FROM team.sales.dsh_d_upt_editorial_stock_summary
+  WHERE ord_state_date_st >= date_format(date_sub(current_date(), 10), 'yyyyMMdd')
+)
+"""
+
+
+def _unified_pivot_frames():
+    """통합 피벗 재료 3종(수량 long / editorial 메타 / 상품명·사업구분) 조회."""
+    head = "WITH " + DIM_STORE + "," + _STOCK_SKU_MAP + "," + _EDITORIAL_LATEST
+    qty = run_df(head + r""",
+        sd AS (
+          SELECT d.barcode, ds.store_name AS loc,
+                 MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS goods_no,
+                 SUM(d.total_quantity) AS qty
+          FROM team.scm.stock_detail d
+          JOIN dim_store ds ON CAST(ds.shop_no AS STRING) = d.root_node_id
+          LEFT JOIN sku_map m ON m.sku_id = d.sku_id
+          WHERE d.namespace = 'STORE' AND d.barcode IS NOT NULL AND d.barcode <> ''
+          GROUP BY d.barcode, ds.store_name),
+        spine AS (   -- 오프라인 취급 바코드 = 매장 원장 ∪ editorial 최신
+          SELECT barcode FROM sd
+          UNION
+          SELECT s.barcode FROM team.sales.dsh_d_upt_editorial_stock_summary s
+          JOIN el ON s.ord_state_date_st = el.d JOIN dim_store st ON st.shop_no = s.shop_no
+          WHERE s.barcode IS NOT NULL),
+        fc AS (
+          SELECT d.barcode, '""" + LOGI_COL + r"""' AS loc,
+                 MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS goods_no,
+                 SUM(d.total_quantity) AS qty
+          FROM team.scm.stock_detail d
+          LEFT JOIN sku_map m ON m.sku_id = d.sku_id
+          WHERE d.namespace = 'FC' AND d.barcode IN (SELECT barcode FROM spine)
+          GROUP BY d.barcode)
+        SELECT 0 AS ord, barcode, loc, sku_id, goods_no, CAST(qty AS DOUBLE) AS qty FROM sd WHERE qty <> 0
+        UNION ALL
+        SELECT 1 AS ord, barcode, loc, sku_id, goods_no, CAST(qty AS DOUBLE) AS qty FROM fc WHERE qty <> 0
+    """)
+    meta = run_df(head + r"""
+        SELECT barcode, goods_no, goods_opt, brand_nm, goods_nm, cat_top, cat_large, cat_medium,
+               off_md_id, company_id, brand_id, business_type
+        FROM (
+          SELECT x.*, ROW_NUMBER() OVER (PARTITION BY x.barcode ORDER BY x.q DESC, x.goods_no DESC) AS rn
+          FROM (
+            SELECT s.barcode, CAST(s.goods_no AS BIGINT) AS goods_no, SUM(s.sellable_qty) AS q,
+                   ANY_VALUE(s.goods_opt) AS goods_opt, ANY_VALUE(s.brand_nm) AS brand_nm, ANY_VALUE(s.goods_nm) AS goods_nm,
+                   ANY_VALUE(s.final_large_nm_off) AS cat_top, ANY_VALUE(s.large_nm_off) AS cat_large,
+                   ANY_VALUE(s.medium_nm_off) AS cat_medium, ANY_VALUE(s.offline_md_id) AS off_md_id,
+                   ANY_VALUE(s.com_id) AS company_id, ANY_VALUE(s.brand) AS brand_id,
+                   ANY_VALUE(CASE s.ord_com_type WHEN '입점(위탁)' THEN '위탁' WHEN '공급(매입)' THEN '매입' ELSE '기타' END) AS business_type
+            FROM team.sales.dsh_d_upt_editorial_stock_summary s
+            JOIN el ON s.ord_state_date_st = el.d
+            JOIN dim_store st ON st.shop_no = s.shop_no
+            WHERE s.barcode IS NOT NULL
+            GROUP BY s.barcode, CAST(s.goods_no AS BIGINT)) x)
+        WHERE rn = 1
+    """)
+    names = run_df(head + r""",
+        g AS (
+          SELECT DISTINCT m.uid AS goods_no
+          FROM team.scm.stock s
+          JOIN dim_store ds ON CAST(ds.shop_no AS STRING) = s.root_node_id
+          JOIN sku_map m ON m.sku_id = s.sku_id
+          WHERE s.namespace = 'STORE'
+          UNION
+          SELECT DISTINCT CAST(e.goods_no AS BIGINT)
+          FROM team.sales.dsh_d_upt_editorial_stock_summary e
+          JOIN el ON e.ord_state_date_st = el.d JOIN dim_store st ON st.shop_no = e.shop_no)
+        SELECT g.goods_no, gd.goods_nm, b.brand_nm, gd.com_id AS company_id, gd.brand AS brand_id,
+               CASE c.margin_type WHEN 'WONGA' THEN '매입' WHEN 'FEE' THEN '위탁' ELSE '기타' END AS business_type
+        FROM g
+        JOIN musinsa.bizest.goods gd              ON CAST(gd.goods_no AS BIGINT) = g.goods_no
+        LEFT JOIN musinsa.partnerportal.brand b   ON b.brand = gd.brand
+        LEFT JOIN musinsa.partnerportal.company c ON c.com_id = gd.com_id
+    """)
+    return qty, meta, names
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_inventory_pivot_unified() -> pd.DataFrame:
+    """통합 원장 기반 재고 피벗(barcode × 매장 + '물류 재고'). load_inventory_pivot 대체용 — 출력 계약 동일:
+       메타열 + 매장열 + LOGI_COL + 점재고합계 + 허브합계(=LOGI_COL) + sku_id + is_running + concept, attrs(store_cols, data_date)."""
+    qty, meta, names = _unified_pivot_frames()
+    meta_cols = ["goods_no", "goods_opt", "brand_nm", "goods_nm", "cat_top", "cat_large", "cat_medium",
+                 "off_md_id", "company_id", "brand_id", "business_type"]
+    qty["barcode"] = qty["barcode"].astype(str)
+    qty["qty"] = pd.to_numeric(qty["qty"], errors="coerce").fillna(0.0)
+    piv = qty.pivot_table(index="barcode", columns="loc", values="qty", aggfunc="sum", fill_value=0.0)
+    piv = piv.rename_axis(columns=None)
+    store_cols = [c for c in piv.columns if c != LOGI_COL]
+    if LOGI_COL not in piv.columns:
+        piv[LOGI_COL] = 0.0
+    piv = piv[store_cols + [LOGI_COL]]
+
+    # 바코드 → sku_id / 대표 goods_no(uid): 매장 행 우선, 없으면 센터 행(first = 열별 첫 비결측).
+    ids = qty.sort_values("ord", kind="stable").groupby("barcode")[["sku_id", "goods_no"]].first().reindex(piv.index)
+    uid = pd.to_numeric(ids["goods_no"], errors="coerce")
+
+    # 상품번호 귀속: editorial(오프라인 판매 상품번호, 바코드당 점재고 최대 행) 우선 → 없으면 원장 대표 uid.
+    #   한 바코드가 여러 상품번호에 걸린 경우(뷰티 세트 등) 원장 대표 uid 는 오프라인에서 안 파는 번호일 수 있어,
+    #   판매(MOSS goods_no) 조인이 어긋나지 않도록 기존과 같은 오프라인 상품번호를 따른다.
+    meta["barcode"] = meta["barcode"].astype(str)
+    meta["goods_no"] = pd.to_numeric(meta["goods_no"], errors="coerce")
+    mb = meta.drop_duplicates("barcode").set_index("barcode").reindex(piv.index)
+    m = pd.DataFrame(index=piv.index)
+    for col in meta_cols:
+        if col != "goods_no":
+            m[col] = mb[col]
+    m["goods_no"] = mb["goods_no"].where(mb["goods_no"].notna(), uid).fillna(0).astype("int64")
+
+    # 상품마스터: 상품명·브랜드명은 마스터 우선(기존과 동일), 업체/브랜드코드·사업구분은 editorial 우선·마스터 보강.
+    names["goods_no"] = pd.to_numeric(names["goods_no"], errors="coerce").fillna(0).astype("int64")
+    nm = names.drop_duplicates("goods_no").set_index("goods_no")
+
+    def _from_master(col):
+        return m["goods_no"].map(nm[col]).replace("", None) if col in nm.columns else pd.Series(None, index=m.index)
+
+    m["goods_nm"] = _from_master("goods_nm").fillna(m["goods_nm"]).fillna("")
+    m["brand_nm"] = _from_master("brand_nm").fillna(m["brand_nm"]).fillna("(미상)")
+    m["business_type"] = m["business_type"].fillna(_from_master("business_type")).fillna("매입")
+    m["company_id"] = m["company_id"].fillna(_from_master("company_id")).fillna("").astype(str)
+    m["brand_id"] = m["brand_id"].fillna(_from_master("brand_id")).fillna("").astype(str)
+    m["goods_opt"] = m["goods_opt"].fillna("")
+    for col in ("cat_top", "cat_large", "cat_medium"):
+        m[col] = m[col].fillna("미분류")
+    m["off_md_id"] = m["off_md_id"].fillna("").astype(str)
+
+    df = m[meta_cols].join(piv)
+    df["점재고합계"] = df[store_cols].sum(axis=1)
+    df["허브합계"] = df[LOGI_COL]                       # 단일 창고 열의 합계 = 그 값(키 호환)
+    df["sku_id"] = ids["sku_id"].fillna("").astype(str)
+    df = df.reset_index().rename(columns={"index": "barcode"})
+    df = apply_category_override(df)
+    df = apply_running_flag(df)
+    df = apply_concept(df)
+    for c in store_cols + [LOGI_COL, "점재고합계", "허브합계"]:
+        df[c] = pd.to_numeric(df[c]).fillna(0.0)
+    df.attrs["store_cols"] = store_cols
+    try:   # 원장 기준시각(매시 적재, KST) — '재고 데이터' 표기용
+        ts = run_df("SELECT date_format(from_utc_timestamp(MAX(updated_at), 'Asia/Seoul'), 'yyyy-MM-dd HH:mm') t "
+                    "FROM team.scm.stock WHERE namespace IN ('STORE','FC')").iloc[0, 0]
+        df.attrs["data_date"] = str(ts)
+    except Exception:
+        pass
+    return df
+
+
+def _inventory_goods_from(inv: pd.DataFrame) -> pd.DataFrame:
+    """피벗 → 상품(goods_no) 단위 합산. load_inventory_goods 와 같은 열 구성(매장열 + 점재고합계 + 허브합계 + 창고열 + goods_nm)."""
+    meta = {"barcode", "sku_id", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
+            "cat_top", "cat_large", "cat_medium", "off_md_id", "concept", "is_running",
+            "company_id", "brand_id", "점재고합계", "허브합계", LOGI_COL, *HUB_ALL}
+    store_cols = [c for c in inv.columns if c not in meta]
+    hub = [c for c in (LOGI_COL, *HUB_COLS) if c in inv.columns]
+    cols = store_cols + ["점재고합계", "허브합계"] + hub
+    num = inv.groupby("goods_no")[cols].sum()
+    nm = inv.groupby("goods_no")["goods_nm"].first()
+    return num.join(nm).reset_index()
+
+
+def load_inventory_goods_unified() -> pd.DataFrame:
+    """통합 피벗의 상품 단위 합산(inventory_goods 스냅샷용)."""
+    return _inventory_goods_from(load_inventory_pivot_unified())
+
+
+def load_inventory_store_long_unified() -> pd.DataFrame:
+    """(goods_no, store_name, 점재고) 롱포맷(inventory_store_long 스냅샷용) — 통합 피벗 기준."""
+    g = load_inventory_goods_unified()
+    store_cols = [c for c in g.columns
+                  if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계", LOGI_COL} | set(HUB_ALL))]
+    return g.melt(id_vars="goods_no", value_vars=store_cols, var_name="store_name", value_name="점재고")
+
+
+# ---------------------------------------------------------------------------
 # 매장 STO '이동중'(입고예정=창고→매장, 출고예정=매장→창고 반품) — 매입(ERP)+위탁(SCM).
 #   입고예정 = 이동중(출고확정 shipped − 매장입고확정 received, 양수). 출고예정 = 반품 이동중.
 #   ※ '출고확정前(요청)'은 누적값이라 제외(실측: 미출고 아닌 누적까지 잡혀 과대) — 이동중만 신뢰.

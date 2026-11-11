@@ -2,7 +2,8 @@
 
 - 매장별 점재고 컬럼은 한글 매장명이라 DuckDB SQL 대신 pandas로 처리(컬럼명=store_name과 동일).
 - 필터: 사업구분(biz) + 매장타입(type, 보이는 매장 컬럼 결정). 기간 필터 미적용(스냅샷).
-- 창고(허브): MFS / 허브1000 / 허브1700, 합계=허브합계. 점재고합계=선택 매장 컬럼 합.
+- 창고: 통합 원장 스냅샷은 '물류 재고'(센터 FC 합) 1열 = 허브합계. (레거시 스냅샷은 MFS / 허브1000 / 허브1700, 합계=허브합계.)
+- 점재고합계=선택 매장 컬럼 합.
 """
 from __future__ import annotations
 
@@ -138,6 +139,7 @@ def _f(v) -> float:
 
 
 _HUB1000_ORDER = {"허브1000-온라인": 0, "허브1000-오프라인": 1, "허브1000-반품": 2}
+LOGI_COL = store.db.LOGI_COL   # '물류 재고' — 통합 원장 스냅샷의 단일 창고 열(센터 FC 합). 레거시 스냅샷엔 없음.
 
 
 def _cols(columns):
@@ -153,9 +155,10 @@ def _cols(columns):
                        key=lambda c: _HUB1000_ORDER.get(c, 9))
     agg1000 = next((c for c in cols if c == "허브1000"), None)
     show1000 = parts1000 if parts1000 else ([agg1000] if agg1000 else [])
-    hubcols = [c for c in ([mfs] + show1000 + [h1700]) if c]
+    logi = next((c for c in cols if c == LOGI_COL), None)   # 통합 스냅샷: 창고 열은 '물류 재고' 하나
+    hubcols = [c for c in ([logi, mfs] + show1000 + [h1700]) if c]
     # 집계 허브1000은 미표시여도 매장 컬럼 오인 방지 위해 항상 skip
-    skip = (set(_META_ASCII) | {hub_total, jaego_total, agg1000}
+    skip = (set(_META_ASCII) | {hub_total, jaego_total, agg1000, logi}
             | set(hubcols) | set(parts1000))
     skip.discard(None)
     store_cols = [c for c in cols if c not in skip and not c.startswith("__")]   # __파생열(컬러키 등) 매장 오인 방지
@@ -177,6 +180,9 @@ def _apply_scm_overlay(inv):
     except Exception:
         return inv
     if scm is None or scm.empty or "barcode" not in inv.columns:
+        return inv
+    if LOGI_COL in inv.columns:
+        # 통합 원장 스냅샷: 매장 수량이 이미 매시 원장(매입+위탁)이라 SCM-HUB 오버레이 불필요(덮어쓰면 원천이 섞임).
         return inv
     store_cols, _hub, _j, _h = _cols(inv.columns)
     scm = scm[scm["store_name"].isin(store_cols)].copy()
@@ -266,7 +272,9 @@ def _prep(f):
     df = df.copy()                               # 캐시 베이스 보호(파생열 추가 전) — goods_nm 공란·컬러키는 베이스서 처리됨
     df["__jaego"] = df[vis].sum(axis=1) if vis else 0
     df["__hub"] = df[hcol].fillna(0) if hcol else 0
-    df = df[(df["__jaego"] > 0) | (df["__hub"] > 0)]
+    # 재고 보유 행 = 점재고≠0 또는 창고>0. (통합 원장은 음수 재고를 그대로 싣는다 — '원장 그대로' 결정 —
+    #  → 음수 행도 합계에 반영되도록 >0 이 아니라 ≠0. 레거시 스냅샷엔 음수가 없어 결과 동일.)
+    df = df[(df["__jaego"] != 0) | (df["__hub"] > 0)]
     return df, vis, hubcols, hcol
 
 
@@ -712,6 +720,8 @@ def csv_rows(f=None):
                 status = ("" if not is_store else
                           (status_map.get((loc, sku), "미지정") if sku else "미지정"))
                 brk = "Y" if (is_store and ck in per_store_broken.get(loc, set())) else ""
+                # 위치구분: 매장 / 물류(통합 스냅샷의 '물류 재고' 1열) / 허브(레거시 스냅샷의 MFS·허브1000·허브1700)
+                kind = "매장" if is_store else ("물류" if loc == LOGI_COL else "허브")
                 out.append([store_code] + ([sku] if has_sku else []) + [status] + metavals +
-                           ["매장" if is_store else "허브", loc, qty, brk])
+                           [kind, loc, qty, brk])
     return header, out

@@ -83,6 +83,21 @@ md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerp
   있어 `load_goods_master`의 '판매 goods' 필터를 그대로 못 씀. 현재 4Gi에서 7시 full 102.9초로 OK이나,
   **향후 최적화 후보**: 재고 바코드의 goods_no 집합으로 서브쿼리 필터.
 
+## 9-1. 통합 원장 재고 피벗 — `load_inventory_pivot_unified()` [db.py]  ⭐2026-11 이행(현재 스냅샷 원천)
+`inventory_pivot` 스냅샷의 **기본 원천**. 출력 계약은 9번과 같고(barcode × 매장 + 창고), 수량 원천만 통합 원장으로 바꿈.
+`store.py` 의 env `INVENTORY_SOURCE=legacy` 로 9번(기존 5원천)으로 되돌릴 수 있다.
+- **수량**: `team.scm.stock_detail`(매입+위탁, 매시) — 매장 = `namespace='STORE'`, `root_node_id`==shop_no → dim_store.
+  센터 = `namespace='FC'`(20곳) 합 → **`물류 재고`** 1열(기존 MFS/허브1000/허브1700 대체). `허브합계` = `물류 재고`(키 호환).
+  보유 = `total_quantity` **원장 그대로(음수 포함)**. 센터 재고는 오프라인 취급 바코드(매장 원장 ∪ editorial)로 한정.
+- **메타·상품번호 귀속**: 옵션명·오프라인 카테고리·MD·사업구분, 그리고 바코드→goods_no 는 editorial 최신 스냅샷
+  (바코드당 점재고 최대 행). 신규 원장엔 없고, goods_no 는 오프라인 판매 번호와 맞아야 판매 조인이 유지됨.
+  editorial 에 없는 바코드만 SKU 매핑 대표 uid + 상품마스터로 보강.
+- ⚠️ SKU 매핑(`team.scm.mst_sku_mapping_uid_option_code`)은 `is_rep_uid_musinsa=TRUE` 여도 1:N → `DISTINCT (sku_id, uid)`.
+- 쿼리 3개(수량/메타/상품명) + 보정 4개 + 기준시각 1개. `bizest.goods` 전량 수신·raw_erp·mfs·goods_meta·sap_inventory 스캔 없음.
+- 위탁 실시간 오버레이(`fetch_scm_store_stock`, `scm_hub_inventory_status_v`)는 원장이 대체 → 재고 REFRESH 는 이 피벗 3종 + `store_moves`.
+- 대사: `python tools/dbx.py tools/recon_stock_store.sql` (레거시 editorial ↔ 신규 원장, 매장×사업구분).
+- 경량 롱포맷(거점×goods_no, 1쿼리)이 필요하면 `fetch_stock_long()`.
+
 ## 10. 파생(쿼리 없음, pandas) — `load_inventory_goods()` [db.py:559] / `load_inventory_store_long()` [db.py:573]
 피벗을 goods_no 단위 합산 / (goods_no×매장) 롱포맷으로 변환. Databricks 재조회 없음.
 

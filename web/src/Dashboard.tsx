@@ -74,7 +74,7 @@ const GOODS_COLS = [
   colNum("discount_rate", "할인율", "num", { valueFormatter: pct1 }),
   colNum("op_stores", "운영중매장수", "int", { minWidth: 104, headerTooltip: "점재고 1개 이상 보유 매장 수(운영중) · 매장별 상세는 CSV" }),
   colNum("jaego", "점재고합계", "num"),
-  colNum("hub", "허브합계", "num"),
+  colNum("hub", "물류 재고", "num", { headerTooltip: "물류센터(FC) 재고 합 — 기존 허브합계(허브1000+허브1700+MFS)를 대체" }),
 ];
 
 // ── 합계행(__muTotal)·순이익률 색상 헬퍼 ──

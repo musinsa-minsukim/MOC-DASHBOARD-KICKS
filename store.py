@@ -22,11 +22,16 @@ CACHE = os.environ.get(
 )
 SALES_WINDOW_DAYS = 45
 
+# 재고 스냅샷 원천: 기본 = 통합 원장(team.scm.stock_detail, 매입+위탁·매장+센터, 매시). 2026-11 이행.
+#   env INVENTORY_SOURCE=legacy 로 두면 기존 5원천 로더(editorial/sap1700/raw_erp/mfs)로 되돌아간다(롤백 스위치, 코드 수정 불필요).
+#   파일명·키 컬럼(barcode/goods_no/매장열/점재고합계/허브합계)은 동일. 창고 열만 통합=‘물류 재고’ 1열, 레거시=MFS/허브1000/허브1700.
+INVENTORY_UNIFIED = os.environ.get("INVENTORY_SOURCE", "unified").strip().lower() != "legacy"
+
 _SNAPSHOTS = {
     "goods_master": db.load_goods_master,
-    "inventory_pivot": db.load_inventory_pivot,
-    "inventory_goods": db.load_inventory_goods,
-    "inventory_store_long": db.load_inventory_store_long,
+    "inventory_pivot": db.load_inventory_pivot_unified if INVENTORY_UNIFIED else db.load_inventory_pivot,
+    "inventory_goods": db.load_inventory_goods_unified if INVENTORY_UNIFIED else db.load_inventory_goods,
+    "inventory_store_long": db.load_inventory_store_long_unified if INVENTORY_UNIFIED else db.load_inventory_store_long,
     "customer": db.load_customer,
     "target_daily": db.fetch_targets,   # 매장별 일 목표(gspread) — 목표 대비 실적 탭
     "footfall": db.fetch_footfall,             # 매장 입객수(일자×매장) — 구매전환율
@@ -198,6 +203,12 @@ def refresh_snapshot(name: str) -> int:
 # 야간 full(refresh_all)에서 제외하는 무거운 스냅샷 — 별도 스케줄러 잡이 mode=snap 으로 갱신.
 # (IPS는 웜 ~10분이라 동기 full HTTP의 Cloud Run 요청 타임아웃을 압박 → core 리프레시와 분리)
 _DECOUPLED = {"ips", "ips_goods", "scm_store_stock", "store_moves"}   # 무거운 원천 → 메인 --snapshots에서 제외, 독립 갱신(refresh --stock)
+
+# 재고 REFRESH(refresh.py --stock / refresh-stock.yml)가 갱신하는 스냅샷.
+#   통합: 재고 피벗 3종(매시 원장, 수십 초) + STO 이동. 위탁 실시간 오버레이(scm_store_stock, 5~15분 뷰)는 원장이 대체해 불필요.
+#   레거시: 기존 그대로(scm_store_stock + store_moves).
+STOCK_REFRESH_NAMES = (["inventory_pivot", "inventory_goods", "inventory_store_long", "store_moves"]
+                       if INVENTORY_UNIFIED else ["scm_store_stock", "store_moves"])
 
 
 def refresh_snapshots(full: bool = False) -> dict:

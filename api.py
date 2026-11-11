@@ -1736,7 +1736,7 @@ def daily_restock_csv(basis: str | None = None, seg: str | None = None, grp: str
     d0, rows = daily.restock_full(basis, seg, grp)
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["매장", "브랜드", "UID", "상품명", "전일판매", "점재고", "허브재고"])
+    w.writerow(["매장", "브랜드", "UID", "상품명", "전일판매", "점재고", "물류 재고"])
     for r in rows:
         w.writerow([r["store"], r["brand"], r["goods_no"], r["name"],
                     int(r["sold"]), int(r["store_stock"]), int(r["hub_total"])])

@@ -464,14 +464,12 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                   <th className="py-2 pr-3 font-medium">상품</th>
                   {dnames.map((n) => <th key={n} className="py-2 pr-3 text-right font-medium">{n}</th>)}
                   <th className="py-2 pr-3 text-right font-medium">점재고</th>
-                  <th className="py-2 pr-3 text-right font-medium">허브1000</th>
-                  <th className="py-2 pr-3 text-right font-medium">허브1700</th>
-                  <th className="py-2 text-right font-medium">MFS</th>
+                  <th className="py-2 text-right font-medium" title="물류센터(FC) 재고 합 — 기존 허브1000·허브1700·MFS를 한 열로 합침">물류 재고</th>
                 </tr>
               </thead>
               <tbody>
                 {d.notable.length === 0 && (
-                  <tr><td colSpan={8 + dnames.length} className="py-6 text-center text-slate-400">데이터 없음</td></tr>
+                  <tr><td colSpan={6 + dnames.length} className="py-6 text-center text-slate-400">데이터 없음</td></tr>
                 )}
                 {d.notable.map((n: any) => {
                   const ts = NOTABLE_TAG[n.tag] || NOTABLE_TAG["판매TOP"];
@@ -491,9 +489,7 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                         <td key={i} className={`py-2 pr-3 text-right tabular-nums ${i === 0 ? "font-semibold text-slate-800 dark:text-slate-100" : "text-slate-500 dark:text-slate-400"}`}>{num(q)}</td>
                       ))}
                       <td className="py-2 pr-3 text-right tabular-nums text-slate-500 dark:text-slate-400">{num(n.store_stock)}</td>
-                      <td className="py-2 pr-3 text-right tabular-nums text-slate-400 dark:text-slate-400">{num(n.hub1000)}</td>
-                      <td className="py-2 pr-3 text-right tabular-nums text-slate-400 dark:text-slate-400">{num(n.hub1700)}</td>
-                      <td className="py-2 text-right tabular-nums text-slate-400 dark:text-slate-400">{num(n.mfs)}</td>
+                      <td className="py-2 text-right tabular-nums text-slate-400 dark:text-slate-400">{num(n.logi ?? ((n.hub1000 || 0) + (n.hub1700 || 0) + (n.mfs || 0)))}</td>
                     </tr>
                   );
                 })}
@@ -597,7 +593,7 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">재고보충 필요 상품</h3>
-              <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">전체 {num(a.restock_count)}건 · 기준: 허브재고 보유 + 전일판매&gt;0 + 점재고&lt;전일판매×2</p>
+              <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">전체 {num(a.restock_count)}건 · 기준: 물류 재고 보유 + 전일판매&gt;0 + 점재고&lt;전일판매×2</p>
             </div>
             <button
               onClick={() => downloadRestockCsv(qs, d.latest)}
@@ -620,7 +616,7 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                   <th className="py-2 pr-3 font-medium">상품</th>
                   <th className="py-2 pr-3 text-right font-medium">전일판매</th>
                   <th className="py-2 pr-3 text-right font-medium">점재고</th>
-                  <th className="py-2 text-right font-medium">허브재고</th>
+                  <th className="py-2 text-right font-medium">물류 재고</th>
                 </tr>
               </thead>
               <tbody>
