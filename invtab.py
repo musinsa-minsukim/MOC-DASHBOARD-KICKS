@@ -2,7 +2,7 @@
 
 - 매장별 점재고 컬럼은 한글 매장명이라 DuckDB SQL 대신 pandas로 처리(컬럼명=store_name과 동일).
 - 필터: 사업구분(biz) + 매장타입(type, 보이는 매장 컬럼 결정). 기간 필터 미적용(스냅샷).
-- 창고: 통합 원장 스냅샷은 '물류 재고'(센터 FC 합) 1열 = 허브합계. (레거시 스냅샷은 MFS / 허브1000 / 허브1700, 합계=허브합계.)
+- 창고: 통합 원장 스냅샷은 '물류 가용' + '물류 할당(주문)' 2열, 허브합계 = 물류 가용. (레거시 스냅샷은 MFS / 허브1000 / 허브1700.)
 - 점재고합계=선택 매장 컬럼 합.
 """
 from __future__ import annotations
@@ -139,8 +139,9 @@ def _f(v) -> float:
 
 
 _HUB1000_ORDER = {"허브1000-온라인": 0, "허브1000-오프라인": 1, "허브1000-반품": 2}
-LOGI_COL = store.db.LOGI_COL   # '물류 재고' — 통합 원장 스냅샷의 창고 열(센터 FC 합). 레거시 스냅샷엔 없음.
+LOGI_COL = store.db.LOGI_COL   # '물류 가용' — 통합 스냅샷의 첫 물류 열(= 허브합계 키). 레거시 스냅샷엔 없음.
 LOGI_COLS = store.db.LOGI_COLS # 물류 열 목록(db.LOGI_MEASURES 정의 순서). 열을 나누면 여기에 자동 반영.
+LOGI_ALL = store.db.LOGI_ALL   # + 이전 스냅샷의 '물류 재고' 단일 열(갱신 전 캐시 호환) — 열 판별엔 항상 이걸 쓴다.
 
 
 def _cols(columns):
@@ -156,10 +157,10 @@ def _cols(columns):
                        key=lambda c: _HUB1000_ORDER.get(c, 9))
     agg1000 = next((c for c in cols if c == "허브1000"), None)
     show1000 = parts1000 if parts1000 else ([agg1000] if agg1000 else [])
-    logis = [c for c in LOGI_COLS if c in cols]             # 통합 스냅샷: 창고 열 = 물류 열(들)
+    logis = [c for c in LOGI_ALL if c in cols]              # 통합 스냅샷: 창고 열 = 물류 열(들). 구 스냅샷의 '물류 재고'도 포함
     hubcols = [c for c in (logis + [mfs] + show1000 + [h1700]) if c]
     # 집계 허브1000은 미표시여도 매장 컬럼 오인 방지 위해 항상 skip
-    skip = (set(_META_ASCII) | {hub_total, jaego_total, agg1000} | set(LOGI_COLS)
+    skip = (set(_META_ASCII) | {hub_total, jaego_total, agg1000} | set(LOGI_ALL)
             | set(hubcols) | set(parts1000))
     skip.discard(None)
     store_cols = [c for c in cols if c not in skip and not c.startswith("__")]   # __파생열(컬러키 등) 매장 오인 방지
@@ -182,7 +183,7 @@ def _apply_scm_overlay(inv):
         return inv
     if scm is None or scm.empty or "barcode" not in inv.columns:
         return inv
-    if LOGI_COL in inv.columns:
+    if any(c in inv.columns for c in LOGI_ALL):
         # 통합 원장 스냅샷: 매장 수량이 이미 매시 원장(매입+위탁)이라 SCM-HUB 오버레이 불필요(덮어쓰면 원천이 섞임).
         return inv
     store_cols, _hub, _j, _h = _cols(inv.columns)
@@ -534,7 +535,7 @@ def _store_sku(df, vis, bmap=None):
 def compute(f=None, limit=300):
     df, vis, hubcols, hcol, pre = _prep2(f)
     if df.empty:
-        return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "options": 0, "goods": 0, "color_sku": 0},
+        return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "hub_alloc": 0, "options": 0, "goods": 0, "color_sku": 0},
                 "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols, "cats": {},
                 "brand_stock": [], "store_sku": [], "cat_sku": {}}
 
@@ -543,6 +544,10 @@ def compute(f=None, limit=300):
     kpis = {"jaego": _f(df["__jaego"].sum()), "hub": _f(df["__hub"].sum()),
             "options": int(len(df)), "goods": int(df["goods_no"].nunique()),
             "color_sku": int(df["__color_key"].nunique())}
+    # 물류 할당(주문) KPI — 통합 스냅샷의 둘째 물류 열. 허브합계(=물류 가용)와 합치면 센터 총 보유.
+    _alloc = LOGI_COLS[1] if len(LOGI_COLS) > 1 else None
+    if _alloc and _alloc in df.columns:
+        kpis["hub_alloc"] = _f(df[_alloc].sum())
     cats = _cat_pies(df)
 
     # 매장별 재고 (위탁/매입) — store × business_type
@@ -762,7 +767,7 @@ def csv_rows(f=None):
                           (status_map.get((loc, sku), "미지정") if sku else "미지정"))
                 brk = "Y" if (is_store and ck in per_store_broken.get(loc, set())) else ""
                 # 위치구분: 매장 / 물류(통합 스냅샷의 '물류 재고' 1열) / 허브(레거시 스냅샷의 MFS·허브1000·허브1700)
-                kind = "매장" if is_store else ("물류" if loc in LOGI_COLS else "허브")
+                kind = "매장" if is_store else ("물류" if loc in LOGI_ALL else "허브")
                 out.append([store_code] + ([sku] if has_sku else []) + [status] + metavals +
                            [kind, loc, qty, brk])
     return header, out

@@ -442,7 +442,7 @@ def _heavy_sections(d4, dnames, d0, d1, fsql, fp, gmv0):
 
     inv = store.get_inventory_goods()
     ic = _inv_cols(list(inv.columns))
-    # logi = 물류 재고(창고 합계=허브합계). 통합 원장 스냅샷엔 허브1000/1700/MFS 열이 없어 그 셋은 0, logi 만 채워진다.
+    # logi = 물류 가용(창고 합계=허브합계). 통합 원장 스냅샷엔 허브1000/1700/MFS 열이 없어 그 셋은 0, logi 만 채워진다.
     keep = ["goods_no"] + [ic[k] for k in ("store_stock", "hub_total", "hub1000", "hub1700", "mfs") if ic.get(k)]
     inv_small = inv[keep].rename(columns={
         ic["store_stock"]: "store_stock", ic.get("hub_total"): "logi", ic.get("hub1000"): "hub1000",
@@ -474,7 +474,7 @@ def _heavy_sections(d4, dnames, d0, d1, fsql, fp, gmv0):
                 "tag": tag[gn]["kind"], "tag_pct": tag[gn]["pct"],
                 "days": [_f(row.get(f"q{i}", 0)) for i in range(len(d4))],
                 "store_stock": _f(row.get("store_stock", 0)),
-                "logi": _f(row.get("logi", 0)),                 # 물류 재고(센터 합) — 화면은 이 한 열만 표시
+                "logi": _f(row.get("logi", 0)),                 # 물류 가용(센터, 할당 제외) — 화면은 이 한 열만 표시
                 "hub1000": _f(row.get("hub1000", 0)),
                 "hub1700": _f(row.get("hub1700", 0)),
                 "mfs": _f(row.get("mfs", 0)),

@@ -464,7 +464,7 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                   <th className="py-2 pr-3 font-medium">상품</th>
                   {dnames.map((n) => <th key={n} className="py-2 pr-3 text-right font-medium">{n}</th>)}
                   <th className="py-2 pr-3 text-right font-medium">점재고</th>
-                  <th className="py-2 text-right font-medium" title="물류센터(FC) 재고 합 — 기존 허브1000·허브1700·MFS를 한 열로 합침">물류 재고</th>
+                  <th className="py-2 text-right font-medium" title="물류센터(FC)에서 매장으로 보낼 수 있는 수량 = 센터 보유 − 할당 — 기존 허브1000·허브1700·MFS 대체">물류 가용</th>
                 </tr>
               </thead>
               <tbody>
@@ -593,7 +593,7 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-[15px] font-semibold text-slate-800 dark:text-slate-100">재고보충 필요 상품</h3>
-              <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">전체 {num(a.restock_count)}건 · 기준: 물류 재고 보유 + 전일판매&gt;0 + 점재고&lt;전일판매×2</p>
+              <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-400">전체 {num(a.restock_count)}건 · 기준: 물류 가용 보유 + 전일판매&gt;0 + 점재고&lt;전일판매×2</p>
             </div>
             <button
               onClick={() => downloadRestockCsv(qs, d.latest)}
@@ -616,7 +616,7 @@ function Report({ d, C, qs }: { d: Daily; C: any; qs: string }) {
                   <th className="py-2 pr-3 font-medium">상품</th>
                   <th className="py-2 pr-3 text-right font-medium">전일판매</th>
                   <th className="py-2 pr-3 text-right font-medium">점재고</th>
-                  <th className="py-2 text-right font-medium">물류 재고</th>
+                  <th className="py-2 text-right font-medium">물류 가용</th>
                 </tr>
               </thead>
               <tbody>

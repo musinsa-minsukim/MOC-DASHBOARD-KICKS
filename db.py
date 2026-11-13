@@ -1815,8 +1815,10 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 #   수량 원천만 team.scm.stock_detail(매장·센터, 매입+위탁, 매시) 로 바꾼 것. (2026-11 사용자 결정)
 #   · 매장 열      = stock_detail STORE **가용**(총 보유 − 할당; STORE_QTY_BASIS). 보유가 음수인 행은 원장 그대로.
 #                    editorial/sap1700/SCM 오버레이 대체.
-#   · LOGI_COL     = '물류 재고' = 센터(FC 20곳) total_quantity 합. 기존 MFS/허브1000/허브1700(+분해 3열)을 한 열로 합침.
-#   · 허브합계      = LOGI_COL 과 같은 값(다운스트림 키 호환용으로 유지: daily/api 의 hub_total·hub).
+#   · 물류 열      = 센터(FC 20곳)를 **가용 + 할당(주문)** 두 열로. 기존 MFS/허브1000/허브1700(+분해 3열) 대체.
+#       물류 가용      = remaining_quantity(할당 제외, 음수면 0) — 매장으로 보낼 수 있는 물량.
+#       물류 할당(주문) = total − 가용 = 진할당(출고 작업 중) + 가할당(주문 예약·온라인 판매제외 포함).
+#   · 허브합계      = LOGI_COLS[0] = '물류 가용'(다운스트림 키 호환: daily/api 의 hub_total·hub, 재고보충 판정).
 #   · 메타(옵션명·오프라인 카테고리·MD·업체/브랜드코드·사업구분)와 바코드→상품번호 귀속은 editorial 최신 스냅샷에서 가져온다
 #     (신규 원장엔 없음. 상품번호는 오프라인 판매 번호와 맞아야 판매 조인이 유지됨).
 #     editorial 에 없는 바코드는 상품마스터(이름·브랜드)·company.margin_type(사업구분)로 보강, 옵션/카테고리는 공란/미분류.
@@ -1824,7 +1826,7 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 #   쿼리 2개(수량 long 3열 / 바코드 메타 — 상품마스터 조인은 서버에서) + 기존 보정 4개 + 기준시각 1개.
 #   bizest.goods 700만 전량 수신·raw_erp·mfs·goods_meta·sap_inventory 스캔 없음. 수량 0 행은 내려받지 않는다.
 # ---------------------------------------------------------------------------
-LOGI_COL = "물류 재고"
+LOGI_COL = "물류 가용"          # 창고 합계 키(허브합계)가 되는 첫 물류 열
 # 매장 수량(점재고) 기준 — 사용자 결정(2026-11-13): 점재고는 전 지표에서 **가용** 으로 본다.
 #   "available" = 총 보유 − 할당(원장 remaining_quantity). 매장의 할당은 실측상 거의 전부 반납 지시분이다.
 #                 오래된 반납 지시로 할당이 보유보다 많으면 0, 보유 자체가 음수인 행(원장 음수)은 그 값 그대로.
@@ -1834,10 +1836,18 @@ STORE_QTY_BASIS = "available"
 #   후보(매장 출고 이력이 사실상 없는 센터): 'RTN01'(안성반품센터), 'NWH09'(여주글로벌센터) — 사용자 확정 후 여기만 바꾸면 된다.
 LOGI_EXCLUDE_FC: tuple = ()
 # 물류 재고 열 정의: {열 이름: team.scm.stock_detail(d) 수량식}. 첫 항목이 '허브합계'(창고 합계 키)가 된다.
-#   열을 나눠 보려면 여기에 한 줄 추가(invtab·파생 스냅샷·화면이 LOGI_COLS 를 따라 자동 반영). 예:
-#     "물류 가용": "CASE WHEN d.saleable THEN d.remaining_quantity ELSE 0 END"   # 판매가능 로케이션의 할당 제외 수량
-LOGI_MEASURES = {LOGI_COL: "d.total_quantity"}
+#   열을 더 나누려면 한 줄 추가(invtab·파생 스냅샷·화면이 LOGI_COLS 를 따라 자동 반영). 예:
+#     "물류 보유": "d.total_quantity"   # 가용+할당 합(총 보유)을 따로 보고 싶을 때
+LOGI_ALLOC_COL = "물류 할당(주문)"
+LOGI_MEASURES = {
+    LOGI_COL:       "GREATEST(d.remaining_quantity, 0)",
+    LOGI_ALLOC_COL: "d.total_quantity - GREATEST(d.remaining_quantity, 0)",
+}
 LOGI_COLS = list(LOGI_MEASURES)
+# 이전 스냅샷의 단일 창고 열 이름 — 배포 직후 첫 갱신 전까지 캐시에 남아 있다.
+#   매장 열로 오인되면 점재고가 물류 수량만큼 부풀므로 열 판별에는 항상 LOGI_ALL 을 쓴다.
+LOGI_LEGACY_COLS = ["물류 재고"]
+LOGI_ALL = LOGI_COLS + LOGI_LEGACY_COLS
 
 _EDITORIAL_LATEST = r"""
 el AS (   -- 파티션(ord_state_date_st, 'yyyyMMdd') 프루닝: 최근 10일 안에서 최신일
@@ -1939,7 +1949,8 @@ def _unified_pivot_sql() -> tuple[str, str]:
 @st.cache_data(ttl=900, show_spinner=False)
 def load_inventory_pivot_unified() -> pd.DataFrame:
     """통합 원장 기반 재고 피벗(barcode × 매장 + '물류 재고'). load_inventory_pivot 대체용 — 출력 계약 동일:
-       메타열 + 매장열 + LOGI_COL + 점재고합계 + 허브합계(=LOGI_COL) + sku_id + is_running + concept, attrs(store_cols, data_date)."""
+       메타열 + 매장열 + 물류 열(LOGI_COLS) + 점재고합계 + 허브합계(=LOGI_COLS[0]) + sku_id + is_running + concept,
+       attrs(store_cols, data_date, stock_basis)."""
     q_qty, q_meta = _unified_pivot_sql()
     qty = run_df(q_qty)
     meta = run_df(q_meta)
@@ -1994,9 +2005,9 @@ def _inventory_goods_from(inv: pd.DataFrame) -> pd.DataFrame:
     """피벗 → 상품(goods_no) 단위 합산. load_inventory_goods 와 같은 열 구성(매장열 + 점재고합계 + 허브합계 + 창고열 + goods_nm)."""
     meta = {"barcode", "sku_id", "goods_no", "goods_opt", "brand_nm", "goods_nm", "business_type",
             "cat_top", "cat_large", "cat_medium", "off_md_id", "concept", "is_running",
-            "company_id", "brand_id", "점재고합계", "허브합계", *LOGI_COLS, *HUB_ALL}
+            "company_id", "brand_id", "점재고합계", "허브합계", *LOGI_ALL, *HUB_ALL}
     store_cols = [c for c in inv.columns if c not in meta]
-    hub = [c for c in (*LOGI_COLS, *HUB_COLS) if c in inv.columns]
+    hub = [c for c in (*LOGI_ALL, *HUB_COLS) if c in inv.columns]
     cols = store_cols + ["점재고합계", "허브합계"] + hub
     num = inv.groupby("goods_no")[cols].sum()
     nm = inv.groupby("goods_no")["goods_nm"].first()
@@ -2012,7 +2023,7 @@ def load_inventory_store_long_unified() -> pd.DataFrame:
     """(goods_no, store_name, 점재고) 롱포맷(inventory_store_long 스냅샷용) — 통합 피벗 기준."""
     g = load_inventory_goods_unified()
     store_cols = [c for c in g.columns
-                  if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계", *LOGI_COLS} | set(HUB_ALL))]
+                  if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계", *LOGI_ALL} | set(HUB_ALL))]
     long = g.melt(id_vars="goods_no", value_vars=store_cols, var_name="store_name", value_name="점재고")
     # 수량 0 인 (상품×매장) 조합은 싣지 않는다 — 소비처가 전부 합계·조인이라 결과 동일, 행 수는 약 1/5.
     return long[long["점재고"] != 0].reset_index(drop=True)
