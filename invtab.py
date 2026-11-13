@@ -2,7 +2,8 @@
 
 - 매장별 점재고 컬럼은 한글 매장명이라 DuckDB SQL 대신 pandas로 처리(컬럼명=store_name과 동일).
 - 필터: 사업구분(biz) + 매장타입(type, 보이는 매장 컬럼 결정). 기간 필터 미적용(스냅샷).
-- 창고: 통합 원장 스냅샷은 '물류 가용' + '물류 할당(주문)' 2열, 허브합계 = 물류 가용. (레거시 스냅샷은 MFS / 허브1000 / 허브1700.)
+- 창고: 통합 원장 스냅샷은 '총 물류 보유' + '무신사 슬롯 재고(가용)' + '온라인 판매 제외' 3열, 허브합계 = 가용.
+  (레거시 스냅샷은 MFS / 허브1000 / 허브1700.)
 - 점재고합계=선택 매장 컬럼 합.
 """
 from __future__ import annotations
@@ -535,7 +536,7 @@ def _store_sku(df, vis, bmap=None):
 def compute(f=None, limit=300):
     df, vis, hubcols, hcol, pre = _prep2(f)
     if df.empty:
-        return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "hub_alloc": 0, "options": 0, "goods": 0, "color_sku": 0},
+        return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "hub_total": 0, "hub_oex": 0, "options": 0, "goods": 0, "color_sku": 0},
                 "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols, "cats": {},
                 "brand_stock": [], "store_sku": [], "cat_sku": {}}
 
@@ -544,10 +545,11 @@ def compute(f=None, limit=300):
     kpis = {"jaego": _f(df["__jaego"].sum()), "hub": _f(df["__hub"].sum()),
             "options": int(len(df)), "goods": int(df["goods_no"].nunique()),
             "color_sku": int(df["__color_key"].nunique())}
-    # 물류 할당(주문) KPI — 통합 스냅샷의 둘째 물류 열. 허브합계(=물류 가용)와 합치면 센터 총 보유.
-    _alloc = LOGI_COLS[1] if len(LOGI_COLS) > 1 else None
-    if _alloc and _alloc in df.columns:
-        kpis["hub_alloc"] = _f(df[_alloc].sum())
+    # 물류 KPI — 통합 스냅샷의 물류 열(총 보유 / 무신사 슬롯 재고(가용)=허브합계 / 온라인 판매 제외).
+    for _k, _c in (("hub_total", store.db.LOGI_COL), ("hub_oex", store.db.LOGI_OEX_COL)):
+        if _c in df.columns:
+            kpis[_k] = float(round(_f(df[_c].sum())))   # 온라인 판매 제외는 바코드 비례 배분이라 소수 → 반올림
+
     cats = _cat_pies(df)
 
     # 매장별 재고 (위탁/매입) — store × business_type

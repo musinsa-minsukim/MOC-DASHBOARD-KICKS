@@ -1815,10 +1815,13 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 #   수량 원천만 team.scm.stock_detail(매장·센터, 매입+위탁, 매시) 로 바꾼 것. (2026-11 사용자 결정)
 #   · 매장 열      = stock_detail STORE **가용**(총 보유 − 할당; STORE_QTY_BASIS). 보유가 음수인 행은 원장 그대로.
 #                    editorial/sap1700/SCM 오버레이 대체.
-#   · 물류 열      = 센터(FC 20곳)를 **가용 + 할당(주문)** 두 열로. 기존 MFS/허브1000/허브1700(+분해 3열) 대체.
-#       물류 가용      = remaining_quantity(할당 제외, 음수면 0) — 매장으로 보낼 수 있는 물량.
-#       물류 할당(주문) = total − 가용 = 진할당(출고 작업 중) + 가할당(주문 예약·온라인 판매제외 포함).
-#   · 허브합계      = LOGI_COLS[0] = '물류 가용'(다운스트림 키 호환: daily/api 의 hub_total·hub, 재고보충 판정).
+#   · 물류 열      = 센터(FC 20곳)를 **3열**로. 기존 MFS/허브1000/허브1700(+분해 3열) 대체.
+#       총 물류 보유          = total_quantity (센터 실물 전체).
+#       무신사 슬롯 재고(가용) = remaining_quantity(진할당·가할당 제외, 음수면 0) — 지금 판매·출고에 풀 수 있는 물량.
+#       온라인 판매 제외       = online_except_quantity — 온라인에 안 풀고 묶어둔 물량(가할당 안에 포함).
+#       (총 보유 − 가용 − 온라인 제외 = 진할당 + B2B 출고예정 등, 실측 FC 전체 약 23만.)
+#       ⚠️ online_except 는 SKU×거점 단위(team.scm.stock)에만 있어 바코드로 **비례 배분**한다(SKU 내 바코드 보유 비중).
+#   · 허브합계      = LOGI_SUM_COL = '무신사 슬롯 재고(가용)'(다운스트림 키 호환: daily/api 의 hub_total·hub, 재고보충 판정).
 #   · 메타(옵션명·오프라인 카테고리·MD·업체/브랜드코드·사업구분)와 바코드→상품번호 귀속은 editorial 최신 스냅샷에서 가져온다
 #     (신규 원장엔 없음. 상품번호는 오프라인 판매 번호와 맞아야 판매 조인이 유지됨).
 #     editorial 에 없는 바코드는 상품마스터(이름·브랜드)·company.margin_type(사업구분)로 보강, 옵션/카테고리는 공란/미분류.
@@ -1826,7 +1829,7 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 #   쿼리 2개(수량 long 3열 / 바코드 메타 — 상품마스터 조인은 서버에서) + 기존 보정 4개 + 기준시각 1개.
 #   bizest.goods 700만 전량 수신·raw_erp·mfs·goods_meta·sap_inventory 스캔 없음. 수량 0 행은 내려받지 않는다.
 # ---------------------------------------------------------------------------
-LOGI_COL = "물류 가용"          # 창고 합계 키(허브합계)가 되는 첫 물류 열
+LOGI_COL = "총 물류 보유"       # 물류 열 중 첫 열(센터 실물 전체)
 # 매장 수량(점재고) 기준 — 사용자 결정(2026-11-13): 점재고는 전 지표에서 **가용** 으로 본다.
 #   "available" = 총 보유 − 할당(원장 remaining_quantity). 매장의 할당은 실측상 거의 전부 반납 지시분이다.
 #                 오래된 반납 지시로 할당이 보유보다 많으면 0, 보유 자체가 음수인 행(원장 음수)은 그 값 그대로.
@@ -1838,15 +1841,19 @@ LOGI_EXCLUDE_FC: tuple = ()
 # 물류 재고 열 정의: {열 이름: team.scm.stock_detail(d) 수량식}. 첫 항목이 '허브합계'(창고 합계 키)가 된다.
 #   열을 더 나누려면 한 줄 추가(invtab·파생 스냅샷·화면이 LOGI_COLS 를 따라 자동 반영). 예:
 #     "물류 보유": "d.total_quantity"   # 가용+할당 합(총 보유)을 따로 보고 싶을 때
-LOGI_ALLOC_COL = "물류 할당(주문)"
+LOGI_AVAIL_COL = "무신사 슬롯 재고(가용)"   # 허브합계 키 — 판매·요약 탭의 '물류 가용', 재고보충 판정도 이 값
+LOGI_OEX_COL = "온라인 판매 제외"
 LOGI_MEASURES = {
-    LOGI_COL:       "GREATEST(d.remaining_quantity, 0)",
-    LOGI_ALLOC_COL: "d.total_quantity - GREATEST(d.remaining_quantity, 0)",
+    LOGI_COL:       "d.total_quantity",
+    LOGI_AVAIL_COL: "GREATEST(d.remaining_quantity, 0)",
+    # 온라인 판매 제외: SKU 단위 값을 그 SKU 안에서 바코드 보유 비중으로 배분(SKU 전체 보유가 0이면 0).
+    LOGI_OEX_COL:   "CASE WHEN o.sku_tot > 0 THEN d.total_quantity * o.oex / o.sku_tot ELSE 0 END",
 }
+LOGI_SUM_COL = LOGI_AVAIL_COL
 LOGI_COLS = list(LOGI_MEASURES)
 # 이전 스냅샷의 단일 창고 열 이름 — 배포 직후 첫 갱신 전까지 캐시에 남아 있다.
 #   매장 열로 오인되면 점재고가 물류 수량만큼 부풀므로 열 판별에는 항상 LOGI_ALL 을 쓴다.
-LOGI_LEGACY_COLS = ["물류 재고"]
+LOGI_LEGACY_COLS = ["물류 재고", "물류 가용", "물류 할당(주문)"]
 LOGI_ALL = LOGI_COLS + LOGI_LEGACY_COLS
 
 _EDITORIAL_LATEST = r"""
@@ -1890,12 +1897,16 @@ def _unified_pivot_sql() -> tuple[str, str]:
           SELECT s.barcode FROM team.sales.dsh_d_upt_editorial_stock_summary s
           JOIN el ON s.ord_state_date_st = el.d JOIN dim_store st ON st.shop_no = s.shop_no
           WHERE s.barcode IS NOT NULL),
+        fc_oex AS (   -- 온라인 판매 제외(SKU×거점) → SKU 단위로 집계. 바코드 배분용 분모(sku_tot)도 함께.
+          SELECT sku_id, SUM(online_except_quantity) AS oex, SUM(total_quantity) AS sku_tot
+          FROM team.scm.stock WHERE namespace = 'FC' GROUP BY sku_id HAVING SUM(online_except_quantity) <> 0),
         fc AS (
           SELECT d.barcode,
                  MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS uid,
                  """ + fc_sums + r"""
           FROM team.scm.stock_detail d
           LEFT JOIN sku_map m ON m.sku_id = d.sku_id
+          LEFT JOIN fc_oex o ON o.sku_id = d.sku_id
           WHERE d.namespace = 'FC' AND d.barcode IN (SELECT barcode FROM spine)""" + fc_excl + r"""
           GROUP BY d.barcode),
         lng AS (     -- 수량이 있는 (바코드 × 위치) 행만. 매장은 가용이 0 이어도 실물(총 보유)이 있으면 남긴다
@@ -1982,7 +1993,7 @@ def load_inventory_pivot_unified() -> pd.DataFrame:
 
     df = m[meta_cols].join(piv)
     df["점재고합계"] = df[store_cols].sum(axis=1)
-    df["허브합계"] = df[LOGI_COLS[0]]                   # 창고 합계 키(호환) = 첫 물류 열(보유)
+    df["허브합계"] = df[LOGI_SUM_COL]                   # 창고 합계 키(호환) = 무신사 슬롯 재고(가용)
     df["sku_id"] = m["sku_id"].fillna("").astype(str)
     df = df.reset_index().rename(columns={"index": "barcode"})
     df = apply_category_override(df)
@@ -2383,20 +2394,18 @@ def fetch_store_sku_status() -> dict:
        OPERATION_ENABLED=운영중, 그 외(CREATED/OPERATION_DISABLED/DELETED)=미운영. storage_sku 행 없음 = '미지정'(맵에 없음).
        재고 탭 CSV 운영상태 열용. 라이브 + 1h 캐시(운영상태는 수시 변동)."""
     # ★ CSV엔 '재고 있는 (매장×SKU)'만 나오므로 그걸로 한정 — 전 storage_sku(4.5M)·인벤SKU(3.6M)는 과대(재고 없는 미운영 대량).
-    #   stocked = editorial 점재고(sellable>0) (매장, SKU). 여기 등록(storage_sku)된 건만 운영중/미운영, 나머지(맵에 없음)=미지정.
+    #   stocked = **통합 원장(team.scm.stock) STORE 보유>0** 인 (매장, SKU). 2026-11 재고 원장 교체로 editorial 의존 제거.
+    #   여기 등록(storage_sku)된 건만 운영중/미운영, 나머지(맵에 없음)=미지정.
     q = ("WITH " + DIM_STORE + r""",
         sid AS (SELECT CAST(s.storage_id AS BIGINT) AS storage_id, ds.store_name
                 FROM team.commercepm.offline_shopno_storageid s
                 JOIN dim_store ds ON ds.shop_no = CAST(s.shop_no AS INT)),
-        l  AS (SELECT MAX(ord_state_date) d FROM team.sales.dsh_d_upt_editorial_stock_summary),
         stocked AS (
-          SELECT DISTINCT st.store_name AS store_name, sb.fk_sku_id AS fk_sku_id
-          FROM team.sales.dsh_d_upt_editorial_stock_summary s
-          JOIN l ON s.ord_state_date = l.d
-          JOIN dim_store st ON st.shop_no = s.shop_no
-          JOIN ocmp.scm_hub.barcode b ON b.supplier_barcode = s.barcode
-          JOIN ocmp.scm_hub.sku_barcode sb ON sb.fk_barcode_id = b._id
-          WHERE s.barcode IS NOT NULL AND s.sellable_qty > 0)
+          SELECT DISTINCT ds.store_name AS store_name, CAST(k._id AS BIGINT) AS fk_sku_id
+          FROM team.scm.stock s
+          JOIN dim_store ds ON CAST(ds.shop_no AS STRING) = s.root_node_id
+          JOIN ocmp.scm_hub.sku k ON k.sku_id = s.sku_id
+          WHERE s.namespace = 'STORE' AND s.total_quantity > 0)
         SELECT sid.store_name AS store_name, CAST(sk.sku_id AS STRING) AS sku_id,
                MAX(CASE WHEN ss.status = 'OPERATION_ENABLED' THEN 1 ELSE 0 END) AS op
         FROM ocmp.scm_hub.storage_sku ss

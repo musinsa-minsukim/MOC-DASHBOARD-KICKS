@@ -41,8 +41,11 @@ _SNAPSHOTS = {
     # 매장 이동: 통합 = SCM-HUB(매입+위탁) 이동 문서 + 직납(입고 지시·이동중·반납 지시 열 추가) /
     #           레거시 = ERP(매입)+SCM 이동중. 파일명·기존 열(in_qty/out_qty/hist_recv)은 같다.
     "store_moves": db.fetch_store_flow if INVENTORY_UNIFIED else db.fetch_store_moves,
-    "scm_store_stock": db.fetch_scm_store_stock,        # 위탁 실시간 매장재고(판매가능/입고예정/출고예정) — 재고 탭 위탁 통일
 }
+# 위탁 실시간 매장재고(scm_hub_inventory_status_v) — **레거시 전용**. 통합 원장 모드에선 원장이 대체하므로 등록하지 않는다
+#   (등록해 두면 무거운 뷰를 계속 조회·보관하게 되고, 재고 탭 오버레이도 이미 건너뛴다).
+if not INVENTORY_UNIFIED:
+    _SNAPSHOTS["scm_store_stock"] = db.fetch_scm_store_stock
 # 증분(윈도우) 스냅샷 — {name: (fetch_fn, window_days)}. sales_date 기준 최근 N일만 재적재하고 과거는 보존.
 # editorial_summary_v는 296만행(2023-10~) 전이력이라 매 daily마다 전체 재집계하면 느림 →
 # 최근 90일만 재적재(과거는 _incremental이 유지). CP는 ~2개월 내 확정되므로 90일 윈도우면 최신성 충분.

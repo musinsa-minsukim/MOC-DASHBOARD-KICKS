@@ -155,8 +155,9 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
   }, [qs, reloadKey]);
 
   const hubcols: string[] = d?.hubcols ?? [];
-  // 통합 원장 스냅샷: 창고 열이 '물류 가용' + '물류 할당(주문)' → 허브합계(=물류 가용)는 중복이라 숨김. 레거시 스냅샷이면 기존 그대로.
-  const unified = hubcols.some((c) => c.startsWith("물류"));
+  // 통합 원장 스냅샷: 창고 열이 물류 3열(총 보유 / 무신사 슬롯 재고(가용) / 온라인 판매 제외) → 허브합계(=가용)는 중복이라 숨김.
+  //   레거시 스냅샷(MFS·허브1000·허브1700)이면 기존 그대로. 열 이름이 바뀌어도 레거시 이름만 판별하면 안전하다.
+  const unified = hubcols.length > 0 && !hubcols.some((c) => c === "MFS" || c.startsWith("허브"));
   // 매장 흐름 단계 열(통합 store_moves 스냅샷일 때만 서버가 내려줌) → 점재고(가용)·입고 지시·이동중·반납 지시 열 표시.
   const flowcols: string[] = d?.flowcols ?? [];
   const flowOn = flowcols.length > 0;
@@ -222,8 +223,9 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
     colNum("normal_price", "정상가", "num", { minWidth: 84 }),
     colNum("sale_price", "판매가", "num", { minWidth: 84 }),
     ...hubcols.map((h) => colNum(h, h, "num", { headerTooltip:
-      h === "물류 가용" ? "물류센터(FC)에서 지금 매장으로 보낼 수 있는 수량 = 센터 보유 − 할당 · 매입+위탁 통합 원장 · 매장 무관(그 상품 barcode 기준) · 매장행마다 반복 표시(합계는 barcode당 1회만)"
-      : h.startsWith("물류 할당") ? "물류센터(FC) 재고 중 이미 용도가 잡힌 수량 = 센터 보유 − 물류 가용 · 고객 주문·출고 작업(진할당) + 주문 예약·온라인 판매제외(가할당) · 물류 가용 + 물류 할당 = 센터 총 보유"
+      h === "총 물류 보유" ? "물류센터(FC·20곳)의 실물 재고 전체 · 매입+위탁 통합 원장 · 매장 무관(그 상품 barcode 기준) · 매장행마다 반복 표시(합계는 barcode당 1회만)"
+      : h.startsWith("무신사 슬롯") ? "총 물류 보유 중 지금 판매·출고에 풀 수 있는 수량 = 보유 − 할당(진할당+가할당) · 판매·요약 탭의 '물류 가용'과 재고보충 판정도 이 값"
+      : h === "온라인 판매 제외" ? "온라인에 풀지 않고 묶어둔 센터 재고(가할당 안에 포함) · 원장은 SKU 단위라 SKU 안에서 바코드 보유 비중으로 배분한 값 · 총 보유 − 가용 − 온라인 판매 제외 = 출고 작업 중 + B2B 출고예정"
       : "창고(허브) 재고 · 매장 무관(그 상품 barcode 기준) · 합계는 상품 중복 없이 1회만 반영" })),
     ...(unified ? [] : [colNum("허브합계", "허브합계", "num", { headerTooltip: "MFS+허브1000(온라인+오프라인+반품)+허브1700 · 매장행마다 반복 표시(합계는 barcode당 1회만)" })]),
   ], [hubcols.join(","), flowOn, availOn, dark]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -308,7 +310,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-slate-400 dark:text-slate-400">{unified
-          ? "최신 스냅샷 · 상품·옵션(barcode) 단위 · 점재고=가용(매장 보유−할당) · 창고: 물류 가용 / 물류 할당(주문) · 통합 재고 원장(매입+위탁, 매시) · 기간 필터 미적용"
+          ? "최신 스냅샷 · 상품·옵션(barcode) 단위 · 점재고=가용(매장 보유−할당) · 물류: 총 보유 / 무신사 슬롯 재고(가용) / 온라인 판매 제외 · 통합 재고 원장(매입+위탁, 매시) · 기간 필터 미적용"
           : "최신 스냅샷 · 상품·옵션(barcode) 단위 · 위탁 점재고=SCM-HUB 실시간(판매가능재고) · 창고: MFS / 허브1000(온라인·오프라인·반품) / 허브1700 · 기간 필터 미적용"}</p>
         <div className="flex items-center gap-2">
           {/* 재고 REFRESH가 실제 갱신하는 대상(위탁 실시간 재고·STO 이동)의 최근 갱신 시각.
@@ -339,18 +341,19 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
               <div className="mb-1 text-[13px] font-semibold text-indigo-700 dark:text-indigo-300">이 탭의 재고 기준 (매입+위탁 통합 재고 원장 · 매시 갱신)</div>
               <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
                 <div><b>점재고(가용)</b> = 매장 보유 − 할당 · 지금 매장에서 팔 수 있는 수량. 판매·요약·드릴 탭의 점재고도 같은 기준.</div>
-                <div><b>물류 가용</b> = 센터 보유 − 할당 · 지금 매장으로 보낼 수 있는 수량.</div>
+                <div><b>총 물류 보유</b> = 물류센터(FC) 실물 전체. <b>무신사 슬롯 재고(가용)</b> = 보유 − 할당 · 지금 풀 수 있는 수량.</div>
                 <div><b className="text-emerald-600 dark:text-emerald-400">입고 예정</b> = <b className="text-emerald-600 dark:text-emerald-400">입고 지시</b>(센터 미출고) + <b className="text-emerald-600 dark:text-emerald-400">이동중</b>(센터 출고·매장 입고확정 전).</div>
-                <div><b>물류 할당(주문)</b> = 고객 주문·출고 작업 + 주문 예약·온라인 판매제외로 묶인 센터 재고. 가용 + 할당 = 센터 총 보유.</div>
+                <div><b>온라인 판매 제외</b> = 온라인에 안 풀고 묶어둔 센터 재고. 총 보유 − 가용 − 온라인 제외 = 출고 작업 중 + B2B 출고예정.</div>
                 <div><b className="text-rose-600 dark:text-rose-400">출고 예정</b> = <b className="text-rose-600 dark:text-rose-400">반납 지시</b>(매장 출고 확정 전) + 매장 출고 후 물류 미입고 · 이미 나간 수량이 포함돼 점재고보다 클 수 있음.</div>
                 <div className="text-slate-500 dark:text-slate-400">할당이 보유보다 많으면 가용은 0. 옵션(barcode)·매장 단위이며, 물류 열은 매장 무관(상품 기준)이라 합계는 상품당 1회만 반영.</div>
               </div>
             </div>
           )}
-          <div className={`grid grid-cols-2 gap-3 md:grid-cols-3 ${unified ? "lg:grid-cols-6" : "lg:grid-cols-5"}`}>
+          <div className={`grid grid-cols-2 gap-3 md:grid-cols-3 ${unified ? "lg:grid-cols-4 xl:grid-cols-7" : "lg:grid-cols-5"}`}>
             <Kpi icon={<Boxes size={16} />} label={`${jaegoLabel} 합계 (선택 매장)`} value={num(d.kpis.jaego)} />
-            <Kpi icon={<Warehouse size={16} />} label={unified ? "물류 가용 합계" : "창고(허브) 합계"} value={num(d.kpis.hub)} />
-            {unified && <Kpi icon={<Warehouse size={16} />} label="물류 할당(주문) 합계" value={num(d.kpis.hub_alloc ?? 0)} />}
+            {unified && <Kpi icon={<Warehouse size={16} />} label="총 물류 보유" value={num(d.kpis.hub_total ?? 0)} />}
+            <Kpi icon={<Warehouse size={16} />} label={unified ? "무신사 슬롯 재고(가용)" : "창고(허브) 합계"} value={num(d.kpis.hub)} />
+            {unified && <Kpi icon={<Warehouse size={16} />} label="온라인 판매 제외" value={num(d.kpis.hub_oex ?? 0)} />}
             <Kpi icon={<Palette size={16} />} label="컬러 SKU 수 (UID×컬러)" value={num(d.kpis.color_sku ?? 0)} />
             <Kpi icon={<Grid2x2 size={16} />} label="바코드 SKU (옵션·barcode)" value={num(d.kpis.options)} />
             <Kpi icon={<Tags size={16} />} label="상품 수 (UID·goods)" value={num(d.kpis.goods)} />
@@ -370,7 +373,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
               <br />
             </>)}
             {unified ? (<>
-              <span className="font-semibold text-slate-600 dark:text-slate-300">물류 재고</span> · 물류센터(FC·20곳) 재고를 <b>물류 가용</b>(센터 보유 − 할당 = 지금 매장으로 보낼 수 있는 물량)과 <b>물류 할당(주문)</b>(고객 주문·출고 작업 + 주문 예약·온라인 판매제외로 묶인 물량) 두 열로 나눠 표시 — 기존 <b>MFS·허브1000·허브1700</b> 대체(매입+위탁 통합 원장, 매시 갱신). 두 열의 합 = 센터 총 보유. 판매·요약 탭의 <b>물류 가용</b>과 재고보충 판정도 같은 기준.
+              <span className="font-semibold text-slate-600 dark:text-slate-300">물류 재고</span> · 물류센터(FC·20곳) 재고를 <b>총 물류 보유</b>(실물 전체) / <b>무신사 슬롯 재고(가용)</b>(보유 − 할당 = 지금 판매·출고에 풀 수 있는 물량) / <b>온라인 판매 제외</b>(온라인에 안 풀고 묶어둔 물량) 세 열로 표시 — 기존 <b>MFS·허브1000·허브1700</b> 대체(매입+위탁 통합 원장, 매시 갱신). 판매·요약 탭의 <b>물류 가용</b>과 재고보충 판정은 <b>무신사 슬롯 재고(가용)</b> 기준. 온라인 판매 제외는 원장이 SKU 단위라 바코드로 비례 배분한 값이다.
             </>) : (<>
               <span className="font-semibold text-slate-600 dark:text-slate-300">허브1000 분해</span> · plant1000 창고를 lgort로 나눔 — <b>온라인</b>(2000) / <b>오프라인</b>(2020·2060) / <b>반품</b>(2010). 세 열의 합 = 기존 허브1000이며 허브합계도 동일(중복 없음).
             </>)}
