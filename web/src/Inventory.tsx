@@ -164,10 +164,22 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
   // 매장 흐름 단계 열(통합 store_moves 스냅샷일 때만 서버가 내려줌) → 점재고(가용)·입고 지시·이동중·반납 지시 열 표시.
   const flowcols: string[] = d?.flowcols ?? [];
   const flowOn = flowcols.length > 0;
+  // 지시일 두 열은 갱신된 store_moves 스냅샷에만 있다 — 구 스냅샷이면 열을 아예 만들지 않는다(공란 열 방지).
+  const hasInOrderAt = flowcols.includes("입고지시일");
+  const hasRetAt = flowcols.includes("반출지시일");
   // 점재고 기준: 스냅샷이 가용(총 보유 − 할당) 기준으로 만들어졌으면 서버 상태에 표시된다 → 표기를 '점재고(가용)'으로.
   const availOn = status?.inventory_pivot_basis === "available";
   const jaegoLabel = availOn ? "점재고(가용)" : "점재고";
   const GREEN_CELL = (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#4ade80" : "#16a34a", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" });
+  // 지시일 셀: 값이 있으면 보통 글씨, 공란이면 연한 회색. 90일 넘게 묵은 지시는 호박색으로 눈에 띄게.
+  const DATE_CELL = (p: any): any => {
+    const v = String(p.value ?? "");
+    if (!v) return { textAlign: "center", color: dark ? "#64748b" : "#cbd5e1" };
+    const days = (Date.now() - new Date(v + "T00:00:00+09:00").getTime()) / 86400000;
+    return days > 90
+      ? { textAlign: "center", color: dark ? "#fbbf24" : "#d97706", fontWeight: 600 }
+      : { textAlign: "center", color: dark ? "#cbd5e1" : "#475569" };
+  };
   const RED_CELL = (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#f87171" : "#dc2626", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" });
   // 흐름 열(6개)이 켜지면 이미지·SKU ID 는 고정을 푼다 — 고정 폭이 850px 넘으면 좁은 화면에서 입고/출고 열이
   //   가로 스크롤 밖으로 밀려 안 보인다(고정 영역은 항상 먼저 자리를 차지). 고정 = 브랜드·상품·매장명·점재고.
@@ -178,23 +190,25 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
   ];
   const invCols = useMemo(() => [
     ...(flowOn ? [] : idCols()),
-    colText("brand_nm", "브랜드", { pinned: "left", minWidth: 110, ...(flowOn ? { maxWidth: 104 } : {}) }),
-    colGoodsLink("goods_nm", "상품", { pinned: "left", minWidth: 190, ...(flowOn ? { maxWidth: 148 } : {}) }),
+    colText("brand_nm", "브랜드", { pinned: "left", minWidth: flowOn ? 88 : 110, ...(flowOn ? { maxWidth: 92 } : {}) }),
+    colGoodsLink("goods_nm", "상품", { pinned: "left", minWidth: flowOn ? 120 : 190, ...(flowOn ? { maxWidth: 128 } : {}) }),
     colText("매장명", "매장명", {
-      pinned: "left", minWidth: 118, ...(flowOn ? { maxWidth: 136 } : {}), headerTooltip: "매장별 행 · '(창고 대기)'=선택 매장 재고 없이 허브에만 있는 상품",
+      pinned: "left", minWidth: flowOn ? 110 : 118, ...(flowOn ? { maxWidth: 118 } : {}), headerTooltip: "매장별 행 · '(창고 대기)'=선택 매장 재고 없이 허브에만 있는 상품",
       cellStyle: (p: any): any => (p.value === "(창고 대기)" ? { color: dark ? "#94a3b8" : "#94a3b8", fontStyle: "italic" } : { fontWeight: 600 }),
     }),
     ...(flowOn ? [
       // 통합 흐름 열(사용자 정의 2026-11): 점재고(가용) / 입고 예정 = 입고 지시 + 이동중 / 출고 예정 ⊇ 반납 지시(출고 확정 전)
       //   좌측 고정은 점재고(가용)까지만 — 여섯 열을 모두 고정하면 고정 폭이 그리드보다 넓어져 AG Grid 가 앞쪽 열 고정을 자동 해제한다.
       //   나머지 다섯 열은 고정 바로 뒤에 붙어 1,000px 안팎 화면에서도 가로 스크롤 없이 보인다.
-      colNum("점재고", jaegoLabel, "num", { pinned: "left", minWidth: 92, maxWidth: 104, headerTooltip: availOn ? "그 매장에서 지금 쓸 수 있는 재고 = 총 보유 − 할당(반납 지시 등으로 묶인 수량) · 할당이 보유보다 많으면 0 · 옵션·barcode 단위 · 이 탭과 판매·요약·드릴의 점재고가 모두 이 기준" : "그 매장의 점재고(옵션·barcode 단위)" }),
-      colNum("입고예정", "입고예정", "num", { minWidth: 78, maxWidth: 88, headerTooltip: "그 매장으로 올 물량 합계 = 입고 지시 + 이동중 · 점재고 없이 입고 예정만 있으면 신규입고 행", cellStyle: GREEN_CELL }),
-      colNum("입고지시", "입고지시", "num", { minWidth: 78, maxWidth: 88, headerTooltip: "입고가 지시됐지만 아직 센터에서 출고되지 않은 수량(요청 − 센터 출고) · 브랜드 직납은 도착 전 수량", cellStyle: GREEN_CELL }),
-      colNum("이동중", "이동중", "num", { minWidth: 70, maxWidth: 88, headerTooltip: "센터에서 출고됐고 매장 입고확정 전인 수량(센터 출고 − 매장 입고확정) · 브랜드 직납은 도착 후 확정 전 수량", cellStyle: GREEN_CELL }),
+      colNum("점재고", jaegoLabel, "num", { pinned: "left", minWidth: 88, maxWidth: 94, headerTooltip: availOn ? "그 매장에서 지금 쓸 수 있는 재고 = 총 보유 − 할당(반납 지시 등으로 묶인 수량) · 할당이 보유보다 많으면 0 · 옵션·barcode 단위 · 이 탭과 판매·요약·드릴의 점재고가 모두 이 기준" : "그 매장의 점재고(옵션·barcode 단위)" }),
+      colNum("입고예정", "입고예정", "num", { minWidth: 70, maxWidth: 74, headerTooltip: "그 매장으로 올 물량 합계 = 입고 지시 + 이동중 · 점재고 없이 입고 예정만 있으면 신규입고 행", cellStyle: GREEN_CELL }),
+      colNum("입고지시", "입고지시", "num", { minWidth: 70, maxWidth: 74, headerTooltip: "입고가 지시됐지만 아직 센터에서 출고되지 않은 수량(요청 − 센터 출고) · 브랜드 직납은 도착 전 수량", cellStyle: GREEN_CELL }),
+      colNum("이동중", "이동중", "num", { minWidth: 66, maxWidth: 70, headerTooltip: "센터에서 출고됐고 매장 입고확정 전인 수량(센터 출고 − 매장 입고확정) · 브랜드 직납은 도착 후 확정 전 수량", cellStyle: GREEN_CELL }),
+      ...(hasInOrderAt ? [colText("입고지시일", "입고지시일", { minWidth: 92, maxWidth: 96, headerTooltip: "남아 있는 입고(지시·이동중) 문서 중 가장 최근 지시일(KST) · 90일 넘게 묵은 지시는 호박색", cellStyle: DATE_CELL })] : []),
       // 출고 쪽은 '반출예정' 한 열(사용자 결정 2026-11-14) — 기준은 반납 지시(요청 − 매장 출고).
       //   '요청 − 물류 입고확정'(매장 출고분 포함)은 이미 나간 물량까지 세어 점재고보다 커 보여 쓰지 않는다.
-      colNum("반납지시", "반출예정", "num", { minWidth: 78, maxWidth: 88, headerTooltip: "그 매장에서 나갈 예정인 수량 = 반납·매장간 이동 지시 − 매장 출고 확정 · 아직 매장에 있는 물량(이미 출고된 분은 제외)", cellStyle: RED_CELL }),
+      colNum("반납지시", "반출예정", "num", { minWidth: 70, maxWidth: 74, headerTooltip: "그 매장에서 나갈 예정인 수량 = 반납·매장간 이동 지시 − 매장 출고 확정 · 아직 매장에 있는 물량(이미 출고된 분은 제외)", cellStyle: RED_CELL }),
+      ...(hasRetAt ? [colText("반출지시일", "반출지시일", { minWidth: 92, maxWidth: 96, headerTooltip: "남아 있는 반납·매장간 이동 지시 중 가장 최근 지시일(KST) · 90일 넘게 묵은 지시는 호박색", cellStyle: DATE_CELL })] : []),
       ...idCols(),                       // 이미지·SKU ID 는 재고 열 뒤로(식별용, 가로 스크롤 영역)
     ] : [
       colNum("점재고", "점재고", "num", { pinned: "left", minWidth: 82, headerTooltip: "그 매장의 점재고(옵션·barcode 단위)" }),
@@ -232,7 +246,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
       : h === "온라인 판매 제외" ? "온라인에 풀지 않고 묶어둔 센터 재고(가할당 안에 포함) · 원장은 SKU 단위라 SKU 안에서 바코드 보유 비중으로 배분한 값 · 총 보유 − 가용 − 온라인 판매 제외 = 출고 작업 중 + B2B 출고예정"
       : "창고(허브) 재고 · 매장 무관(그 상품 barcode 기준) · 합계는 상품 중복 없이 1회만 반영" })),
     ...(unified ? [] : [colNum("허브합계", "허브합계", "num", { headerTooltip: "MFS+허브1000(온라인+오프라인+반품)+허브1700 · 매장행마다 반복 표시(합계는 barcode당 1회만)" })]),
-  ], [hubcols.join(","), flowOn, availOn, dark]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [hubcols.join(","), flowcols.join(","), flowOn, availOn, dark]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 브랜드별 점재고·GMV·SOB 표 (그래프 대체) — 재고 과다 판단
   const brandRows: any[] = d?.brand_stock ?? [];
@@ -291,7 +305,10 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
     if (!rr.length) return [];
     const t: any = { sku_id: "", brand_nm: "합계", goods_nm: "", 매장명: "", goods_no: "", style_no: "", goods_opt: "", business_type: "", cat_top: "", cat_large: "", cat_medium: "" };
     const hubCols = ["허브합계", ...hubcols];
-    const flowKeys = flowOn ? [...flowcols] : [];
+    // 지시일은 날짜 문자열이라 합계 대상이 아니다 — 합계행에선 공란(합산하면 0 으로 찍힌다).
+    const flowDateKeys = flowcols.filter((c) => c.endsWith("지시일"));
+    const flowKeys = flowOn ? flowcols.filter((c) => !c.endsWith("지시일")) : [];
+    for (const c of flowDateKeys) t[c] = "";
     let jaego = 0, expected = 0, outgoing = 0; for (const c of hubCols) t[c] = 0; for (const c of flowKeys) t[c] = 0;
     const seen = new Set<string>();
     for (const r of rr) {
@@ -306,7 +323,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
     }
     t["점재고"] = jaego; t["입고예정"] = expected; t["출고예정"] = outgoing;
     return [t];
-  }, [d, hubcols, flowOn]);
+  }, [d, hubcols, flowcols.join(","), flowOn]);
   const invGridKey = useMemo(() => `${(d?.rows?.length) || 0}|${Math.round(invTotal[0]?.["점재고"] || 0)}|${Math.round(invTotal[0]?.["허브합계"] || 0)}`, [d, invTotal]);
   const onBrandClick = (e: any) => { if (e?.node?.rowPinned || !pickBrand) return; const nm = e?.data?.name; if (nm && nm !== "합계") pickBrand({ name: nm }); };
 
@@ -349,6 +366,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
                 <div><b className="text-emerald-600 dark:text-emerald-400">입고 예정</b> = <b className="text-emerald-600 dark:text-emerald-400">입고 지시</b>(센터 미출고) + <b className="text-emerald-600 dark:text-emerald-400">이동중</b>(센터 출고·매장 입고확정 전).</div>
                 <div><b>온라인 판매 제외</b> = 온라인에 안 풀고 묶어둔 센터 재고. 총 보유 − 가용 − 온라인 제외 = 출고 작업 중 + B2B 출고예정.</div>
                 <div><b className="text-rose-600 dark:text-rose-400">반출 예정</b> = 반납·매장간 이동 지시 − 매장 출고 확정 · 아직 매장에 있는, 앞으로 나갈 물량.</div>
+                <div><b>입고지시일 · 반출지시일</b> = 아직 남아 있는 그 지시 중 <b>가장 최근 지시일</b>(KST). 90일 넘게 묵은 지시는 호박색 — 오래 안 끝난 문서 찾기용.</div>
                 <div className="text-slate-500 dark:text-slate-400">할당이 보유보다 많으면 가용은 0. 옵션(barcode)·매장 단위이며, 물류 열은 매장 무관(상품 기준)이라 합계는 상품당 1회만 반영.</div>
               </div>
             </div>

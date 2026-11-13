@@ -105,12 +105,15 @@ md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerp
 - 경량 롱포맷(거점×goods_no, 1쿼리)이 필요하면 `fetch_stock_long()`.
 
 ## 9-2. 매장 흐름(입고·출고 단계) — `fetch_store_flow()` [db.py]  ⭐2026-11 (`store_moves` 스냅샷의 통합판)
-재고 탭 상품옵션 표의 **점재고(가용) / 입고 예정 / 입고 지시 / 이동중 / 출고 예정 / 반납 지시** 열의 원천.
+재고 탭 상품옵션 표의 **점재고(가용) / 입고 예정 / 입고 지시 / 이동중 / 입고 지시일 / 반출 예정 / 반출 지시일** 열의 원천.
 `INVENTORY_SOURCE=legacy` 면 기존 `fetch_store_moves()`(ERP 매입 + SCM)로 돌아가고 화면도 기존 3열로 표시된다.
 - **원천**: `ocmp.scm_hub.stock_movement(_item)`(매입·위탁 모두) + `inbound(_item)`(브랜드 직납) + `team.scm.stock`(매장 할당).
   매입 이동·매장 입고확정도 SCM-HUB 에 있으므로 ERP(`oif_sap_str`/`erp_inout_bound`)는 쓰지 않는다(같이 쓰면 매입 이중 집계).
 - **입고 지시** = 요청 − 센터 출고(+직납 도착 전) / **이동중** = 센터 출고 − 매장 입고확정(+직납 도착·확정 전) / **입고 예정** = 둘의 합.
 - **반납 지시**(출고 확정 전) = 요청 − 매장 출고 / **출고 예정** = 요청 − 물류 입고확정 = 반납 지시 + 매장 출고 후 물류 미입고.
+- **입고 지시일 / 반출 지시일**(2026-11-14 추가) = 아직 남아 있는 그 지시 문서 라인의 `created_at` 중 **가장 최근 값**(`yyyy-MM-dd`).
+  입고는 `stock_movement_item`(미결·잔량 있는 라인) + 직납 `inbound_item`(미완료 라인), 반출은 매장 출발 미결 라인(요청 > 매장 출고) 기준.
+  ⚠️ `ocmp.scm_hub` 의 `created_at` 은 **KST 벽시계**로 적재된다(업무시간 9~18시 분포로 확인) — `from_utc_timestamp` 변환 금지.
 - **점재고(가용)**: 재고 피벗의 매장 수량 자체가 가용 기준이다(9-1의 `STORE_QTY_BASIS`). 이 표에서 따로 빼지 않는다.
 - 미결 문서 = 상태 `CREATED`/`PENDING`/`PARTIALLY_SHIPPED`. `CANCELED`·`FAILED` 제외. 오래 묵은 미결도 그대로 포함.
 - 정의·검증 쿼리는 스킬 `musinsa-stock-flow-status` 참조.

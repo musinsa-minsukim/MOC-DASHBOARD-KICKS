@@ -2241,8 +2241,13 @@ def fetch_store_moves() -> pd.DataFrame:
 #   미결 문서 = 상태 CREATED/PENDING/PARTIALLY_SHIPPED (CANCELED·FAILED·RECEIVED 제외). 오래 묵은 미결도 그대로 포함.
 #   매장 매핑: dim_store → offline_shopno_storageid.storage_id(= SCM-HUB 스토리지) / 원장은 root_node_id == shop_no.
 # ---------------------------------------------------------------------------
+#   [지시일] in_order_at = 최근 입고 지시일  : 남은 입고(지시·이동중) 문서 라인의 생성일 중 가장 최근(KST)
+#            ret_at      = 최근 반출 지시일  : 남은 반납·매장간 이동 라인의 생성일 중 가장 최근(KST)
+#            (scm_hub 의 created_at 은 KST 벽시계로 적재됨 — 업무시간 9~18시 분포로 검증. 변환 불필요.)
 STORE_FLOW_COLS = ["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv",
                    "in_order", "in_transit", "ret_pending"]
+STORE_FLOW_DATE_COLS = ["in_order_at", "ret_at"]
+STORE_FLOW_ALL_COLS = STORE_FLOW_COLS + STORE_FLOW_DATE_COLS
 
 
 def _store_flow_sql() -> str:
@@ -2261,7 +2266,7 @@ def _store_flow_sql() -> str:
                CAST(smi.fk_sku_id AS BIGINT) AS fk_sku_id,
                CASE WHEN smi.stock_movement_status IN ('CREATED','PENDING','PARTIALLY_SHIPPED') THEN 1 ELSE 0 END AS is_open,
                CAST(smi.requested_quantity AS DOUBLE) AS req, CAST(smi.shipped_quantity AS DOUBLE) AS shp,
-               CAST(smi.received_quantity AS DOUBLE) AS rcv
+               CAST(smi.received_quantity AS DOUBLE) AS rcv, smi.created_at AS ord_at
         FROM ocmp.scm_hub.stock_movement sm
         JOIN ocmp.scm_hub.stock_movement_item smi
           ON smi.fk_stock_movement_id = sm._id AND smi.stock_movement_status NOT IN ('CANCELED','FAILED')),
@@ -2269,11 +2274,13 @@ def _store_flow_sql() -> str:
         SELECT s.store_name, mv.fk_sku_id,
                SUM(CASE WHEN mv.is_open = 1 THEN GREATEST(mv.req - mv.shp, 0) ELSE 0 END) AS in_order,
                SUM(CASE WHEN mv.is_open = 1 THEN GREATEST(mv.shp - mv.rcv, 0) ELSE 0 END) AS in_transit,
+               MAX(CASE WHEN mv.is_open = 1 AND (mv.req > mv.shp OR mv.shp > mv.rcv) THEN mv.ord_at END) AS ord_at,
                SUM(mv.rcv) AS hist
         FROM mv JOIN sid s ON mv.dst = s.sid GROUP BY 1, 2),
     outb AS (  -- 매장 출고(출발지 = 매장): 반납 + 매장 간 이동
         SELECT s.store_name, mv.fk_sku_id,
                SUM(GREATEST(mv.req - mv.shp, 0)) AS ret_pending,
+               MAX(CASE WHEN mv.req > mv.shp THEN mv.ord_at END) AS ret_at,
                SUM(GREATEST(mv.req - mv.rcv, 0)) AS outq
         FROM mv JOIN sid s ON mv.src = s.sid WHERE mv.is_open = 1 GROUP BY 1, 2),
     dir AS (   -- 브랜드 직납(센터 미경유): 도착 전 = 입고 지시, 도착·확정 전 = 이동중
@@ -2282,6 +2289,8 @@ def _store_flow_sql() -> str:
                         ELSE GREATEST(COALESCE(ii.inbound_requested_quantity,0) - COALESCE(ii.inbound_completed_quantity,0), 0) END) AS in_order,
                SUM(CASE WHEN ii.inbound_item_status = 'ARRIVED'
                         THEN GREATEST(COALESCE(ii.inbound_requested_quantity,0) - COALESCE(ii.inbound_completed_quantity,0), 0) ELSE 0 END) AS in_transit,
+               MAX(CASE WHEN COALESCE(ii.inbound_requested_quantity,0) > COALESCE(ii.inbound_completed_quantity,0)
+                        THEN ii.created_at END) AS ord_at,
                SUM(COALESCE(ii.inbound_completed_quantity,0)) AS hist
         FROM ocmp.scm_hub.inbound ib
         JOIN ocmp.scm_hub.inbound_item ii ON ii.fk_inbound_id = ib._id AND ii.inbound_item_status <> 'CANCELLED'
@@ -2295,7 +2304,8 @@ def _store_flow_sql() -> str:
                COALESCE(i.in_order, 0) + COALESCE(d.in_order, 0)     AS in_order,
                COALESCE(i.in_transit, 0) + COALESCE(d.in_transit, 0) AS in_transit,
                COALESCE(i.hist, 0) + COALESCE(d.hist, 0)             AS hist,
-               COALESCE(o.ret_pending, 0) AS ret_pending, COALESCE(o.outq, 0) AS outq
+               GREATEST(i.ord_at, d.ord_at)                           AS ord_at,
+               COALESCE(o.ret_pending, 0) AS ret_pending, COALESCE(o.outq, 0) AS outq, o.ret_at AS ret_at
         FROM keys k
         LEFT JOIN inb i  ON i.store_name = k.store_name AND i.fk_sku_id = k.fk_sku_id
         LEFT JOIN outb o ON o.store_name = k.store_name AND o.fk_sku_id = k.fk_sku_id
@@ -2304,7 +2314,9 @@ def _store_flow_sql() -> str:
            SUM(f.in_order) AS in_order, SUM(f.in_transit) AS in_transit,
            SUM(f.in_order + f.in_transit) AS in_qty,
            SUM(f.ret_pending) AS ret_pending, SUM(f.outq) AS out_qty,
-           SUM(f.hist) AS hist_recv
+           SUM(f.hist) AS hist_recv,
+           date_format(MAX(f.ord_at), 'yyyy-MM-dd') AS in_order_at,
+           date_format(MAX(f.ret_at), 'yyyy-MM-dd') AS ret_at
     FROM f
     LEFT JOIN spo ON spo.fk_sku_id = f.fk_sku_id
     LEFT JOIN ocmp.scm_hub.product_option po ON po._id = spo.fk_product_option_id
@@ -2324,14 +2336,16 @@ def fetch_store_flow() -> pd.DataFrame:
     except Exception as e:
         import logging as _lg
         _lg.warning("store_flow 조회 실패: %s", str(e)[:300])
-        return pd.DataFrame(columns=STORE_FLOW_COLS)
+        return pd.DataFrame(columns=STORE_FLOW_ALL_COLS)
     if df is None or df.empty:
-        return pd.DataFrame(columns=STORE_FLOW_COLS)
+        return pd.DataFrame(columns=STORE_FLOW_ALL_COLS)
     df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
     df["option"] = df["option"].fillna("").astype(str)
     for c in STORE_FLOW_COLS[3:]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    return df[STORE_FLOW_COLS]
+    for c in STORE_FLOW_DATE_COLS:                       # 지시일(최근) — 'yyyy-MM-dd' 문자열, 없으면 공란
+        df[c] = df[c].fillna("").astype(str) if c in df.columns else ""
+    return df[STORE_FLOW_ALL_COLS]
 
 
 # ---------------------------------------------------------------------------
