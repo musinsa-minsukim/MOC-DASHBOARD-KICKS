@@ -88,7 +88,9 @@ md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerp
 `store.py` 의 env `INVENTORY_SOURCE=legacy` 로 9번(기존 5원천)으로 되돌릴 수 있다.
 - **수량**: `team.scm.stock_detail`(매입+위탁, 매시) — 매장 = `namespace='STORE'`, `root_node_id`==shop_no → dim_store.
   센터 = `namespace='FC'`(20곳) 합 → **`물류 재고`** 1열(기존 MFS/허브1000/허브1700 대체). `허브합계` = `물류 재고`(키 호환).
-  보유 = `total_quantity` **원장 그대로(음수 포함)**. 센터 재고는 오프라인 취급 바코드(매장 원장 ∪ editorial)로 한정.
+  **매장 수량 = 가용**(`db.STORE_QTY_BASIS="available"`): 총 보유 − 할당(원장 `remaining_quantity`), 할당이 보유보다 많으면 0,
+  보유가 음수인 행은 원장 그대로. 판매·요약·드릴·층별·CSV 의 점재고가 모두 이 값을 쓴다. 가용이 0 이어도 실물이 있는 바코드는 행을 남긴다(수량 0).
+  물류 재고는 총 보유(`total_quantity`). 센터 재고는 오프라인 취급 바코드(매장 원장 ∪ editorial)로 한정.
 - **메타·상품번호 귀속**: 옵션명·오프라인 카테고리·MD·사업구분, 그리고 바코드→goods_no 는 editorial 최신 스냅샷
   (바코드당 점재고 최대 행). 신규 원장엔 없고, goods_no 는 오프라인 판매 번호와 맞아야 판매 조인이 유지됨.
   editorial 에 없는 바코드만 SKU 매핑 대표 uid + 상품마스터로 보강.
@@ -105,7 +107,7 @@ md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerp
   매입 이동·매장 입고확정도 SCM-HUB 에 있으므로 ERP(`oif_sap_str`/`erp_inout_bound`)는 쓰지 않는다(같이 쓰면 매입 이중 집계).
 - **입고 지시** = 요청 − 센터 출고(+직납 도착 전) / **이동중** = 센터 출고 − 매장 입고확정(+직납 도착·확정 전) / **입고 예정** = 둘의 합.
 - **반납 지시**(출고 확정 전) = 요청 − 매장 출고 / **출고 예정** = 요청 − 물류 입고확정 = 반납 지시 + 매장 출고 후 물류 미입고.
-- **점재고(가용)** = 점재고(총 보유) − 원장 할당(진할당+가할당, 실측상 거의 전부 반납 지시분). 할당이 보유보다 많으면 0.
+- **점재고(가용)**: 재고 피벗의 매장 수량 자체가 가용 기준이다(9-1의 `STORE_QTY_BASIS`). 이 표에서 따로 빼지 않는다.
 - 미결 문서 = 상태 `CREATED`/`PENDING`/`PARTIALLY_SHIPPED`. `CANCELED`·`FAILED` 제외. 오래 묵은 미결도 그대로 포함.
 - 정의·검증 쿼리는 스킬 `musinsa-stock-flow-status` 참조.
 

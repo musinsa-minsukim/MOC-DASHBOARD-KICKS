@@ -38,7 +38,7 @@ _SNAPSHOTS = {
     "global_customer": db.fetch_global_customer,  # 국가별 GMV(일자×매장×국적) — 고객 탭
     "ips": db.fetch_ips,                                # 통합 IPS 브랜드×구분(매입/위탁) — IPS 탭 전용
     "ips_goods": db.fetch_ips_goods,                    # 통합 IPS 상품단위(드릴다운) — IPS 탭 상품 드릴
-    # 매장 이동: 통합 = SCM-HUB(매입+위탁) 이동 문서 + 원장 할당(입고 지시·이동중·반납 지시·가용 계산용 열 추가) /
+    # 매장 이동: 통합 = SCM-HUB(매입+위탁) 이동 문서 + 직납(입고 지시·이동중·반납 지시 열 추가) /
     #           레거시 = ERP(매입)+SCM 이동중. 파일명·기존 열(in_qty/out_qty/hist_recv)은 같다.
     "store_moves": db.fetch_store_flow if INVENTORY_UNIFIED else db.fetch_store_moves,
     "scm_store_stock": db.fetch_scm_store_stock,        # 위탁 실시간 매장재고(판매가능/입고예정/출고예정) — 재고 탭 위탁 통일
@@ -198,6 +198,8 @@ def refresh_snapshot(name: str) -> int:
     kw = {f"{name}_refreshed_at": _stamp()}
     if "data_date" in getattr(df, "attrs", {}):   # 스냅샷 자체의 기준일(예: 재고 ord_state_date)
         kw[f"{name}_data_date"] = df.attrs["data_date"]
+    if name == "inventory_pivot":                 # 점재고 기준(available=가용 / total=총 보유) — 화면 표기용. 레거시 로더는 total.
+        kw["inventory_pivot_basis"] = getattr(df, "attrs", {}).get("stock_basis", "total")
     _meta_set(**kw)
     return len(df)
 

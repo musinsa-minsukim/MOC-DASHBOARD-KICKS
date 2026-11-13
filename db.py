@@ -1813,7 +1813,8 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 # ---------------------------------------------------------------------------
 # [신규] 통합 원장 기반 재고 피벗 — load_inventory_pivot 과 같은 출력 계약(barcode × 매장 + 창고)으로,
 #   수량 원천만 team.scm.stock_detail(매장·센터, 매입+위탁, 매시) 로 바꾼 것. (2026-11 사용자 결정)
-#   · 매장 열      = stock_detail STORE total_quantity (음수 그대로 — '원장 그대로' 결정). editorial/sap1700/SCM 오버레이 대체.
+#   · 매장 열      = stock_detail STORE **가용**(총 보유 − 할당; STORE_QTY_BASIS). 보유가 음수인 행은 원장 그대로.
+#                    editorial/sap1700/SCM 오버레이 대체.
 #   · LOGI_COL     = '물류 재고' = 센터(FC 20곳) total_quantity 합. 기존 MFS/허브1000/허브1700(+분해 3열)을 한 열로 합침.
 #   · 허브합계      = LOGI_COL 과 같은 값(다운스트림 키 호환용으로 유지: daily/api 의 hub_total·hub).
 #   · 메타(옵션명·오프라인 카테고리·MD·업체/브랜드코드·사업구분)와 바코드→상품번호 귀속은 editorial 최신 스냅샷에서 가져온다
@@ -1824,6 +1825,11 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 #   bizest.goods 700만 전량 수신·raw_erp·mfs·goods_meta·sap_inventory 스캔 없음. 수량 0 행은 내려받지 않는다.
 # ---------------------------------------------------------------------------
 LOGI_COL = "물류 재고"
+# 매장 수량(점재고) 기준 — 사용자 결정(2026-11-13): 점재고는 전 지표에서 **가용** 으로 본다.
+#   "available" = 총 보유 − 할당(원장 remaining_quantity). 매장의 할당은 실측상 거의 전부 반납 지시분이다.
+#                 오래된 반납 지시로 할당이 보유보다 많으면 0, 보유 자체가 음수인 행(원장 음수)은 그 값 그대로.
+#   "total"     = 총 보유(total_quantity) 그대로(이전 동작).
+STORE_QTY_BASIS = "available"
 # 물류 재고에서 제외할 센터(FC root_node_id). 비워두면 FC 20곳 전체.
 #   후보(매장 출고 이력이 사실상 없는 센터): 'RTN01'(안성반품센터), 'NWH09'(여주글로벌센터) — 사용자 확정 후 여기만 바꾸면 된다.
 LOGI_EXCLUDE_FC: tuple = ()
@@ -1851,6 +1857,8 @@ def _unified_pivot_sql() -> tuple[str, str]:
     fc_sums = ", ".join(f"SUM({expr}) AS m{i}" for i, expr in enumerate(LOGI_MEASURES.values()))
     fc_excl = ("" if not LOGI_EXCLUDE_FC else
                " AND d.root_node_id NOT IN (" + ",".join("'" + str(c).replace("'", "") + "'" for c in LOGI_EXCLUDE_FC) + ")")
+    store_qty = ("CASE WHEN SUM(d.total_quantity) < 0 THEN SUM(d.total_quantity) ELSE GREATEST(SUM(d.remaining_quantity), 0) END"
+                 if STORE_QTY_BASIS == "available" else "SUM(d.total_quantity)")
     fc_union = "".join(
         f"""
           UNION ALL
@@ -1860,7 +1868,7 @@ def _unified_pivot_sql() -> tuple[str, str]:
         sd AS (
           SELECT d.barcode, ds.store_name AS loc,
                  MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS uid,
-                 SUM(d.total_quantity) AS qty
+                 """ + store_qty + r""" AS qty, SUM(d.total_quantity) AS tot
           FROM team.scm.stock_detail d
           JOIN dim_store ds ON CAST(ds.shop_no AS STRING) = d.root_node_id
           LEFT JOIN sku_map m ON m.sku_id = d.sku_id
@@ -1880,8 +1888,9 @@ def _unified_pivot_sql() -> tuple[str, str]:
           LEFT JOIN sku_map m ON m.sku_id = d.sku_id
           WHERE d.namespace = 'FC' AND d.barcode IN (SELECT barcode FROM spine)""" + fc_excl + r"""
           GROUP BY d.barcode),
-        lng AS (     -- 수량이 있는 (바코드 × 위치) 행만
-          SELECT 0 AS ord, barcode, loc, sku_id, uid, CAST(qty AS DOUBLE) AS qty FROM sd WHERE qty <> 0""" + fc_union + ")"
+        lng AS (     -- 수량이 있는 (바코드 × 위치) 행만. 매장은 가용이 0 이어도 실물(총 보유)이 있으면 남긴다
+                     --   (전량 반납 지시로 묶인 상품의 메타·입출고 행을 화면에서 잃지 않기 위함. 수량 값은 0)
+          SELECT 0 AS ord, barcode, loc, sku_id, uid, CAST(qty AS DOUBLE) AS qty FROM sd WHERE qty <> 0 OR tot <> 0""" + fc_union + ")"
     q_qty = core + "\n        SELECT barcode, loc, qty FROM lng"
     q_meta = core + r""",
         bc AS (      -- 바코드별 대표 SKU·원장 uid: 매장 행 우선, 없으면 센터 행
@@ -1971,6 +1980,7 @@ def load_inventory_pivot_unified() -> pd.DataFrame:
     for c in store_cols + LOGI_COLS + ["점재고합계", "허브합계"]:
         df[c] = pd.to_numeric(df[c]).fillna(0.0)
     df.attrs["store_cols"] = store_cols
+    df.attrs["stock_basis"] = STORE_QTY_BASIS            # 점재고 기준(available=가용 / total=총 보유) — 화면 표기용
     try:   # 원장 기준시각(매시 적재, KST) — '재고 데이터' 표기용
         ts = run_df("SELECT date_format(from_utc_timestamp(MAX(updated_at), 'Asia/Seoul'), 'yyyy-MM-dd HH:mm') t "
                     "FROM team.scm.stock WHERE namespace IN ('STORE','FC')").iloc[0, 0]
@@ -2196,7 +2206,7 @@ def fetch_store_moves() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# [신규] 매장 흐름(입고·출고 단계) — SCM-HUB 이동 문서(매입+위탁 모두) + 통합 원장의 매장 할당. (2026-11 사용자 정의)
+# [신규] 매장 흐름(입고·출고 단계) — SCM-HUB 이동 문서(매입+위탁 모두) + 브랜드 직납. (2026-11 사용자 정의)
 #   store_moves 스냅샷의 통합판: 기존 열(store_name/goods_no/option/in_qty/out_qty/hist_recv)에 단계 열을 '추가'한다.
 #   매입 이동·매장 입고확정도 SCM-HUB 에 있으므로 ERP(oif313/erp315)는 쓰지 않는다 — 같이 쓰면 매입이 이중 집계된다.
 #   [입고]  in_order   = 입고 지시  : 요청 − 센터 출고(아직 센터에서 안 나온 수량) + 브랜드 직납 미도착분
@@ -2204,13 +2214,13 @@ def fetch_store_moves() -> pd.DataFrame:
 #           in_qty     = 입고 예정  = in_order + in_transit
 #   [출고]  ret_pending = 반납 지시(출고 확정 전) : 요청 − 매장 출고 (아직 매장에 있는 수량)
 #           out_qty     = 출고 예정 = 요청 − 물류 입고확정 = ret_pending + (매장 출고 후 물류 미입고)
-#   [재고]  alloc = 통합 원장의 매장 할당(진할당+가할당). 실측상 거의 전부 반납 지시분 → 점재고(가용) = 총 보유 − alloc.
+#   (점재고(가용) = 총 보유 − 원장 할당은 재고 피벗의 매장 수량 자체가 담당한다 — STORE_QTY_BASIS.)
 #   hist_recv = 그 매장 누적 입고확정(신규입고/필업 판정, 기존과 동일 의미).
 #   미결 문서 = 상태 CREATED/PENDING/PARTIALLY_SHIPPED (CANCELED·FAILED·RECEIVED 제외). 오래 묵은 미결도 그대로 포함.
 #   매장 매핑: dim_store → offline_shopno_storageid.storage_id(= SCM-HUB 스토리지) / 원장은 root_node_id == shop_no.
 # ---------------------------------------------------------------------------
 STORE_FLOW_COLS = ["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv",
-                   "in_order", "in_transit", "ret_pending", "alloc"]
+                   "in_order", "in_transit", "ret_pending"]
 
 
 def _store_flow_sql() -> str:
@@ -2256,46 +2266,36 @@ def _store_flow_sql() -> str:
         JOIN sid s ON ib.fk_destination_storage_id = s.sid
         WHERE ib.inbound_type = 'STORE_INBOUND' AND ii.fk_sku_id IS NOT NULL
         GROUP BY 1, 2),
-    led AS (   -- 통합 원장의 매장 할당(진할당+가할당) — 점재고(가용) 계산용
-        SELECT s.store_name, CAST(k._id AS BIGINT) AS fk_sku_id,
-               SUM(st.allocation_quantity + st.virtual_allocation_quantity) AS alloc
-        FROM team.scm.stock st
-        JOIN sid s ON CAST(s.shop_no AS STRING) = st.root_node_id
-        JOIN ocmp.scm_hub.sku k ON k.sku_id = st.sku_id
-        WHERE st.namespace = 'STORE' AND (st.allocation_quantity <> 0 OR st.virtual_allocation_quantity <> 0)
-        GROUP BY 1, 2),
     keys AS (SELECT store_name, fk_sku_id FROM inb UNION SELECT store_name, fk_sku_id FROM outb
-             UNION SELECT store_name, fk_sku_id FROM dir UNION SELECT store_name, fk_sku_id FROM led),
+             UNION SELECT store_name, fk_sku_id FROM dir),
     f AS (
         SELECT k.store_name, k.fk_sku_id,
                COALESCE(i.in_order, 0) + COALESCE(d.in_order, 0)     AS in_order,
                COALESCE(i.in_transit, 0) + COALESCE(d.in_transit, 0) AS in_transit,
                COALESCE(i.hist, 0) + COALESCE(d.hist, 0)             AS hist,
-               COALESCE(o.ret_pending, 0) AS ret_pending, COALESCE(o.outq, 0) AS outq,
-               COALESCE(l.alloc, 0) AS alloc
+               COALESCE(o.ret_pending, 0) AS ret_pending, COALESCE(o.outq, 0) AS outq
         FROM keys k
         LEFT JOIN inb i  ON i.store_name = k.store_name AND i.fk_sku_id = k.fk_sku_id
         LEFT JOIN outb o ON o.store_name = k.store_name AND o.fk_sku_id = k.fk_sku_id
-        LEFT JOIN dir d  ON d.store_name = k.store_name AND d.fk_sku_id = k.fk_sku_id
-        LEFT JOIN led l  ON l.store_name = k.store_name AND l.fk_sku_id = k.fk_sku_id)
+        LEFT JOIN dir d  ON d.store_name = k.store_name AND d.fk_sku_id = k.fk_sku_id)
     SELECT f.store_name, CAST(p.product_no AS STRING) AS goods_no, po.option_name AS option,
            SUM(f.in_order) AS in_order, SUM(f.in_transit) AS in_transit,
            SUM(f.in_order + f.in_transit) AS in_qty,
            SUM(f.ret_pending) AS ret_pending, SUM(f.outq) AS out_qty,
-           SUM(f.alloc) AS alloc, SUM(f.hist) AS hist_recv
+           SUM(f.hist) AS hist_recv
     FROM f
     LEFT JOIN spo ON spo.fk_sku_id = f.fk_sku_id
     LEFT JOIN ocmp.scm_hub.product_option po ON po._id = spo.fk_product_option_id
     LEFT JOIN ocmp.scm_hub.product p ON p._id = po.fk_product_id
     WHERE p.product_no IS NOT NULL
-      AND (f.in_order + f.in_transit > 0 OR f.outq > 0 OR f.alloc <> 0)
+      AND (f.in_order + f.in_transit > 0 OR f.outq > 0)
     GROUP BY f.store_name, CAST(p.product_no AS STRING), po.option_name
     """
 
 
 def fetch_store_flow() -> pd.DataFrame:
-    """매장 흐름(입고 지시·이동중 / 반납 지시·출고 예정 / 할당) — store_name × goods_no × option.
-       SCM-HUB(매입+위탁) 이동 문서 + 통합 원장 할당. store_moves 스냅샷과 열 호환(in_qty/out_qty/hist_recv) + 단계 열.
+    """매장 흐름(입고 지시·이동중 / 반납 지시·출고 예정) — store_name × goods_no × option.
+       SCM-HUB(매입+위탁) 이동 문서 + 브랜드 직납. store_moves 스냅샷과 열 호환(in_qty/out_qty/hist_recv) + 단계 열.
        실패 시 빈 df(화면은 단계 열 없이 동작)."""
     try:
         df = run_df(_store_flow_sql())

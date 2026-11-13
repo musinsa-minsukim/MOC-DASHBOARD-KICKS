@@ -231,7 +231,14 @@ def _enriched_base():
 
 
 def _prep(f):
-    """f = 공통 필터 dict(biz/type/store/brand/cat_*/md/goods). 점재고 = 보이는 매장(store/type) 합.
+    """기존 시그니처(df, vis, hubcols, hcol). 재고 필터 전 프레임이 필요하면 _prep2."""
+    return _prep2(f)[:4]
+
+
+def _prep2(f):
+    """_prep 과 같되 다섯 번째로 **재고 보유 필터 전**(속성 필터만 적용) 프레임을 함께 돌려준다.
+       가용 0 이지만 실물이 있는 상품의 입출고 행에 메타를 붙이는 데 쓴다.
+       f = 공통 필터 dict(biz/type/store/brand/cat_*/md/goods). 점재고 = 보이는 매장(store/type) 합.
        위탁 점재고는 SCM-HUB 실시간(판매가능재고)로 오버레이(마감 지연 제거).
        베이스(오버레이+컬러키)는 _enriched_base 캐시 → 여기선 필터 + __jaego 만 계산."""
     f = f or {}
@@ -275,8 +282,9 @@ def _prep(f):
     df["__hub"] = df[hcol].fillna(0) if hcol else 0
     # 재고 보유 행 = 점재고≠0 또는 창고>0. (통합 원장은 음수 재고를 그대로 싣는다 — '원장 그대로' 결정 —
     #  → 음수 행도 합계에 반영되도록 >0 이 아니라 ≠0. 레거시 스냅샷엔 음수가 없어 결과 동일.)
+    pre = df                                     # 속성 필터만 적용된 전체(재고 0 행 포함)
     df = df[(df["__jaego"] != 0) | (df["__hub"] > 0)]
-    return df, vis, hubcols, hcol
+    return df, vis, hubcols, hcol, pre
 
 
 def _cat_pies(df, top_n=8):
@@ -302,10 +310,10 @@ def _cat_pies(df, top_n=8):
 
 
 # 매장 흐름 단계 열(store_moves 통합 스냅샷에만 있음) → 화면 열 키. 레거시 스냅샷이면 화면도 기존 3열 그대로.
-#   입고 예정 = 입고지시 + 이동중 / 출고 예정 = 반납지시(출고 확정 전) + 매장 출고 후 물류 미입고 / 가용 = 점재고 − 할당
+#   입고 예정 = 입고지시 + 이동중 / 출고 예정 = 반납지시(출고 확정 전) + 매장 출고 후 물류 미입고
+#   (점재고는 스냅샷 수량 자체가 가용 기준 — db.STORE_QTY_BASIS)
 FLOW_LABELS = {"in_order": "입고지시", "in_transit": "이동중", "ret_pending": "반납지시"}
 FLOW_COLS = list(FLOW_LABELS)
-ALLOC_COL = "alloc"          # 원장의 매장 할당(진할당+가할당) — 점재고(가용) 계산용
 
 _moves_lock = threading.Lock()
 _moves_cache: dict = {}   # (store_moves_mtime, goods_master_mtime) -> mv+__ck+__brand
@@ -524,7 +532,7 @@ def _store_sku(df, vis, bmap=None):
 
 
 def compute(f=None, limit=300):
-    df, vis, hubcols, hcol = _prep(f)
+    df, vis, hubcols, hcol, pre = _prep2(f)
     if df.empty:
         return {"empty": True, "kpis": {"jaego": 0, "hub": 0, "options": 0, "goods": 0, "color_sku": 0},
                 "stores": [], "rows": [], "store_cols": [], "hubcols": hubcols, "cats": {},
@@ -554,7 +562,7 @@ def compute(f=None, limit=300):
     #   예전엔 같은 groupby 를 4번 반복(요청 시간의 약 40%). 합집합 = _broken_store_keys 와 같은 값.
     bmap = _broken_store_map(df, vis)
     bkeys = set().union(*bmap.values()) if bmap else set()
-    rows = _option_rows(df, vis, hubcols, limit, per_store_broken=bmap)
+    rows = _option_rows(df, vis, hubcols, limit, per_store_broken=bmap, pre=pre)
     _mvx = _moves_enriched()                 # 흐름 단계 열이 있는 스냅샷이면 화면에 열 목록을 내려준다
     flowcols = [FLOW_LABELS[c] for c in FLOW_COLS if _mvx is not None and c in _mvx.columns]
     return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows, "flowcols": flowcols,
@@ -576,7 +584,7 @@ def _move_detail(vis):
     # colorkey=__ck(이미 파싱됨, itertuples는 __접두 접근 불가라 평문 컬럼으로). first=그룹내 동일값.
     spec = dict(in_qty=("in_qty", "sum"), out_qty=("out_qty", "sum"), hist_recv=("hist_recv", "max"),
                 colorkey=("__ck", "first"))
-    for c in FLOW_COLS + [ALLOC_COL]:        # 흐름 단계·할당 열(통합 스냅샷에만 있음) — 있으면 함께 합산
+    for c in FLOW_COLS:                      # 흐름 단계 열(통합 스냅샷에만 있음) — 있으면 함께 합산
         if c in mv.columns:
             spec[c] = (c, "sum")
     g = mv.groupby(["store_name", "goods_no", "option"], as_index=False).agg(**spec)
@@ -596,7 +604,7 @@ def _goods_meta_map(df, txt, goods=None):
     return {int(k): v for k, v in g.to_dict("index").items()}
 
 
-def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
+def _option_rows(df, vis, hubcols, limit, per_store_broken=None, pre=None):
     """상품옵션별 재고 — **매장을 '행'으로 분리**(매장명 열). 허브(MFS/1000/1700)는 열 유지.
        각 (barcode × 매장)당 1행: 그 매장 점재고>0 인 곳 + **이동중 입고(입고예정)만 있는 (매장×옵션)도 행 생성**.
        입고예정 = 그 매장으로 오는 이동중 수량(STO). 입고구분 = 신규입고(그 컬러 매장 미보유)/필업(보유)/공란.
@@ -637,16 +645,15 @@ def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
         r["허브합계"] = int(round(_f(d0.get("__hub"))))
         r["__bc"] = "" if pd.isna(d0.get("barcode")) else str(d0.get("barcode"))
         r["__tot"] = int(round(_tot(int(gno))))
-        if flow_on:                          # 흐름 단계(이동행만 값, 순수 재고행은 0) + 점재고(가용) = 점재고 − 할당
+        if flow_on:                          # 흐름 단계(이동행만 값, 순수 재고행은 0)
             for c in flow_cols:
                 r[FLOW_LABELS[c]] = int(round(_f(flow.get(c)))) if flow else 0
-            # 가용 = 점재고(총 보유) − 원장 할당. 오래된 반납 지시 등으로 할당이 보유보다 많으면 0(가용은 0 미만이 될 수 없다).
-            #   점재고 자체가 음수인 행(원장 음수)은 그 값을 그대로 둔다.
-            _al = int(round(_f(flow.get(ALLOC_COL)))) if flow else 0
-            r["가용"] = r["점재고"] if r["점재고"] < 0 else max(r["점재고"] - _al, 0)
         return r
 
-    df_goods = set(int(x) for x in df["goods_no"])
+    # 이동행의 대상 상품·메타 조회 범위. 흐름 스냅샷(가용 기준)에서는 **재고 필터 전** 프레임을 쓴다 —
+    #   재고가 전부 반납 지시로 묶여 가용 0 인 상품도 반납 지시·출고 예정 행은 보여야 하기 때문. 레거시 스냅샷은 기존 그대로(df).
+    look = pre if (flow_on and pre is not None) else df
+    df_goods = set(int(x) for x in look["goods_no"])
     # 이동행의 df 레코드(점재고·메타·허브) 폴백 조회는 **실제로 행을 만드는 상위 limit 이동행의 상품**만 필요.
     #   (이동 상품 전체로 to_dict 하면 이동행이 많을 때 요청당 10초+ → 표시 대상으로 한정. 결과 동일.)
     inc_top = None
@@ -655,11 +662,11 @@ def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
         # dict 빌드는 (입고+출고) 상위 limit 행만 — 전체 이동행(수십만) dict화 회피(어차피 아래서 [:limit]라 결과 동일).
         inc_top = inc.assign(__mv=inc["in_qty"] + inc["out_qty"]).nlargest(limit, "__mv") if len(inc) > limit else inc
     move_goods = set(int(x) for x in inc_top["goods_no"].unique()) if inc_top is not None else set()
-    gmeta = _goods_meta_map(df, txt, move_goods) if move_goods else {}
+    gmeta = _goods_meta_map(look, txt, move_goods) if move_goods else {}
     # (goods_no, goods_opt) → df 레코드. 이동행이 실제 점재고를 붙일 수 있게(표시 대상 이동 상품만).
     df_by_key = {}
     if move_goods:
-        for d0 in df[df["goods_no"].isin(move_goods)][cols].to_dict("records"):
+        for d0 in look[look["goods_no"].isin(move_goods)][cols].to_dict("records"):
             df_by_key[(int(d0.get("goods_no") or 0),
                        "" if d0.get("goods_opt") is None else str(d0.get("goods_opt")))] = d0
 
@@ -682,7 +689,7 @@ def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
             broken = "Y" if (stock > 0 and r.colorkey in per_store_broken.get(s, set())) else ""
             base = d0 if d0 is not None else dict(gmeta.get(gno, {}), goods_opt=opt, barcode=None, __hub=0)
             move_recs.append(_mk(base, s, stock, exp, outg, broken, ingu, gno,
-                                 flow={c: getattr(r, c, 0.0) for c in flow_cols + [ALLOC_COL]}))
+                                 flow={c: getattr(r, c, 0.0) for c in flow_cols}))
     move_recs.sort(key=lambda x: (x["입고예정"] + x["출고예정"]), reverse=True)
     move_recs = move_recs[:limit]
     # 2) 순수 재고행: 상품 총 점재고 상위 limit barcode → 매장(점재고>0)별 전개. 이동행에서 낸 (매장,옵션)은 제외.
