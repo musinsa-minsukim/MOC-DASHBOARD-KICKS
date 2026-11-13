@@ -192,8 +192,9 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
       colNum("입고예정", "입고예정", "num", { minWidth: 78, maxWidth: 88, headerTooltip: "그 매장으로 올 물량 합계 = 입고 지시 + 이동중 · 점재고 없이 입고 예정만 있으면 신규입고 행", cellStyle: GREEN_CELL }),
       colNum("입고지시", "입고지시", "num", { minWidth: 78, maxWidth: 88, headerTooltip: "입고가 지시됐지만 아직 센터에서 출고되지 않은 수량(요청 − 센터 출고) · 브랜드 직납은 도착 전 수량", cellStyle: GREEN_CELL }),
       colNum("이동중", "이동중", "num", { minWidth: 70, maxWidth: 88, headerTooltip: "센터에서 출고됐고 매장 입고확정 전인 수량(센터 출고 − 매장 입고확정) · 브랜드 직납은 도착 후 확정 전 수량", cellStyle: GREEN_CELL }),
-      colNum("출고예정", "출고예정", "num", { minWidth: 78, maxWidth: 88, headerTooltip: "그 매장에서 나갈·나간 물량 중 물류 입고확정 전 수량(요청 − 물류 입고확정) = 반납 지시 + 매장 출고 후 물류 미입고 · 이미 매장에서 출고된 수량이 포함돼 점재고보다 클 수 있음", cellStyle: RED_CELL }),
-      colNum("반납지시", "반납지시", "num", { minWidth: 78, maxWidth: 88, headerTooltip: "반납(매장 간 이동 포함)이 지시됐지만 매장 출고 확정 전인 수량(요청 − 매장 출고) · 아직 매장에 있는 물량", cellStyle: RED_CELL }),
+      // 출고 쪽은 '반출예정' 한 열(사용자 결정 2026-11-14) — 기준은 반납 지시(요청 − 매장 출고).
+      //   '요청 − 물류 입고확정'(매장 출고분 포함)은 이미 나간 물량까지 세어 점재고보다 커 보여 쓰지 않는다.
+      colNum("반납지시", "반출예정", "num", { minWidth: 78, maxWidth: 88, headerTooltip: "그 매장에서 나갈 예정인 수량 = 반납·매장간 이동 지시 − 매장 출고 확정 · 아직 매장에 있는 물량(이미 출고된 분은 제외)", cellStyle: RED_CELL }),
       ...idCols(),                       // 이미지·SKU ID 는 재고 열 뒤로(식별용, 가로 스크롤 영역)
     ] : [
       colNum("점재고", "점재고", "num", { pinned: "left", minWidth: 82, headerTooltip: "그 매장의 점재고(옵션·barcode 단위)" }),
@@ -347,7 +348,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
                 <div><b>총 물류 보유</b> = 물류센터(FC) 실물 전체. <b>무신사 슬롯 재고(가용)</b> = 보유 − 할당 · 지금 풀 수 있는 수량.</div>
                 <div><b className="text-emerald-600 dark:text-emerald-400">입고 예정</b> = <b className="text-emerald-600 dark:text-emerald-400">입고 지시</b>(센터 미출고) + <b className="text-emerald-600 dark:text-emerald-400">이동중</b>(센터 출고·매장 입고확정 전).</div>
                 <div><b>온라인 판매 제외</b> = 온라인에 안 풀고 묶어둔 센터 재고. 총 보유 − 가용 − 온라인 제외 = 출고 작업 중 + B2B 출고예정.</div>
-                <div><b className="text-rose-600 dark:text-rose-400">출고 예정</b> = <b className="text-rose-600 dark:text-rose-400">반납 지시</b>(매장 출고 확정 전) + 매장 출고 후 물류 미입고 · 이미 나간 수량이 포함돼 점재고보다 클 수 있음.</div>
+                <div><b className="text-rose-600 dark:text-rose-400">반출 예정</b> = 반납·매장간 이동 지시 − 매장 출고 확정 · 아직 매장에 있는, 앞으로 나갈 물량.</div>
                 <div className="text-slate-500 dark:text-slate-400">할당이 보유보다 많으면 가용은 0. 옵션(barcode)·매장 단위이며, 물류 열은 매장 무관(상품 기준)이라 합계는 상품당 1회만 반영.</div>
               </div>
             </div>
@@ -372,7 +373,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
             <span className="font-semibold text-amber-600 dark:text-amber-400">입고예정·출고예정·입고구분(상품옵션별)</span> · <b className="text-emerald-600 dark:text-emerald-400">입고예정</b>=그 매장으로 오는 이동중(STO) 수량 / <b className="text-rose-600 dark:text-rose-400">출고예정</b>=창고로 나가는 반품. <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=그 매장에 <b>입고 이력이 없는 첫 입고</b> / <b className="text-amber-600 dark:text-amber-400">필업</b>=<b>입고 이력 있음</b>(완판됐다가 재입고도 필업) / <b>(공란)</b>=입고 없음. (현재 재고 0이 아니라 입고확정 이력 기준) <b>출고예정</b>=반품 <b>위탁만</b>(출고요청 단계부터, requested−received). <b>매입은 제외</b> — 창고 입고확정을 매장별로 차감할 신호가 없어 누적·과대가 되고 조회도 무거워 반영하지 않음.
             <br />
             {flowOn && (<>
-              <span className="font-semibold text-slate-600 dark:text-slate-300">상품옵션 표의 재고·입출고 열</span> · <b>점재고(가용)</b> = 총 보유 − 할당(반납 지시 등으로 묶인 수량, 할당이 더 많으면 0) — <b>이 탭의 KPI·차트·브랜드/매장/카테 표와 판매·요약·드릴 탭의 점재고가 모두 이 기준</b> / <b className="text-emerald-600 dark:text-emerald-400">입고 예정</b> = <b className="text-emerald-600 dark:text-emerald-400">입고 지시</b>(센터 미출고) + <b className="text-emerald-600 dark:text-emerald-400">이동중</b>(센터 출고·매장 입고확정 전) / <b className="text-rose-600 dark:text-rose-400">출고 예정</b> = <b className="text-rose-600 dark:text-rose-400">반납 지시</b>(매장 출고 확정 전) + 매장 출고 후 물류 미입고. 매입·위탁 모두 SCM-HUB 이동 문서 기준이며, 이 설명이 위 ‘입고예정·출고예정’ 설명보다 우선한다.
+              <span className="font-semibold text-slate-600 dark:text-slate-300">상품옵션 표의 재고·입출고 열</span> · <b>점재고(가용)</b> = 총 보유 − 할당(반납 지시 등으로 묶인 수량, 할당이 더 많으면 0) — <b>이 탭의 KPI·차트·브랜드/매장/카테 표와 판매·요약·드릴 탭의 점재고가 모두 이 기준</b> / <b className="text-emerald-600 dark:text-emerald-400">입고 예정</b> = <b className="text-emerald-600 dark:text-emerald-400">입고 지시</b>(센터 미출고) + <b className="text-emerald-600 dark:text-emerald-400">이동중</b>(센터 출고·매장 입고확정 전) / <b className="text-rose-600 dark:text-rose-400">반출 예정</b> = 반납·매장간 이동 지시 − 매장 출고 확정(아직 매장에 있는 물량). 매입·위탁 모두 SCM-HUB 이동 문서 기준이며, 이 설명이 위 ‘입고예정·출고예정’ 설명보다 우선한다.
               <br />
             </>)}
             {unified ? (<>
