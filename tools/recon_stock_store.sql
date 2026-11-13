@@ -3,7 +3,7 @@
 --   범위: 대시보드 dim_store(오프라인 4종 매장). 비교 단위 = 매장 × goods_no (pairs / pairs_eq).
 --   열: legacy_editorial(=sellable_qty 합) / new_total(=total_quantity 합, 원장 그대로) /
 --       new_clamped(SKU×매장 음수 0처리) / new_remaining(실가용) / sap_erp(ERP 매장재고, 매입 참고치).
---   ⚠️ sku→goods 매핑은 반드시 DISTINCT(sku_id, uid) — rep 플래그만으로는 1:N 이 남아 수량이 부푼다.
+--   매핑 대표 플래그 = is_rep_uid_option_code_musinsa (2026-11-12 열 이름 변경, SKU당 1행). DISTINCT 는 안전장치.
 WITH dim_store AS (
   SELECT t.shop_no,
     REGEXP_REPLACE(TRIM(COALESCE(sid.shop_name, t.shop_nm)), ' +', ' ') AS store_name
@@ -14,7 +14,7 @@ WITH dim_store AS (
 l AS (SELECT MAX(ord_state_date_st) d FROM team.sales.dsh_d_upt_editorial_stock_summary
       WHERE ord_state_date_st >= date_format(date_sub(current_date(), 7), 'yyyyMMdd')),
 mp AS (SELECT DISTINCT sku_id, uid FROM team.scm.mst_sku_mapping_uid_option_code
-       WHERE platform = 'MUSINSA' AND is_rep_uid_musinsa = TRUE),
+       WHERE platform = 'MUSINSA' AND is_rep_uid_option_code_musinsa = TRUE),
 leg AS (
   SELECT s.shop_no, CAST(s.goods_no AS BIGINT) AS goods_no,
          MAX(CASE s.ord_com_type WHEN '입점(위탁)' THEN '위탁' WHEN '공급(매입)' THEN '매입' ELSE '기타' END) AS biz,

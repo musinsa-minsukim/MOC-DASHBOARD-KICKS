@@ -92,8 +92,8 @@ md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerp
 - **메타·상품번호 귀속**: 옵션명·오프라인 카테고리·MD·사업구분, 그리고 바코드→goods_no 는 editorial 최신 스냅샷
   (바코드당 점재고 최대 행). 신규 원장엔 없고, goods_no 는 오프라인 판매 번호와 맞아야 판매 조인이 유지됨.
   editorial 에 없는 바코드만 SKU 매핑 대표 uid + 상품마스터로 보강.
-- ⚠️ SKU 매핑(`team.scm.mst_sku_mapping_uid_option_code`)은 `is_rep_uid_musinsa=TRUE` 여도 1:N → `DISTINCT (sku_id, uid)`.
-- 쿼리 3개(수량/메타/상품명) + 보정 4개 + 기준시각 1개. `bizest.goods` 전량 수신·raw_erp·mfs·goods_meta·sap_inventory 스캔 없음.
+- SKU 매핑(`team.scm.mst_sku_mapping_uid_option_code`) 대표 플래그는 `platform='MUSINSA' AND is_rep_uid_option_code_musinsa`(2026-11-12 열 이름 변경, SKU당 1행). 옛 `is_rep_uid_musinsa` 는 없음.
+- 쿼리 2개(수량 long 3열 / 바코드 메타 — 상품마스터 조인은 서버에서, 수량 0 행 미수신) + 보정 4개 + 기준시각 1개. `bizest.goods` 전량 수신·raw_erp·mfs·goods_meta·sap_inventory 스캔 없음. `inventory_store_long` 은 수량 ≠ 0 조합만 싣는다.
 - 위탁 실시간 오버레이(`fetch_scm_store_stock`, `scm_hub_inventory_status_v`)는 원장이 대체 → 재고 REFRESH 는 이 피벗 3종 + `store_moves`.
 - 대사: `python tools/dbx.py tools/recon_stock_store.sql` (레거시 editorial ↔ 신규 원장, 매장×사업구분).
 - 경량 롱포맷(거점×goods_no, 1쿼리)이 필요하면 `fetch_stock_long()`.

@@ -1703,8 +1703,9 @@ def load_inventory_store_long() -> pd.DataFrame:
 #   · 센터 = namespace 'FC' (여주/안성/이천… 20곳, root_node_id = 문자코드 NWH01 등).
 #   · 보유 = total_quantity (= 레거시 editorial sellable_qty / raw_erp wqty), 실가용 = remaining_quantity (할당 제외).
 #   · 매입/위탁 = goods_no → bizest.goods.com_id → partnerportal.company.margin_type (WONGA=매입, FEE=위탁).
-#   ⚠️ sku→goods 매핑은 is_rep_uid_musinsa=TRUE 만으로는 1:N 이 남는다(같은 uid·option_code 여러 개 = 1,626 SKU,
-#      2026-11-11 실측: 그대로 조인 시 STORE +18,585 / FC +318,584 과대) → 반드시 DISTINCT (sku_id, uid).
+#   ⚠️ sku→goods 매핑 대표 플래그 = is_rep_uid_option_code_musinsa (2026-11-12 열 이름 변경: 옛 is_rep_uid_musinsa 는 없음).
+#      새 기준(SKU당 대표 uid·option_code 한 쌍)에선 SKU당 1행(2026-11-13 검증: 2,205,689 SKU, 중복 0).
+#      옛 기준에선 1:N 이 남아 부풀었으므로(1,626 SKU) DISTINCT (sku_id, uid) 는 안전장치로 유지.
 #   ⚠️ total_quantity 는 음수가 있다(예: 쇼핑백 goods 3781910 이 매장마다 −수천). total_qty=원장 그대로,
 #      total_qty_pos=SKU×거점 단위로 음수를 0 처리한 합 — 어느 쪽을 화면에 쓸지는 소비처에서 고른다.
 # ---------------------------------------------------------------------------
@@ -1712,7 +1713,7 @@ _STOCK_SKU_MAP = r"""
 sku_map AS (
   SELECT DISTINCT sku_id, uid
   FROM team.scm.mst_sku_mapping_uid_option_code
-  WHERE platform = 'MUSINSA' AND is_rep_uid_musinsa = TRUE
+  WHERE platform = 'MUSINSA' AND is_rep_uid_option_code_musinsa = TRUE
 )
 """
 
@@ -1819,7 +1820,8 @@ def stock_fc_goods(long_df: pd.DataFrame, qty: str = "total_qty") -> pd.DataFram
 #     (신규 원장엔 없음. 상품번호는 오프라인 판매 번호와 맞아야 판매 조인이 유지됨).
 #     editorial 에 없는 바코드는 상품마스터(이름·브랜드)·company.margin_type(사업구분)로 보강, 옵션/카테고리는 공란/미분류.
 #   · 행 = 매장 또는 센터에 수량(≠0)이 있는 바코드. 센터 재고는 '오프라인 취급 바코드'(매장 원장 ∪ editorial)로 한정.
-#   쿼리 3개(수량 / 메타 / 상품명) + 기존 보정 4개 + 기준시각 1개. bizest.goods 700만 전량 수신·raw_erp·mfs·goods_meta 스캔 없음.
+#   쿼리 2개(수량 long 3열 / 바코드 메타 — 상품마스터 조인은 서버에서) + 기존 보정 4개 + 기준시각 1개.
+#   bizest.goods 700만 전량 수신·raw_erp·mfs·goods_meta·sap_inventory 스캔 없음. 수량 0 행은 내려받지 않는다.
 # ---------------------------------------------------------------------------
 LOGI_COL = "물류 재고"
 # 물류 재고에서 제외할 센터(FC root_node_id). 비워두면 FC 20곳 전체.
@@ -1839,21 +1841,25 @@ el AS (   -- 파티션(ord_state_date_st, 'yyyyMMdd') 프루닝: 최근 10일 �
 """
 
 
-def _unified_pivot_frames():
-    """통합 피벗 재료 3종(수량 long / editorial 메타 / 상품명·사업구분) 조회."""
+def _unified_pivot_sql() -> tuple[str, str]:
+    """통합 피벗용 SQL 2개(수량 long / 바코드 메타). 두 쿼리가 같은 CTE(lng)를 공유한다.
+       · 수량 long  = (barcode, loc, qty) 3열만 — 수량 ≠ 0 인 행만 내려받는다.
+       · 바코드 메타 = 수량이 있는 바코드만, editorial 메타 + 상품마스터(이름·브랜드·업체·사업구분)를 **서버에서** 조인해 1행으로.
+         (예전엔 editorial 전 바코드 32만 행 + 상품명 12.6만 행을 따로 받아 pandas 로 맞췄다.)"""
     head = "WITH " + DIM_STORE + "," + _STOCK_SKU_MAP + "," + _EDITORIAL_LATEST
     # 센터(FC) 수량식들을 m0, m1… 로 한 번에 집계한 뒤 열 이름별 행으로 풀어 낸다(LOGI_MEASURES).
     fc_sums = ", ".join(f"SUM({expr}) AS m{i}" for i, expr in enumerate(LOGI_MEASURES.values()))
     fc_excl = ("" if not LOGI_EXCLUDE_FC else
                " AND d.root_node_id NOT IN (" + ",".join("'" + str(c).replace("'", "") + "'" for c in LOGI_EXCLUDE_FC) + ")")
     fc_union = "".join(
-        f"""UNION ALL
-        SELECT 1 AS ord, barcode, '{name}' AS loc, sku_id, goods_no, CAST(m{i} AS DOUBLE) AS qty FROM fc WHERE m{i} <> 0
-        """ for i, name in enumerate(LOGI_MEASURES))
-    qty = run_df(head + r""",
+        f"""
+          UNION ALL
+          SELECT 1 AS ord, barcode, '{name}' AS loc, sku_id, uid, CAST(m{i} AS DOUBLE) AS qty FROM fc WHERE m{i} <> 0"""
+        for i, name in enumerate(LOGI_MEASURES))
+    core = head + r""",
         sd AS (
           SELECT d.barcode, ds.store_name AS loc,
-                 MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS goods_no,
+                 MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS uid,
                  SUM(d.total_quantity) AS qty
           FROM team.scm.stock_detail d
           JOIN dim_store ds ON CAST(ds.shop_no AS STRING) = d.root_node_id
@@ -1868,59 +1874,66 @@ def _unified_pivot_frames():
           WHERE s.barcode IS NOT NULL),
         fc AS (
           SELECT d.barcode,
-                 MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS goods_no,
+                 MAX_BY(d.sku_id, d.total_quantity) AS sku_id, MAX_BY(m.uid, d.total_quantity) AS uid,
                  """ + fc_sums + r"""
           FROM team.scm.stock_detail d
           LEFT JOIN sku_map m ON m.sku_id = d.sku_id
           WHERE d.namespace = 'FC' AND d.barcode IN (SELECT barcode FROM spine)""" + fc_excl + r"""
-          GROUP BY d.barcode)
-        SELECT 0 AS ord, barcode, loc, sku_id, goods_no, CAST(qty AS DOUBLE) AS qty FROM sd WHERE qty <> 0
-        """ + fc_union)
-    meta = run_df(head + r"""
-        SELECT barcode, goods_no, goods_opt, brand_nm, goods_nm, cat_top, cat_large, cat_medium,
-               off_md_id, company_id, brand_id, business_type
-        FROM (
-          SELECT x.*, ROW_NUMBER() OVER (PARTITION BY x.barcode ORDER BY x.q DESC, x.goods_no DESC) AS rn
-          FROM (
-            SELECT s.barcode, CAST(s.goods_no AS BIGINT) AS goods_no, SUM(s.sellable_qty) AS q,
-                   ANY_VALUE(s.goods_opt) AS goods_opt, ANY_VALUE(s.brand_nm) AS brand_nm, ANY_VALUE(s.goods_nm) AS goods_nm,
-                   ANY_VALUE(s.final_large_nm_off) AS cat_top, ANY_VALUE(s.large_nm_off) AS cat_large,
-                   ANY_VALUE(s.medium_nm_off) AS cat_medium, ANY_VALUE(s.offline_md_id) AS off_md_id,
-                   ANY_VALUE(s.com_id) AS company_id, ANY_VALUE(s.brand) AS brand_id,
-                   ANY_VALUE(CASE s.ord_com_type WHEN '입점(위탁)' THEN '위탁' WHEN '공급(매입)' THEN '매입' ELSE '기타' END) AS business_type
-            FROM team.sales.dsh_d_upt_editorial_stock_summary s
-            JOIN el ON s.ord_state_date_st = el.d
-            JOIN dim_store st ON st.shop_no = s.shop_no
-            WHERE s.barcode IS NOT NULL
-            GROUP BY s.barcode, CAST(s.goods_no AS BIGINT)) x)
-        WHERE rn = 1
-    """)
-    names = run_df(head + r""",
-        g AS (
-          SELECT DISTINCT m.uid AS goods_no
-          FROM team.scm.stock s
-          JOIN dim_store ds ON CAST(ds.shop_no AS STRING) = s.root_node_id
-          JOIN sku_map m ON m.sku_id = s.sku_id
-          WHERE s.namespace = 'STORE'
-          UNION
-          SELECT DISTINCT CAST(e.goods_no AS BIGINT)
-          FROM team.sales.dsh_d_upt_editorial_stock_summary e
-          JOIN el ON e.ord_state_date_st = el.d JOIN dim_store st ON st.shop_no = e.shop_no)
-        SELECT g.goods_no, gd.goods_nm, b.brand_nm, gd.com_id AS company_id, gd.brand AS brand_id,
-               CASE c.margin_type WHEN 'WONGA' THEN '매입' WHEN 'FEE' THEN '위탁' ELSE '기타' END AS business_type
-        FROM g
-        JOIN musinsa.bizest.goods gd              ON CAST(gd.goods_no AS BIGINT) = g.goods_no
-        LEFT JOIN musinsa.partnerportal.brand b   ON b.brand = gd.brand
-        LEFT JOIN musinsa.partnerportal.company c ON c.com_id = gd.com_id
-    """)
-    return qty, meta, names
+          GROUP BY d.barcode),
+        lng AS (     -- 수량이 있는 (바코드 × 위치) 행만
+          SELECT 0 AS ord, barcode, loc, sku_id, uid, CAST(qty AS DOUBLE) AS qty FROM sd WHERE qty <> 0""" + fc_union + ")"
+    q_qty = core + "\n        SELECT barcode, loc, qty FROM lng"
+    q_meta = core + r""",
+        bc AS (      -- 바코드별 대표 SKU·원장 uid: 매장 행 우선, 없으면 센터 행
+          SELECT barcode,
+                 COALESCE(MAX(CASE WHEN ord = 0 THEN sku_id END), MAX(CASE WHEN ord = 1 THEN sku_id END)) AS sku_id,
+                 COALESCE(MAX(CASE WHEN ord = 0 THEN uid END),    MAX(CASE WHEN ord = 1 THEN uid END))    AS uid
+          FROM lng GROUP BY barcode),
+        em AS (      -- editorial 메타: 바코드당 1행(점재고가 가장 큰 오프라인 상품번호)
+          SELECT * FROM (
+            SELECT x.*, ROW_NUMBER() OVER (PARTITION BY x.barcode ORDER BY x.q DESC, x.goods_no DESC) AS rn
+            FROM (
+              SELECT s.barcode, CAST(s.goods_no AS BIGINT) AS goods_no, SUM(s.sellable_qty) AS q,
+                     ANY_VALUE(s.goods_opt) AS goods_opt, ANY_VALUE(s.brand_nm) AS brand_nm, ANY_VALUE(s.goods_nm) AS goods_nm,
+                     ANY_VALUE(s.final_large_nm_off) AS cat_top, ANY_VALUE(s.large_nm_off) AS cat_large,
+                     ANY_VALUE(s.medium_nm_off) AS cat_medium, ANY_VALUE(s.offline_md_id) AS off_md_id,
+                     ANY_VALUE(s.com_id) AS company_id, ANY_VALUE(s.brand) AS brand_id,
+                     ANY_VALUE(CASE s.ord_com_type WHEN '입점(위탁)' THEN '위탁' WHEN '공급(매입)' THEN '매입' ELSE '기타' END) AS business_type
+              FROM team.sales.dsh_d_upt_editorial_stock_summary s
+              JOIN el ON s.ord_state_date_st = el.d
+              JOIN dim_store st ON st.shop_no = s.shop_no
+              WHERE s.barcode IS NOT NULL AND s.barcode IN (SELECT barcode FROM bc)
+              GROUP BY s.barcode, CAST(s.goods_no AS BIGINT)) x)
+          WHERE rn = 1)
+        -- 상품번호 = editorial(오프라인 판매 번호) 우선 → 없으면 원장 대표 uid. 이름·브랜드는 상품마스터 우선(기존과 동일),
+        -- 업체/브랜드코드·사업구분은 editorial 우선·마스터 보강.
+        SELECT bc.barcode, bc.sku_id,
+               COALESCE(em.goods_no, bc.uid)                    AS goods_no,
+               em.goods_opt,
+               COALESCE(NULLIF(b.brand_nm, ''), em.brand_nm)    AS brand_nm,
+               COALESCE(NULLIF(gd.goods_nm, ''), em.goods_nm)   AS goods_nm,
+               em.cat_top, em.cat_large, em.cat_medium, em.off_md_id,
+               COALESCE(em.company_id, NULLIF(gd.com_id, ''))   AS company_id,
+               COALESCE(em.brand_id, NULLIF(gd.brand, ''))      AS brand_id,
+               COALESCE(em.business_type,
+                        CASE WHEN gd.goods_no IS NULL THEN NULL
+                             ELSE CASE c.margin_type WHEN 'WONGA' THEN '매입' WHEN 'FEE' THEN '위탁' ELSE '기타' END END) AS business_type
+        FROM bc
+        LEFT JOIN em ON em.barcode = bc.barcode
+        LEFT JOIN musinsa.bizest.goods gd          ON CAST(gd.goods_no AS BIGINT) = COALESCE(em.goods_no, bc.uid)
+        LEFT JOIN musinsa.partnerportal.brand b    ON b.brand = gd.brand
+        LEFT JOIN musinsa.partnerportal.company c  ON c.com_id = gd.com_id
+    """
+    return q_qty, q_meta
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_inventory_pivot_unified() -> pd.DataFrame:
     """통합 원장 기반 재고 피벗(barcode × 매장 + '물류 재고'). load_inventory_pivot 대체용 — 출력 계약 동일:
        메타열 + 매장열 + LOGI_COL + 점재고합계 + 허브합계(=LOGI_COL) + sku_id + is_running + concept, attrs(store_cols, data_date)."""
-    qty, meta, names = _unified_pivot_frames()
+    q_qty, q_meta = _unified_pivot_sql()
+    qty = run_df(q_qty)
+    meta = run_df(q_meta)
     meta_cols = ["goods_no", "goods_opt", "brand_nm", "goods_nm", "cat_top", "cat_large", "cat_medium",
                  "off_md_id", "company_id", "brand_id", "business_type"]
     qty["barcode"] = qty["barcode"].astype(str)
@@ -1933,34 +1946,15 @@ def load_inventory_pivot_unified() -> pd.DataFrame:
             piv[lc] = 0.0
     piv = piv[store_cols + LOGI_COLS]
 
-    # 바코드 → sku_id / 대표 goods_no(uid): 매장 행 우선, 없으면 센터 행(first = 열별 첫 비결측).
-    ids = qty.sort_values("ord", kind="stable").groupby("barcode")[["sku_id", "goods_no"]].first().reindex(piv.index)
-    uid = pd.to_numeric(ids["goods_no"], errors="coerce")
-
-    # 상품번호 귀속: editorial(오프라인 판매 상품번호, 바코드당 점재고 최대 행) 우선 → 없으면 원장 대표 uid.
-    #   한 바코드가 여러 상품번호에 걸린 경우(뷰티 세트 등) 원장 대표 uid 는 오프라인에서 안 파는 번호일 수 있어,
-    #   판매(MOSS goods_no) 조인이 어긋나지 않도록 기존과 같은 오프라인 상품번호를 따른다.
+    # 바코드 메타(서버에서 조인 완료, 바코드당 1행 — 마스터 조인 중복 대비로 한 번 더 접는다) → 기본값만 채운다.
     meta["barcode"] = meta["barcode"].astype(str)
-    meta["goods_no"] = pd.to_numeric(meta["goods_no"], errors="coerce")
-    mb = meta.drop_duplicates("barcode").set_index("barcode").reindex(piv.index)
-    m = pd.DataFrame(index=piv.index)
-    for col in meta_cols:
-        if col != "goods_no":
-            m[col] = mb[col]
-    m["goods_no"] = mb["goods_no"].where(mb["goods_no"].notna(), uid).fillna(0).astype("int64")
-
-    # 상품마스터: 상품명·브랜드명은 마스터 우선(기존과 동일), 업체/브랜드코드·사업구분은 editorial 우선·마스터 보강.
-    names["goods_no"] = pd.to_numeric(names["goods_no"], errors="coerce").fillna(0).astype("int64")
-    nm = names.drop_duplicates("goods_no").set_index("goods_no")
-
-    def _from_master(col):
-        return m["goods_no"].map(nm[col]).replace("", None) if col in nm.columns else pd.Series(None, index=m.index)
-
-    m["goods_nm"] = _from_master("goods_nm").fillna(m["goods_nm"]).fillna("")
-    m["brand_nm"] = _from_master("brand_nm").fillna(m["brand_nm"]).fillna("(미상)")
-    m["business_type"] = m["business_type"].fillna(_from_master("business_type")).fillna("매입")
-    m["company_id"] = m["company_id"].fillna(_from_master("company_id")).fillna("").astype(str)
-    m["brand_id"] = m["brand_id"].fillna(_from_master("brand_id")).fillna("").astype(str)
+    m = meta.drop_duplicates("barcode").set_index("barcode").reindex(piv.index)
+    m["goods_no"] = pd.to_numeric(m["goods_no"], errors="coerce").fillna(0).astype("int64")
+    m["goods_nm"] = m["goods_nm"].fillna("")
+    m["brand_nm"] = m["brand_nm"].fillna("(미상)")
+    m["business_type"] = m["business_type"].fillna("매입")
+    m["company_id"] = m["company_id"].fillna("").astype(str)
+    m["brand_id"] = m["brand_id"].fillna("").astype(str)
     m["goods_opt"] = m["goods_opt"].fillna("")
     for col in ("cat_top", "cat_large", "cat_medium"):
         m[col] = m[col].fillna("미분류")
@@ -1969,7 +1963,7 @@ def load_inventory_pivot_unified() -> pd.DataFrame:
     df = m[meta_cols].join(piv)
     df["점재고합계"] = df[store_cols].sum(axis=1)
     df["허브합계"] = df[LOGI_COLS[0]]                   # 창고 합계 키(호환) = 첫 물류 열(보유)
-    df["sku_id"] = ids["sku_id"].fillna("").astype(str)
+    df["sku_id"] = m["sku_id"].fillna("").astype(str)
     df = df.reset_index().rename(columns={"index": "barcode"})
     df = apply_category_override(df)
     df = apply_running_flag(df)
@@ -2009,7 +2003,9 @@ def load_inventory_store_long_unified() -> pd.DataFrame:
     g = load_inventory_goods_unified()
     store_cols = [c for c in g.columns
                   if c not in ({"goods_no", "goods_nm", "점재고합계", "허브합계", *LOGI_COLS} | set(HUB_ALL))]
-    return g.melt(id_vars="goods_no", value_vars=store_cols, var_name="store_name", value_name="점재고")
+    long = g.melt(id_vars="goods_no", value_vars=store_cols, var_name="store_name", value_name="점재고")
+    # 수량 0 인 (상품×매장) 조합은 싣지 않는다 — 소비처가 전부 합계·조인이라 결과 동일, 행 수는 약 1/5.
+    return long[long["점재고"] != 0].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

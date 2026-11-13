@@ -394,7 +394,7 @@ def _move_incoming_by_store(vis) -> dict:
     return out
 
 
-def _brand_stock(df, vis, top_n=None):
+def _brand_stock(df, vis, top_n=None, bkeys=None):
     """브랜드별 점재고(선택 매장) — 사업구분(위탁/매입/기타) 스택 + 전체 대비 비중. 전체 브랜드(top_n=None).
        매장별 재고수량 차트와 동일 스키마({name,위탁,매입,기타,total}) + share + 컬러SKU/바코드SKU."""
     if not vis or df.empty:
@@ -405,7 +405,8 @@ def _brand_stock(df, vis, top_n=None):
     sku = ins.groupby("brand_nm").agg(color_sku=("__color_key", "nunique"),
                                       barcode_sku=("barcode", "nunique"),
                                       uid=("goods_no", "nunique"))
-    bkeys = _broken_store_keys(df, vis)           # 매장별 판정 브로큰 컬러-SKU(어느 매장이든 브로큰이면 포함)
+    if bkeys is None:                             # 매장별 판정 브로큰 컬러-SKU(어느 매장이든 브로큰이면 포함)
+        bkeys = _broken_store_keys(df, vis)       #   compute() 는 한 번 계산한 값을 넘겨준다
     brk = ins[ins["__color_key"].isin(bkeys)].groupby("brand_nm")["__color_key"].nunique()
     instore_keys = set(ins["__color_key"])        # 현재 매장 보유 컬러-SKU(필업 판정용)
     moves = _store_move_skus(vis, instore_keys)   # 브랜드별 입고(신규)/필업/출고예정(STO 이동중)
@@ -441,12 +442,13 @@ def brand_csv_rows(f=None):
     if df.empty or not vis:
         return header, []
     out = []
+    bmap_csv = _broken_store_map(df, vis)           # 매장별 브로큰 set — 분모(컬러 전체 사이즈수) 1회 계산
     for s in vis:                                   # 각 매장 컬럼(그 매장 점재고 보유 행)별 브랜드 집계
         m = df[s].fillna(0) > 0
         sub = df[m]
         if sub.empty:
             continue
-        bkeys = _broken_keys(df, m)                  # 그 매장 구색률 기준 브로큰 컬러-SKU
+        bkeys = bmap_csv.get(s, set())               # 그 매장 구색률 기준 브로큰 컬러-SKU(사전 1회 계산)
         subb = sub.assign(__broken=sub["__color_key"].isin(bkeys))
         agg = subb.groupby(["brand_nm", "business_type"]).agg(
             qty=(s, "sum"), uid=("goods_no", "nunique"),
@@ -462,10 +464,11 @@ def brand_csv_rows(f=None):
     return header, out
 
 
-def _cat_sku(df, vis, top_n=12):
+def _cat_sku(df, vis, top_n=12, bkeys=None):
     """카테고리별(최상위/대/중) **점재고 매장 내** 컬러SKU/바코드SKU — 표용. 상위 top_n + '기타'."""
     ins = df[df["__jaego"] > 0]
-    bkeys = _broken_store_keys(df, vis)              # 매장별 판정 브로큰 컬러-SKU
+    if bkeys is None:
+        bkeys = _broken_store_keys(df, vis)          # 매장별 판정 브로큰 컬러-SKU
     ins = ins.assign(__broken=ins["__color_key"].isin(bkeys))
     out = {}
     for key in ("cat_top", "cat_large", "cat_medium"):
@@ -494,11 +497,12 @@ def _cat_sku(df, vis, top_n=12):
     return out
 
 
-def _store_sku(df, vis):
+def _store_sku(df, vis, bmap=None):
     """매장별 컬러SKU/바코드SKU/UID/브로큰SKU — 각 매장 컬럼>0(그 매장 점재고 보유)인 행 기준.
        브로큰은 그 매장 내 구색률 기준(사이즈 3+ & 매장 사이즈/전체 사이즈<임계)."""
     rows = []
-    bmap = _broken_store_map(df, vis)               # 매장별 브로큰 set(분모 n_all 1회) — _broken_keys 16회 반복 제거
+    if bmap is None:
+        bmap = _broken_store_map(df, vis)           # 매장별 브로큰 set(분모 n_all 1회) — _broken_keys 16회 반복 제거
     for s in vis:
         m = df[s].fillna(0) > 0
         sub = df[m]
@@ -540,11 +544,15 @@ def compute(f=None, limit=300):
                 stores.append(row)
         stores.sort(key=lambda r: r["total"])
 
-    rows = _option_rows(df, vis, hubcols, limit)
+    # 브로큰 SKU 판정(매장별 set)은 요청당 **1회만** 계산해 네 곳(옵션표·브랜드표·매장표·카테표)이 공유한다.
+    #   예전엔 같은 groupby 를 4번 반복(요청 시간의 약 40%). 합집합 = _broken_store_keys 와 같은 값.
+    bmap = _broken_store_map(df, vis)
+    bkeys = set().union(*bmap.values()) if bmap else set()
+    rows = _option_rows(df, vis, hubcols, limit, per_store_broken=bmap)
     return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows,
             "store_cols": vis, "hubcols": hubcols, "cats": cats,
-            "brand_stock": _brand_stock(df, vis),
-            "store_sku": _store_sku(df, vis), "cat_sku": _cat_sku(df, vis)}
+            "brand_stock": _brand_stock(df, vis, bkeys=bkeys),
+            "store_sku": _store_sku(df, vis, bmap=bmap), "cat_sku": _cat_sku(df, vis, bkeys=bkeys)}
 
 
 def _move_detail(vis):
@@ -577,13 +585,14 @@ def _goods_meta_map(df, txt, goods=None):
     return {int(k): v for k, v in g.to_dict("index").items()}
 
 
-def _option_rows(df, vis, hubcols, limit):
+def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
     """상품옵션별 재고 — **매장을 '행'으로 분리**(매장명 열). 허브(MFS/1000/1700)는 열 유지.
        각 (barcode × 매장)당 1행: 그 매장 점재고>0 인 곳 + **이동중 입고(입고예정)만 있는 (매장×옵션)도 행 생성**.
        입고예정 = 그 매장으로 오는 이동중 수량(STO). 입고구분 = 신규입고(그 컬러 매장 미보유)/필업(보유)/공란.
        브로큰은 그 매장 기준. 허브 열은 매장행마다 반복(합계는 __bc로 프론트 dedup). 창고만 있는 barcode는 '(창고 대기)'.
        성능: 점재고행은 매장별 nlargest(limit) 후보만. 정렬은 상품 총(점재고+입고예정)↓ → 신규입고도 상위 노출."""
-    per_store_broken = _broken_store_map(df, vis)                                # 매장별 브로큰 컬러-SKU(분모 1회)
+    if per_store_broken is None:
+        per_store_broken = _broken_store_map(df, vis)                            # 매장별 브로큰 컬러-SKU(분모 1회)
     inc = _move_detail(vis)                                                      # tidy df(in/out/hist_recv) or None
     move_by_goods = {}                                                           # gno → 총 이동중(입고+출고), 정렬 가중치
     if inc is not None and not inc.empty:                                         # 벡터 집계(전행 itertuples+_f 제거)
@@ -695,7 +704,7 @@ def csv_rows(f=None):
         return header, []
     status_map = store.get_store_sku_status() if has_sku else {}   # {(store_name, sku_id): 운영중/미운영}, 없으면 미지정
     code_map = store.get_store_code_map()                          # {store_name: SCM-HUB storage_id}, 매장 위치만
-    per_store_broken = {s: _broken_keys(df, df[s].fillna(0) > 0) for s in vis}   # 매장별 브로큰 컬러-SKU
+    per_store_broken = _broken_store_map(df, vis)   # 매장별 브로큰 컬러-SKU(분모 1회 계산, _broken_keys 와 같은 판정식)
     loccols = vis + hubcols                         # 매장 컬럼 + 허브(MFS/1000/1700)
     df = df.sort_values(["__jaego", "__hub"], ascending=[False, False])
     sub = df[base + loccols + ["__color_key"]].copy()
