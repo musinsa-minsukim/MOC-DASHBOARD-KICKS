@@ -158,6 +158,9 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
   // 통합 원장 스냅샷: 창고 열이 물류 3열(총 보유 / 무신사 슬롯 재고(가용) / 온라인 판매 제외) → 허브합계(=가용)는 중복이라 숨김.
   //   레거시 스냅샷(MFS·허브1000·허브1700)이면 기존 그대로. 열 이름이 바뀌어도 레거시 이름만 판별하면 안전하다.
   const unified = hubcols.length > 0 && !hubcols.some((c) => c === "MFS" || c.startsWith("허브"));
+  // 물류 3열은 갱신된 스냅샷에만 있다 — 배포 직후(갱신 전) 구 스냅샷이면 KPI 를 0 으로 띄우지 않고 숨긴다.
+  const hasLogiTotal = hubcols.includes("총 물류 보유");
+  const hasLogiOex = hubcols.includes("온라인 판매 제외");
   // 매장 흐름 단계 열(통합 store_moves 스냅샷일 때만 서버가 내려줌) → 점재고(가용)·입고 지시·이동중·반납 지시 열 표시.
   const flowcols: string[] = d?.flowcols ?? [];
   const flowOn = flowcols.length > 0;
@@ -349,11 +352,11 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
               </div>
             </div>
           )}
-          <div className={`grid grid-cols-2 gap-3 md:grid-cols-3 ${unified ? "lg:grid-cols-4 xl:grid-cols-7" : "lg:grid-cols-5"}`}>
+          <div className={`grid grid-cols-2 gap-3 md:grid-cols-3 ${hasLogiTotal ? "lg:grid-cols-4 xl:grid-cols-7" : unified ? "lg:grid-cols-6" : "lg:grid-cols-5"}`}>
             <Kpi icon={<Boxes size={16} />} label={`${jaegoLabel} 합계 (선택 매장)`} value={num(d.kpis.jaego)} />
-            {unified && <Kpi icon={<Warehouse size={16} />} label="총 물류 보유" value={num(d.kpis.hub_total ?? 0)} />}
-            <Kpi icon={<Warehouse size={16} />} label={unified ? "무신사 슬롯 재고(가용)" : "창고(허브) 합계"} value={num(d.kpis.hub)} />
-            {unified && <Kpi icon={<Warehouse size={16} />} label="온라인 판매 제외" value={num(d.kpis.hub_oex ?? 0)} />}
+            {hasLogiTotal && <Kpi icon={<Warehouse size={16} />} label="총 물류 보유" value={num(d.kpis.hub_total ?? 0)} />}
+            <Kpi icon={<Warehouse size={16} />} label={unified ? (hasLogiTotal ? "무신사 슬롯 재고(가용)" : "물류 가용") : "창고(허브) 합계"} value={num(d.kpis.hub)} />
+            {hasLogiOex && <Kpi icon={<Warehouse size={16} />} label="온라인 판매 제외" value={num(d.kpis.hub_oex ?? 0)} />}
             <Kpi icon={<Palette size={16} />} label="컬러 SKU 수 (UID×컬러)" value={num(d.kpis.color_sku ?? 0)} />
             <Kpi icon={<Grid2x2 size={16} />} label="바코드 SKU (옵션·barcode)" value={num(d.kpis.options)} />
             <Kpi icon={<Tags size={16} />} label="상품 수 (UID·goods)" value={num(d.kpis.goods)} />
