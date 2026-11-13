@@ -38,7 +38,9 @@ _SNAPSHOTS = {
     "global_customer": db.fetch_global_customer,  # 국가별 GMV(일자×매장×국적) — 고객 탭
     "ips": db.fetch_ips,                                # 통합 IPS 브랜드×구분(매입/위탁) — IPS 탭 전용
     "ips_goods": db.fetch_ips_goods,                    # 통합 IPS 상품단위(드릴다운) — IPS 탭 상품 드릴
-    "store_moves": db.fetch_store_moves,                # 매장 STO 이동중(입고예정/출고예정) — 재고 탭 브랜드 표
+    # 매장 이동: 통합 = SCM-HUB(매입+위탁) 이동 문서 + 원장 할당(입고 지시·이동중·반납 지시·가용 계산용 열 추가) /
+    #           레거시 = ERP(매입)+SCM 이동중. 파일명·기존 열(in_qty/out_qty/hist_recv)은 같다.
+    "store_moves": db.fetch_store_flow if INVENTORY_UNIFIED else db.fetch_store_moves,
     "scm_store_stock": db.fetch_scm_store_stock,        # 위탁 실시간 매장재고(판매가능/입고예정/출고예정) — 재고 탭 위탁 통일
 }
 # 증분(윈도우) 스냅샷 — {name: (fetch_fn, window_days)}. sales_date 기준 최근 N일만 재적재하고 과거는 보존.

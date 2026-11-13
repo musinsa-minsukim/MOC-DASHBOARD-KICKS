@@ -98,6 +98,17 @@ md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerp
 - 대사: `python tools/dbx.py tools/recon_stock_store.sql` (레거시 editorial ↔ 신규 원장, 매장×사업구분).
 - 경량 롱포맷(거점×goods_no, 1쿼리)이 필요하면 `fetch_stock_long()`.
 
+## 9-2. 매장 흐름(입고·출고 단계) — `fetch_store_flow()` [db.py]  ⭐2026-11 (`store_moves` 스냅샷의 통합판)
+재고 탭 상품옵션 표의 **점재고(가용) / 입고 예정 / 입고 지시 / 이동중 / 출고 예정 / 반납 지시** 열의 원천.
+`INVENTORY_SOURCE=legacy` 면 기존 `fetch_store_moves()`(ERP 매입 + SCM)로 돌아가고 화면도 기존 3열로 표시된다.
+- **원천**: `ocmp.scm_hub.stock_movement(_item)`(매입·위탁 모두) + `inbound(_item)`(브랜드 직납) + `team.scm.stock`(매장 할당).
+  매입 이동·매장 입고확정도 SCM-HUB 에 있으므로 ERP(`oif_sap_str`/`erp_inout_bound`)는 쓰지 않는다(같이 쓰면 매입 이중 집계).
+- **입고 지시** = 요청 − 센터 출고(+직납 도착 전) / **이동중** = 센터 출고 − 매장 입고확정(+직납 도착·확정 전) / **입고 예정** = 둘의 합.
+- **반납 지시**(출고 확정 전) = 요청 − 매장 출고 / **출고 예정** = 요청 − 물류 입고확정 = 반납 지시 + 매장 출고 후 물류 미입고.
+- **점재고(가용)** = 점재고(총 보유) − 원장 할당(진할당+가할당, 실측상 거의 전부 반납 지시분). 할당이 보유보다 많으면 0.
+- 미결 문서 = 상태 `CREATED`/`PENDING`/`PARTIALLY_SHIPPED`. `CANCELED`·`FAILED` 제외. 오래 묵은 미결도 그대로 포함.
+- 정의·검증 쿼리는 스킬 `musinsa-stock-flow-status` 참조.
+
 ## 10. 파생(쿼리 없음, pandas) — `load_inventory_goods()` [db.py:559] / `load_inventory_store_long()` [db.py:573]
 피벗을 goods_no 단위 합산 / (goods_no×매장) 롱포맷으로 변환. Databricks 재조회 없음.
 

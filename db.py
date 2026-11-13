@@ -2196,6 +2196,123 @@ def fetch_store_moves() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# [신규] 매장 흐름(입고·출고 단계) — SCM-HUB 이동 문서(매입+위탁 모두) + 통합 원장의 매장 할당. (2026-11 사용자 정의)
+#   store_moves 스냅샷의 통합판: 기존 열(store_name/goods_no/option/in_qty/out_qty/hist_recv)에 단계 열을 '추가'한다.
+#   매입 이동·매장 입고확정도 SCM-HUB 에 있으므로 ERP(oif313/erp315)는 쓰지 않는다 — 같이 쓰면 매입이 이중 집계된다.
+#   [입고]  in_order   = 입고 지시  : 요청 − 센터 출고(아직 센터에서 안 나온 수량) + 브랜드 직납 미도착분
+#           in_transit = 이동중     : 센터 출고 − 매장 입고확정 + 브랜드 직납 도착·확정 전
+#           in_qty     = 입고 예정  = in_order + in_transit
+#   [출고]  ret_pending = 반납 지시(출고 확정 전) : 요청 − 매장 출고 (아직 매장에 있는 수량)
+#           out_qty     = 출고 예정 = 요청 − 물류 입고확정 = ret_pending + (매장 출고 후 물류 미입고)
+#   [재고]  alloc = 통합 원장의 매장 할당(진할당+가할당). 실측상 거의 전부 반납 지시분 → 점재고(가용) = 총 보유 − alloc.
+#   hist_recv = 그 매장 누적 입고확정(신규입고/필업 판정, 기존과 동일 의미).
+#   미결 문서 = 상태 CREATED/PENDING/PARTIALLY_SHIPPED (CANCELED·FAILED·RECEIVED 제외). 오래 묵은 미결도 그대로 포함.
+#   매장 매핑: dim_store → offline_shopno_storageid.storage_id(= SCM-HUB 스토리지) / 원장은 root_node_id == shop_no.
+# ---------------------------------------------------------------------------
+STORE_FLOW_COLS = ["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv",
+                   "in_order", "in_transit", "ret_pending", "alloc"]
+
+
+def _store_flow_sql() -> str:
+    return f"""
+    WITH {DIM_STORE},
+    sid AS (   -- 대시보드 매장 ↔ SCM-HUB 스토리지
+        SELECT CAST(x.storage_id AS BIGINT) AS sid, ds.store_name, ds.shop_no
+        FROM dim_store ds
+        JOIN team.commercepm.offline_shopno_storageid x ON CAST(x.shop_no AS INT) = ds.shop_no),
+    spo AS (SELECT fk_sku_id, fk_product_option_id FROM (
+        SELECT fk_sku_id, fk_product_option_id, ROW_NUMBER() OVER (PARTITION BY fk_sku_id
+          ORDER BY CASE WHEN mapping_type='ACTIVE' THEN 0 ELSE 1 END, updated_at DESC) rn
+        FROM ocmp.scm_hub.sku_product_option) WHERE rn = 1),
+    mv AS (    -- 취소·실패 제외 이동 품목(매입·위탁 모두)
+        SELECT sm.fk_source_storage_id AS src, sm.fk_destination_storage_id AS dst,
+               CAST(smi.fk_sku_id AS BIGINT) AS fk_sku_id,
+               CASE WHEN smi.stock_movement_status IN ('CREATED','PENDING','PARTIALLY_SHIPPED') THEN 1 ELSE 0 END AS is_open,
+               CAST(smi.requested_quantity AS DOUBLE) AS req, CAST(smi.shipped_quantity AS DOUBLE) AS shp,
+               CAST(smi.received_quantity AS DOUBLE) AS rcv
+        FROM ocmp.scm_hub.stock_movement sm
+        JOIN ocmp.scm_hub.stock_movement_item smi
+          ON smi.fk_stock_movement_id = sm._id AND smi.stock_movement_status NOT IN ('CANCELED','FAILED')),
+    inb AS (   -- 매장 입고(도착지 = 매장)
+        SELECT s.store_name, mv.fk_sku_id,
+               SUM(CASE WHEN mv.is_open = 1 THEN GREATEST(mv.req - mv.shp, 0) ELSE 0 END) AS in_order,
+               SUM(CASE WHEN mv.is_open = 1 THEN GREATEST(mv.shp - mv.rcv, 0) ELSE 0 END) AS in_transit,
+               SUM(mv.rcv) AS hist
+        FROM mv JOIN sid s ON mv.dst = s.sid GROUP BY 1, 2),
+    outb AS (  -- 매장 출고(출발지 = 매장): 반납 + 매장 간 이동
+        SELECT s.store_name, mv.fk_sku_id,
+               SUM(GREATEST(mv.req - mv.shp, 0)) AS ret_pending,
+               SUM(GREATEST(mv.req - mv.rcv, 0)) AS outq
+        FROM mv JOIN sid s ON mv.src = s.sid WHERE mv.is_open = 1 GROUP BY 1, 2),
+    dir AS (   -- 브랜드 직납(센터 미경유): 도착 전 = 입고 지시, 도착·확정 전 = 이동중
+        SELECT s.store_name, CAST(ii.fk_sku_id AS BIGINT) AS fk_sku_id,
+               SUM(CASE WHEN ii.inbound_item_status = 'ARRIVED' THEN 0
+                        ELSE GREATEST(COALESCE(ii.inbound_requested_quantity,0) - COALESCE(ii.inbound_completed_quantity,0), 0) END) AS in_order,
+               SUM(CASE WHEN ii.inbound_item_status = 'ARRIVED'
+                        THEN GREATEST(COALESCE(ii.inbound_requested_quantity,0) - COALESCE(ii.inbound_completed_quantity,0), 0) ELSE 0 END) AS in_transit,
+               SUM(COALESCE(ii.inbound_completed_quantity,0)) AS hist
+        FROM ocmp.scm_hub.inbound ib
+        JOIN ocmp.scm_hub.inbound_item ii ON ii.fk_inbound_id = ib._id AND ii.inbound_item_status <> 'CANCELLED'
+        JOIN sid s ON ib.fk_destination_storage_id = s.sid
+        WHERE ib.inbound_type = 'STORE_INBOUND' AND ii.fk_sku_id IS NOT NULL
+        GROUP BY 1, 2),
+    led AS (   -- 통합 원장의 매장 할당(진할당+가할당) — 점재고(가용) 계산용
+        SELECT s.store_name, CAST(k._id AS BIGINT) AS fk_sku_id,
+               SUM(st.allocation_quantity + st.virtual_allocation_quantity) AS alloc
+        FROM team.scm.stock st
+        JOIN sid s ON CAST(s.shop_no AS STRING) = st.root_node_id
+        JOIN ocmp.scm_hub.sku k ON k.sku_id = st.sku_id
+        WHERE st.namespace = 'STORE' AND (st.allocation_quantity <> 0 OR st.virtual_allocation_quantity <> 0)
+        GROUP BY 1, 2),
+    keys AS (SELECT store_name, fk_sku_id FROM inb UNION SELECT store_name, fk_sku_id FROM outb
+             UNION SELECT store_name, fk_sku_id FROM dir UNION SELECT store_name, fk_sku_id FROM led),
+    f AS (
+        SELECT k.store_name, k.fk_sku_id,
+               COALESCE(i.in_order, 0) + COALESCE(d.in_order, 0)     AS in_order,
+               COALESCE(i.in_transit, 0) + COALESCE(d.in_transit, 0) AS in_transit,
+               COALESCE(i.hist, 0) + COALESCE(d.hist, 0)             AS hist,
+               COALESCE(o.ret_pending, 0) AS ret_pending, COALESCE(o.outq, 0) AS outq,
+               COALESCE(l.alloc, 0) AS alloc
+        FROM keys k
+        LEFT JOIN inb i  ON i.store_name = k.store_name AND i.fk_sku_id = k.fk_sku_id
+        LEFT JOIN outb o ON o.store_name = k.store_name AND o.fk_sku_id = k.fk_sku_id
+        LEFT JOIN dir d  ON d.store_name = k.store_name AND d.fk_sku_id = k.fk_sku_id
+        LEFT JOIN led l  ON l.store_name = k.store_name AND l.fk_sku_id = k.fk_sku_id)
+    SELECT f.store_name, CAST(p.product_no AS STRING) AS goods_no, po.option_name AS option,
+           SUM(f.in_order) AS in_order, SUM(f.in_transit) AS in_transit,
+           SUM(f.in_order + f.in_transit) AS in_qty,
+           SUM(f.ret_pending) AS ret_pending, SUM(f.outq) AS out_qty,
+           SUM(f.alloc) AS alloc, SUM(f.hist) AS hist_recv
+    FROM f
+    LEFT JOIN spo ON spo.fk_sku_id = f.fk_sku_id
+    LEFT JOIN ocmp.scm_hub.product_option po ON po._id = spo.fk_product_option_id
+    LEFT JOIN ocmp.scm_hub.product p ON p._id = po.fk_product_id
+    WHERE p.product_no IS NOT NULL
+      AND (f.in_order + f.in_transit > 0 OR f.outq > 0 OR f.alloc <> 0)
+    GROUP BY f.store_name, CAST(p.product_no AS STRING), po.option_name
+    """
+
+
+def fetch_store_flow() -> pd.DataFrame:
+    """매장 흐름(입고 지시·이동중 / 반납 지시·출고 예정 / 할당) — store_name × goods_no × option.
+       SCM-HUB(매입+위탁) 이동 문서 + 통합 원장 할당. store_moves 스냅샷과 열 호환(in_qty/out_qty/hist_recv) + 단계 열.
+       실패 시 빈 df(화면은 단계 열 없이 동작)."""
+    try:
+        df = run_df(_store_flow_sql())
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("store_flow 조회 실패: %s", str(e)[:300])
+        return pd.DataFrame(columns=STORE_FLOW_COLS)
+    if df is None or df.empty:
+        return pd.DataFrame(columns=STORE_FLOW_COLS)
+    df["goods_no"] = pd.to_numeric(df["goods_no"], errors="coerce").fillna(0).astype("int64")
+    df["option"] = df["option"].fillna("").astype(str)
+    for c in STORE_FLOW_COLS[3:]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    return df[STORE_FLOW_COLS]
+
+
+# ---------------------------------------------------------------------------
 # 위탁(SCM-HUB) 실시간 매장재고 — team.scm.scm_hub_inventory_status_v (최신 재고일자).
 #   editorial 점재고는 D-1 마감이라 오늘 입고확정분이 지연됨 → 위탁은 이 뷰(당일 판매가능재고)를 따름.
 #   바코드 단위: 판매가능재고(점재고) + 예정_입고예정·이동입고중(입고예정) + 예정_출고예정·이동출고중(출고예정).

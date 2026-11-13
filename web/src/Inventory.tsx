@@ -157,6 +157,11 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
   const hubcols: string[] = d?.hubcols ?? [];
   // 통합 원장 스냅샷: 창고 열이 '물류 재고' 하나(=허브합계와 같은 값) → 허브합계 열은 중복이라 숨김. 레거시 스냅샷이면 기존 그대로.
   const unified = hubcols.includes("물류 재고");
+  // 매장 흐름 단계 열(통합 store_moves 스냅샷일 때만 서버가 내려줌) → 점재고(가용)·입고 지시·이동중·반납 지시 열 표시.
+  const flowcols: string[] = d?.flowcols ?? [];
+  const flowOn = flowcols.length > 0;
+  const GREEN_CELL = (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#4ade80" : "#16a34a", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" });
+  const RED_CELL = (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#f87171" : "#dc2626", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" });
   const invCols = useMemo(() => [
     colThumb("img_url", "이미지", { pinned: "left" }),
     colText("sku_id", "SKU ID", { pinned: "left", minWidth: 124, headerTooltip: "SCM-HUB SKU ID (옵션·바코드 단위) · 매입·위탁 모두 · 미매핑은 공란" }),
@@ -166,15 +171,26 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
       pinned: "left", minWidth: 118, headerTooltip: "매장별 행 · '(창고 대기)'=선택 매장 재고 없이 허브에만 있는 상품",
       cellStyle: (p: any): any => (p.value === "(창고 대기)" ? { color: dark ? "#94a3b8" : "#94a3b8", fontStyle: "italic" } : { fontWeight: 600 }),
     }),
-    colNum("점재고", "점재고", "num", { pinned: "left", minWidth: 82, headerTooltip: "그 매장의 점재고(옵션·barcode 단위)" }),
-    colNum("입고예정", "입고예정", "num", {
-      pinned: "left", minWidth: 82, headerTooltip: "그 매장으로 오는 이동중(STO) 입고 예정 수량 · 점재고 없이 입고예정만 있으면 신규입고 행",
-      cellStyle: (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#4ade80" : "#16a34a", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" }),
-    }),
-    colNum("출고예정", "출고예정", "num", {
-      pinned: "left", minWidth: 82, headerTooltip: "그 매장에서 창고로 나가는 반품(STO) · 위탁만(출고요청 단계부터, requested−received). 매입은 제외(물류확정 차감 불가로 누적·과대)",
-      cellStyle: (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#f87171" : "#dc2626", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" }),
-    }),
+    ...(flowOn ? [
+      // 통합 흐름 열(사용자 정의 2026-11): 점재고(가용) / 입고 예정 = 입고 지시 + 이동중 / 출고 예정 ⊇ 반납 지시(출고 확정 전)
+      //   좌측 고정은 점재고(가용)까지만 — 여섯 열을 모두 고정하면 고정 폭이 그리드보다 넓어져 AG Grid 가 앞쪽 열(이미지·SKU ID) 고정을 자동 해제한다.
+      colNum("가용", "점재고(가용)", "num", { pinned: "left", minWidth: 92, headerTooltip: "그 매장에서 지금 쓸 수 있는 재고 = 총 보유 − 할당(반납 지시 등으로 묶인 수량) · 할당이 보유보다 많으면 0 · 옵션·barcode 단위" }),
+      colNum("입고예정", "입고 예정", "num", { minWidth: 78, headerTooltip: "그 매장으로 올 물량 합계 = 입고 지시 + 이동중 · 점재고 없이 입고 예정만 있으면 신규입고 행", cellStyle: GREEN_CELL }),
+      colNum("입고지시", "입고 지시", "num", { minWidth: 78, headerTooltip: "입고가 지시됐지만 아직 센터에서 출고되지 않은 수량(요청 − 센터 출고) · 브랜드 직납은 도착 전 수량", cellStyle: GREEN_CELL }),
+      colNum("이동중", "이동중", "num", { minWidth: 70, headerTooltip: "센터에서 출고됐고 매장 입고확정 전인 수량(센터 출고 − 매장 입고확정) · 브랜드 직납은 도착 후 확정 전 수량", cellStyle: GREEN_CELL }),
+      colNum("출고예정", "출고 예정", "num", { minWidth: 78, headerTooltip: "그 매장에서 나갈·나간 물량 중 물류 입고확정 전 수량(요청 − 물류 입고확정) = 반납 지시 + 매장 출고 후 물류 미입고 · 이미 매장에서 출고된 수량이 포함돼 점재고보다 클 수 있음", cellStyle: RED_CELL }),
+      colNum("반납지시", "반납 지시", "num", { minWidth: 78, headerTooltip: "반납(매장 간 이동 포함)이 지시됐지만 매장 출고 확정 전인 수량(요청 − 매장 출고) · 아직 매장에 있는 물량", cellStyle: RED_CELL }),
+    ] : [
+      colNum("점재고", "점재고", "num", { pinned: "left", minWidth: 82, headerTooltip: "그 매장의 점재고(옵션·barcode 단위)" }),
+      colNum("입고예정", "입고예정", "num", {
+        pinned: "left", minWidth: 82, headerTooltip: "그 매장으로 오는 이동중(STO) 입고 예정 수량 · 점재고 없이 입고예정만 있으면 신규입고 행",
+        cellStyle: GREEN_CELL,
+      }),
+      colNum("출고예정", "출고예정", "num", {
+        pinned: "left", minWidth: 82, headerTooltip: "그 매장에서 창고로 나가는 반품(STO) · 위탁만(출고요청 단계부터, requested−received). 매입은 제외(물류확정 차감 불가로 누적·과대)",
+        cellStyle: RED_CELL,
+      }),
+    ]),
     colText("브로큰", "브로큰", {
       minWidth: 72, headerTooltip: "이 상품컬러가 그 매장에서 사이즈 브로큰이면 Y · 사이즈 3+ 중 구색률<50%(매장별 판정)",
       cellStyle: (p: any): any => (p.value === "Y" ? { color: dark ? "#f87171" : "#dc2626", fontWeight: 700, textAlign: "center" } : { textAlign: "center" }),
@@ -198,7 +214,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
       ? "물류센터(FC) 재고 합 · 매입+위탁 통합 원장 · 매장 무관(그 상품 barcode 기준) · 매장행마다 반복 표시(합계는 barcode당 1회만)"
       : "창고(허브) 재고 · 매장 무관(그 상품 barcode 기준) · 합계는 상품 중복 없이 1회만 반영" })),
     ...(unified ? [] : [colNum("허브합계", "허브합계", "num", { headerTooltip: "MFS+허브1000(온라인+오프라인+반품)+허브1700 · 매장행마다 반복 표시(합계는 barcode당 1회만)" })]),
-  ], [hubcols.join(","), dark]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [hubcols.join(","), flowOn, dark]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 브랜드별 점재고·GMV·SOB 표 (그래프 대체) — 재고 과다 판단
   const brandRows: any[] = d?.brand_stock ?? [];
@@ -257,12 +273,14 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
     if (!rr.length) return [];
     const t: any = { sku_id: "", brand_nm: "합계", goods_nm: "", 매장명: "", goods_no: "", style_no: "", goods_opt: "", business_type: "", cat_top: "", cat_large: "", cat_medium: "" };
     const hubCols = ["허브합계", ...hubcols];
-    let jaego = 0, expected = 0, outgoing = 0; for (const c of hubCols) t[c] = 0;
+    const flowKeys = flowOn ? ["가용", ...flowcols] : [];
+    let jaego = 0, expected = 0, outgoing = 0; for (const c of hubCols) t[c] = 0; for (const c of flowKeys) t[c] = 0;
     const seen = new Set<string>();
     for (const r of rr) {
       jaego += Number(r["점재고"]) || 0;          // 점재고·입고예정·출고예정은 매장×옵션 distinct → 전행 합산
       expected += Number(r["입고예정"]) || 0;
       outgoing += Number(r["출고예정"]) || 0;
+      for (const c of flowKeys) t[c] += Number(r[c]) || 0;   // 가용·입고 지시·이동중·반납 지시도 매장×옵션 distinct → 전행 합산
       const bc = String(r.__bc ?? "");
       if (bc && seen.has(bc)) continue;   // 허브는 barcode당 1회
       if (bc) seen.add(bc);
@@ -270,7 +288,7 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
     }
     t["점재고"] = jaego; t["입고예정"] = expected; t["출고예정"] = outgoing;
     return [t];
-  }, [d, hubcols]);
+  }, [d, hubcols, flowOn]);
   const invGridKey = useMemo(() => `${(d?.rows?.length) || 0}|${Math.round(invTotal[0]?.["점재고"] || 0)}|${Math.round(invTotal[0]?.["허브합계"] || 0)}`, [d, invTotal]);
   const onBrandClick = (e: any) => { if (e?.node?.rowPinned || !pickBrand) return; const nm = e?.data?.name; if (nm && nm !== "합계") pickBrand({ name: nm }); };
 
@@ -321,6 +339,10 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
             <br />
             <span className="font-semibold text-amber-600 dark:text-amber-400">입고예정·출고예정·입고구분(상품옵션별)</span> · <b className="text-emerald-600 dark:text-emerald-400">입고예정</b>=그 매장으로 오는 이동중(STO) 수량 / <b className="text-rose-600 dark:text-rose-400">출고예정</b>=창고로 나가는 반품. <b className="text-emerald-600 dark:text-emerald-400">신규입고</b>=그 매장에 <b>입고 이력이 없는 첫 입고</b> / <b className="text-amber-600 dark:text-amber-400">필업</b>=<b>입고 이력 있음</b>(완판됐다가 재입고도 필업) / <b>(공란)</b>=입고 없음. (현재 재고 0이 아니라 입고확정 이력 기준) <b>출고예정</b>=반품 <b>위탁만</b>(출고요청 단계부터, requested−received). <b>매입은 제외</b> — 창고 입고확정을 매장별로 차감할 신호가 없어 누적·과대가 되고 조회도 무거워 반영하지 않음.
             <br />
+            {flowOn && (<>
+              <span className="font-semibold text-slate-600 dark:text-slate-300">상품옵션 표의 재고·입출고 열</span> · <b>점재고(가용)</b> = 총 보유 − 할당(반납 지시 등으로 묶인 수량) / <b className="text-emerald-600 dark:text-emerald-400">입고 예정</b> = <b className="text-emerald-600 dark:text-emerald-400">입고 지시</b>(센터 미출고) + <b className="text-emerald-600 dark:text-emerald-400">이동중</b>(센터 출고·매장 입고확정 전) / <b className="text-rose-600 dark:text-rose-400">출고 예정</b> = <b className="text-rose-600 dark:text-rose-400">반납 지시</b>(매장 출고 확정 전) + 매장 출고 후 물류 미입고. 매입·위탁 모두 SCM-HUB 이동 문서 기준이며, 이 설명이 위 ‘입고예정·출고예정’ 설명보다 우선한다.
+              <br />
+            </>)}
             {unified ? (<>
               <span className="font-semibold text-slate-600 dark:text-slate-300">물류 재고</span> · 물류센터(FC) 보유 재고 합 — 기존 <b>MFS·허브1000·허브1700</b>을 한 열로 합침(매입+위탁 통합 원장). 점재고·물류 재고 모두 <b>원장 수량 그대로</b>(음수 포함)이며 매시 갱신.
             </>) : (<>

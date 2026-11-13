@@ -301,6 +301,12 @@ def _cat_pies(df, top_n=8):
     return out
 
 
+# 매장 흐름 단계 열(store_moves 통합 스냅샷에만 있음) → 화면 열 키. 레거시 스냅샷이면 화면도 기존 3열 그대로.
+#   입고 예정 = 입고지시 + 이동중 / 출고 예정 = 반납지시(출고 확정 전) + 매장 출고 후 물류 미입고 / 가용 = 점재고 − 할당
+FLOW_LABELS = {"in_order": "입고지시", "in_transit": "이동중", "ret_pending": "반납지시"}
+FLOW_COLS = list(FLOW_LABELS)
+ALLOC_COL = "alloc"          # 원장의 매장 할당(진할당+가할당) — 점재고(가용) 계산용
+
 _moves_lock = threading.Lock()
 _moves_cache: dict = {}   # (store_moves_mtime, goods_master_mtime) -> mv+__ck+__brand
 
@@ -549,7 +555,9 @@ def compute(f=None, limit=300):
     bmap = _broken_store_map(df, vis)
     bkeys = set().union(*bmap.values()) if bmap else set()
     rows = _option_rows(df, vis, hubcols, limit, per_store_broken=bmap)
-    return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows,
+    _mvx = _moves_enriched()                 # 흐름 단계 열이 있는 스냅샷이면 화면에 열 목록을 내려준다
+    flowcols = [FLOW_LABELS[c] for c in FLOW_COLS if _mvx is not None and c in _mvx.columns]
+    return {"empty": False, "kpis": kpis, "stores": stores, "rows": rows, "flowcols": flowcols,
             "store_cols": vis, "hubcols": hubcols, "cats": cats,
             "brand_stock": _brand_stock(df, vis, bkeys=bkeys),
             "store_sku": _store_sku(df, vis, bmap=bmap), "cat_sku": _cat_sku(df, vis, bkeys=bkeys)}
@@ -566,9 +574,12 @@ def _move_detail(vis):
     if mv.empty:
         return None
     # colorkey=__ck(이미 파싱됨, itertuples는 __접두 접근 불가라 평문 컬럼으로). first=그룹내 동일값.
-    g = mv.groupby(["store_name", "goods_no", "option"], as_index=False).agg(
-        in_qty=("in_qty", "sum"), out_qty=("out_qty", "sum"), hist_recv=("hist_recv", "max"),
-        colorkey=("__ck", "first"))
+    spec = dict(in_qty=("in_qty", "sum"), out_qty=("out_qty", "sum"), hist_recv=("hist_recv", "max"),
+                colorkey=("__ck", "first"))
+    for c in FLOW_COLS + [ALLOC_COL]:        # 흐름 단계·할당 열(통합 스냅샷에만 있음) — 있으면 함께 합산
+        if c in mv.columns:
+            spec[c] = (c, "sum")
+    g = mv.groupby(["store_name", "goods_no", "option"], as_index=False).agg(**spec)
     return g
 
 
@@ -608,7 +619,10 @@ def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
     def _tot(gno):   # 상품 그룹 정렬 키 = 총 점재고 + 총 이동중(입고예정+출고예정) → 신규입고·반품 상품도 상위로
         return _f(jaego_by_goods.get(gno, 0)) + _f(move_by_goods.get(gno, 0))
 
-    def _mk(d0, store_name, jaego, expected, outgoing, broken, ingu, gno):
+    flow_cols = [c for c in FLOW_COLS if inc is not None and c in inc.columns]
+    flow_on = bool(flow_cols)
+
+    def _mk(d0, store_name, jaego, expected, outgoing, broken, ingu, gno, flow=None):
         r = {"sku_id": ("" if pd.isna(d0.get("sku_id")) else str(d0.get("sku_id")))}   # SKU ID(SCM-HUB) 첫 열
         r.update({c: ("" if pd.isna(d0.get(c)) else d0.get(c)) for c in txt})
         r["goods_no"] = int(gno)
@@ -623,14 +637,26 @@ def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
         r["허브합계"] = int(round(_f(d0.get("__hub"))))
         r["__bc"] = "" if pd.isna(d0.get("barcode")) else str(d0.get("barcode"))
         r["__tot"] = int(round(_tot(int(gno))))
+        if flow_on:                          # 흐름 단계(이동행만 값, 순수 재고행은 0) + 점재고(가용) = 점재고 − 할당
+            for c in flow_cols:
+                r[FLOW_LABELS[c]] = int(round(_f(flow.get(c)))) if flow else 0
+            # 가용 = 점재고(총 보유) − 원장 할당. 오래된 반납 지시 등으로 할당이 보유보다 많으면 0(가용은 0 미만이 될 수 없다).
+            #   점재고 자체가 음수인 행(원장 음수)은 그 값을 그대로 둔다.
+            _al = int(round(_f(flow.get(ALLOC_COL)))) if flow else 0
+            r["가용"] = r["점재고"] if r["점재고"] < 0 else max(r["점재고"] - _al, 0)
         return r
 
     df_goods = set(int(x) for x in df["goods_no"])
-    # 이동행만 df 레코드(점재고·메타·허브) 폴백 조회가 필요 → '이동 있는 상품'으로 한정.
-    #   (전체 15만행 to_dict + goods 메타 전량 계산이 요청당 ~15s였음 → 이동 상품만 처리해 제거.)
-    move_goods = set(int(x) for x in inc["goods_no"].unique()) if inc is not None else set()
+    # 이동행의 df 레코드(점재고·메타·허브) 폴백 조회는 **실제로 행을 만드는 상위 limit 이동행의 상품**만 필요.
+    #   (이동 상품 전체로 to_dict 하면 이동행이 많을 때 요청당 10초+ → 표시 대상으로 한정. 결과 동일.)
+    inc_top = None
+    if inc is not None:
+        inc = inc[inc["goods_no"].isin(df_goods)]                    # df 보유 상품만(벡터 필터)
+        # dict 빌드는 (입고+출고) 상위 limit 행만 — 전체 이동행(수십만) dict화 회피(어차피 아래서 [:limit]라 결과 동일).
+        inc_top = inc.assign(__mv=inc["in_qty"] + inc["out_qty"]).nlargest(limit, "__mv") if len(inc) > limit else inc
+    move_goods = set(int(x) for x in inc_top["goods_no"].unique()) if inc_top is not None else set()
     gmeta = _goods_meta_map(df, txt, move_goods) if move_goods else {}
-    # (goods_no, goods_opt) → df 레코드. 이동행이 실제 점재고를 붙일 수 있게(이동 상품만).
+    # (goods_no, goods_opt) → df 레코드. 이동행이 실제 점재고를 붙일 수 있게(표시 대상 이동 상품만).
     df_by_key = {}
     if move_goods:
         for d0 in df[df["goods_no"].isin(move_goods)][cols].to_dict("records"):
@@ -642,12 +668,9 @@ def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
     #      ※ '현재 재고 0'이 아니라 '입고 이력'이 기준(완판됐다가 재입고=필업). hist_recv=매장 SKU 누적 입고확정.
     move_recs, move_keys = [], set()
     if inc is not None:
-        inc = inc[inc["goods_no"].isin(df_goods)]                    # df 보유 상품만(벡터 필터)
         move_keys = set(zip(inc["store_name"].tolist(),              # 스톡행 dedup용(전체) — 벡터 zip(전행 int/str 루프 제거)
                             inc["goods_no"].astype("int64").tolist(),
                             inc["option"].astype(str).tolist()))
-        # dict 빌드는 (입고+출고) 상위 limit 행만 — 전체 이동행(수십만) dict화 회피(어차피 아래서 [:limit]라 결과 동일).
-        inc_top = inc.assign(__mv=inc["in_qty"] + inc["out_qty"]).nlargest(limit, "__mv") if len(inc) > limit else inc
         for r in inc_top.itertuples(index=False):
             gno = int(r.goods_no)
             opt = str(r.option); s = r.store_name
@@ -658,7 +681,8 @@ def _option_rows(df, vis, hubcols, limit, per_store_broken=None):
             ingu = ("필업" if ever else "신규입고") if exp > 0 else ""
             broken = "Y" if (stock > 0 and r.colorkey in per_store_broken.get(s, set())) else ""
             base = d0 if d0 is not None else dict(gmeta.get(gno, {}), goods_opt=opt, barcode=None, __hub=0)
-            move_recs.append(_mk(base, s, stock, exp, outg, broken, ingu, gno))
+            move_recs.append(_mk(base, s, stock, exp, outg, broken, ingu, gno,
+                                 flow={c: getattr(r, c, 0.0) for c in flow_cols + [ALLOC_COL]}))
     move_recs.sort(key=lambda x: (x["입고예정"] + x["출고예정"]), reverse=True)
     move_recs = move_recs[:limit]
     # 2) 순수 재고행: 상품 총 점재고 상위 limit barcode → 매장(점재고>0)별 전개. 이동행에서 낸 (매장,옵션)은 제외.
