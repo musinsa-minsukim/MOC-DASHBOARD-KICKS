@@ -443,6 +443,34 @@ def _gh_dispatch(workflow_file: str) -> int:
         raise HTTPException(status_code=502, detail=f"dispatch 실패: {str(e)[:200]}")
 
 
+# ----------------------------------------------------------------- 사용자별 화면 설정(뷰)
+class PrefsBody(BaseModel):
+    grids: dict | None = None          # {표키: AG Grid columnState[]} — 열 너비·순서·숨김·정렬·고정
+
+
+@app.get("/api/prefs")
+def get_prefs(user: str = Depends(require_user)):
+    """내 화면 설정. 계정별로 저장되며 기기·브라우저가 바뀌어도 따라온다."""
+    return store.read_prefs(user)
+
+
+@app.put("/api/prefs")
+def put_prefs(body: PrefsBody, user: str = Depends(require_writer)):
+    """내 화면 설정 저장(통째로 교체). 남의 설정은 건드릴 수 없다 — 파일명이 토큰의 계정에서만 나온다."""
+    try:
+        store.write_prefs(user, {"grids": body.grids or {}})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/prefs")
+def delete_prefs(user: str = Depends(require_writer)):
+    """내 화면 설정 초기화 — 모든 표가 기본(내용 길이 자동 조정)으로 돌아간다."""
+    store.write_prefs(user, {"grids": {}})
+    return {"ok": True}
+
+
 @app.post("/api/refresh/snapshot")
 def refresh_snapshot_ep(_: str = Depends(require_writer)):
     """재고 REFRESH — refresh-stock.yml dispatch(위탁 실시간 재고+STO 이동 재빌드 → GCS → 다음 조회 반영).

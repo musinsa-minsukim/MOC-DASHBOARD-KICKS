@@ -3,7 +3,7 @@ import { AgGridReact } from "ag-grid-react";
 import { ModuleRegistry, AllCommunityModule, themeQuartz } from "ag-grid-community";
 import type { ColDef, CellStyle } from "ag-grid-community";
 import { Pin, ChevronUp, ChevronDown } from "lucide-react";
-import { won as wonFmt, num as numFmt, compact as compactFmt } from "./lib";
+import { api, won as wonFmt, num as numFmt, compact as compactFmt } from "./lib";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -85,8 +85,40 @@ function fmtVal(v: any, fmt: Fmt): string {
 
 // ---- 컬럼 정의 헬퍼 ----
 // 텍스트 컬럼. 열 너비는 내용 길이에 맞춰 자동조정(모바일·PC 공통) → 화면을 넘치면 가로 스크롤로 본다.
-// 표(열 구성)별 사용자 조정 너비 — 컴포넌트 리마운트·열 재적용에도 유지되도록 모듈 레벨에 둔다.
-const USER_WIDTHS = new Map<string, Record<string, number>>();
+// ---------------------------------------------------------------- 개인 뷰(표 레이아웃) 저장
+// 표별 AG Grid 컬럼 상태(열 너비·순서·숨김·정렬·고정)를 계정에 저장한다.
+//   · 모듈 레벨 — 컴포넌트 리마운트(key 변경)·columnDefs 재적용에도 살아남아야 한다.
+//   · 서버(/api/prefs)에 계정별로 올리므로 다른 기기·브라우저에서 로그인해도 같은 뷰가 나온다.
+//   · 저장은 사용자가 직접 바꾼 경우만(프로그램이 바꾼 이벤트는 제외) → 되살리기 루프가 생기지 않는다.
+type ColState = any[];
+let GRID_VIEWS: Record<string, ColState> = {};
+const viewSubs = new Set<() => void>();
+let saveTimer: any = null;
+
+/** 로그인 직후 서버에서 받은 뷰를 심는다(이미 떠 있는 표에도 즉시 적용). */
+export function setGridViews(v: any) {
+  GRID_VIEWS = v && typeof v === "object" ? { ...v } : {};
+  viewSubs.forEach((f) => f());
+}
+/** 모든 표를 기본(내용 길이 자동 조정)으로 되돌린다. */
+export function resetGridViews() {
+  GRID_VIEWS = {};
+  api.resetPrefs().catch(() => {});
+  viewSubs.forEach((f) => f());
+}
+export const hasGridViews = () => Object.keys(GRID_VIEWS).length > 0;
+
+function saveGridViews() {   // 드래그 중 연타를 묶어 한 번만 올린다
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    api.putPrefs(GRID_VIEWS).catch(() => {});
+    window.dispatchEvent(new Event("grid-view-saved"));   // 헤더의 '보기 초기화' 버튼 노출 갱신
+  }, 900);
+}
+// 사용자가 직접 바꾼 게 아닌 이벤트 — 저장하지 않는다(초기화·자동조정·프로그램 변경).
+const PROGRAMMATIC = new Set(["api", "gridInitializing", "gridOptionsChanged", "autosizeColumns",
+                              "sizeColumnsToFit", "flex", "alignedGridChanged"]);
+
 
 export function colText(field: string, header: string, opts: Partial<ColDef> = {}): ColDef {
   return { field, headerName: header, minWidth: 110, ...opts };
@@ -196,38 +228,59 @@ export default function DataGrid({
   // 사용자가 끌어서 맞춘 열 너비. 표(열 구성)별로 **모듈 레벨**에 보관한다 —
   //   AG Grid 는 columnDefs 가 다시 적용되면 선언 너비로 되돌리고, 데이터가 바뀌면 호출부가 key 로 리마운트하기도 해서
   //   컴포넌트 안(useRef)에 두면 둘 다에 날아간다. 세션 동안 유지 → 필터를 바꿔도 조정한 폭이 그대로다.
-  const sizeKey = useMemo(() => columns.map((c: any) => c.field ?? c.colId ?? c.headerName).join("|"), [columns]);
-  const userSized = USER_WIDTHS.get(sizeKey) ?? (USER_WIDTHS.set(sizeKey, {}), USER_WIDTHS.get(sizeKey)!);
-  const onColumnResized = (e: any) => {
-    if (!e?.finished) return;
-    if (String(e.source || "") !== "uiColumnResized") return;      // 드래그로 끝낸 경우만(api 로 바꾼 건 제외 → 되살리기 루프 방지)
-    const cols = e.columns ?? (e.column ? [e.column] : []);
-    for (const c of cols) { try { userSized[c.getColId()] = c.getActualWidth(); } catch { /* noop */ } }
+  // 이 표의 식별자 = 열 구성. 탭마다 열이 달라 표끼리 섞이지 않고, 열 구성이 바뀌면 저장본이 자연히 폐기된다.
+  const viewKey = useMemo(() => columns.map((c: any) => c.field ?? c.colId ?? c.headerName).join("|"), [columns]);
+
+  // 사용자가 직접 바꾼 레이아웃만 저장한다(자동 조정·초기화 이벤트는 제외 → 되살리기 루프 없음).
+  const captureView = (e: any) => {
+    const src = String(e?.source || "");
+    if (!src || PROGRAMMATIC.has(src)) return;
+    if (e?.finished === false) return;                    // 드래그 중간 단계는 넘김
+    const gapi = apiRef.current; if (!gapi) return;
+    try {
+      GRID_VIEWS[viewKey] = gapi.getColumnState();
+      saveGridViews();
+    } catch { /* noop */ }
   };
-  // 자동 조정·열 재적용 뒤에 사용자가 맞춘 폭을 되살린다.
-  const applyUserWidths = (api: any) => {
-    const items = Object.entries(userSized)
-      .filter(([k]) => { try { return !!api.getColumn(k); } catch { return false; } })
-      .map(([key, newWidth]) => ({ key, newWidth: newWidth as number }));
-    if (items.length) { try { api.setColumnWidths(items, true); } catch { /* noop */ } }
+  // 저장된 뷰를 적용. 지금 없는 열은 걸러내고, 새로 생긴 열은 기본값으로 둔다(저장본이 낡아도 열이 사라지지 않게).
+  //   AG Grid 는 columnDefs 를 다시 적용할 때(상태 폴링 리렌더 등) 선언 너비로 되돌리므로,
+  //   열이 다시 그려질 때마다(onDisplayedColumnsChanged) 저장본을 덮어씌운다. applyingRef 로 재귀 차단.
+  const applyingRef = useRef(false);
+  const applyView = (gapi: any): boolean => {
+    const st = GRID_VIEWS[viewKey];
+    if (!Array.isArray(st) || !st.length) return false;
+    try {
+      const known = st.filter((c: any) => { try { return !!gapi.getColumn(c.colId); } catch { return false; } });
+      if (!known.length) return false;
+      applyingRef.current = true;
+      try { gapi.applyColumnState({ state: known, applyOrder: true }); } finally { applyingRef.current = false; }
+      return true;
+    } catch { applyingRef.current = false; return false; }
   };
 
   // 데이터가 바뀌면 각 열을 내용(헤더 포함) 길이에 맞춰 자동 너비 조정(모바일·PC 공통).
   //   모바일은 글자가 작아 열이 더 좁지만, 넘치는 만큼 가로 스크롤로 탐색(글자 축소 대신).
-  //   제외 = ① 사용자가 끌어서 맞춘 열 ② colDef.context.noAutoSize(좁은 기본폭을 의도한 열).
-  //   ⚠️ 기본폭을 maxWidth 로 고정하면 **드래그로 넓히는 것까지 막힌다** → width + noAutoSize 로 쓸 것.
+  //   ⚠️ 기본폭을 maxWidth 로 고정하면 **드래그로 넓히는 것까지 막힌다** → width + context.noAutoSize 로 줄 것.
+  //   저장된 개인 뷰가 있으면 자동 조정 대신 그 뷰를 쓴다(내가 맞춘 폭이 데이터 바뀔 때마다 날아가지 않게).
   const autoSize = () => {
-    const api = apiRef.current; if (!api) return;
+    const gapi = apiRef.current; if (!gapi) return;
     try {
-      const ids = (api.getColumns() ?? [])
-        .filter((c: any) => userSized[c.getColId()] === undefined)
-        .filter((c: any) => !c.getColDef()?.context?.noAutoSize)
-        .map((c: any) => c.getColId());
-      if (ids.length) api.autoSizeColumns(ids, false);
-      applyUserWidths(api);                // 사용자가 맞춘 폭 우선
-      api.refreshCells({ force: true });   // pinned(합계) 행이 새 열 너비로 다시 그려지도록 → 본문과 정렬
+      if (!applyView(gapi)) {
+        const ids = (gapi.getColumns() ?? [])
+          .filter((c: any) => !c.getColDef()?.context?.noAutoSize)
+          .map((c: any) => c.getColId());
+        if (ids.length) gapi.autoSizeColumns(ids, false);
+      }
+      gapi.refreshCells({ force: true });   // pinned(합계) 행이 새 열 너비로 다시 그려지도록 → 본문과 정렬
     } catch { /* noop */ }
   };
+  // 로그인 직후 서버 뷰가 도착하거나 초기화되면 떠 있는 표에도 즉시 반영.
+  useEffect(() => {
+    const f = () => { const gapi = apiRef.current; if (!gapi) return; if (!applyView(gapi)) { try { gapi.resetColumnState(); } catch { /* noop */ } } autoSize(); };
+    viewSubs.add(f);
+    return () => { viewSubs.delete(f); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey]);
   useEffect(() => {
     const id = requestAnimationFrame(autoSize);
     return () => cancelAnimationFrame(id);
@@ -417,8 +470,15 @@ export default function DataGrid({
         onGridReady={(e: any) => { apiRef.current = e.api; }}
         onFirstDataRendered={autoSize}
         onRowDataUpdated={autoSize}
-        onColumnResized={onColumnResized}
-        onDisplayedColumnsChanged={() => { const api = apiRef.current; if (api) applyUserWidths(api); }}
+        onColumnResized={captureView}
+        onColumnMoved={captureView}
+        onColumnVisible={captureView}
+        onColumnPinned={captureView}
+        onSortChanged={captureView}
+        onDisplayedColumnsChanged={() => {
+          if (applyingRef.current) return;                 // 내가 적용하면서 난 이벤트는 무시
+          const gapi = apiRef.current; if (gapi) applyView(gapi);
+        }}
         onCellClicked={onCellClicked}
         onCellMouseDown={onCellMouseDown}
         onCellMouseOver={onCellMouseOver}

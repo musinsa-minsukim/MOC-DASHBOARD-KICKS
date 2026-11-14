@@ -260,6 +260,35 @@ def is_ready() -> bool:
     return not missing()
 
 
+# ------------------------------------------------------- 사용자별 화면 설정(뷰)
+#   표의 열 너비·순서·숨김·정렬·고정을 계정별로 보관한다. 캐시(GCS)에 작은 JSON 으로 두므로
+#   인스턴스가 바뀌어도, 폰에서 로그인해도 같은 뷰가 나온다. 데이터가 아니라 개인 설정이라 갱신과 무관.
+_PREFS_MAX_BYTES = 256 * 1024          # 계정당 상한 — 표가 늘어도 수십 KB 수준이라 넉넉하다
+
+
+def _prefs_name(user: str) -> str:
+    """계정명 → 파일명. 경로 조작·이상문자 차단(영숫자 . _ - 만 남기고, 빈 값이면 거부)."""
+    safe = "".join(c for c in (user or "") if c.isalnum() or c in "._-")[:64]
+    if not any(c.isalnum() for c in safe):      # '..' 같은 점만 남은 값 거부(영숫자 1자 이상 필수)
+        raise ValueError("invalid user")
+    return f"prefs_{safe}"
+
+
+def read_prefs(user: str) -> dict:
+    try:
+        return read_json(_prefs_name(user))
+    except ValueError:
+        return {}
+
+
+def write_prefs(user: str, obj: dict) -> None:
+    if not isinstance(obj, dict):
+        raise ValueError("prefs must be an object")
+    if len(json.dumps(obj, ensure_ascii=False).encode()) > _PREFS_MAX_BYTES:
+        raise ValueError("prefs too large")
+    write_json(_prefs_name(user), obj)
+
+
 # ------------------------------------------------------- 재고 REFRESH 진행 상태
 #   재고 REFRESH 는 GitHub Actions(refresh-stock.yml)에서 수 분간 돌아 서버 프로세스에 흔적이 없다.
 #   → 버튼이 요청 시각을 캐시(GCS)에 적어두고, 스냅샷 parquet 의 mtime 이 그 시각을 넘으면 '완료'로 본다.

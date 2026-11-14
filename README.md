@@ -65,6 +65,9 @@ Databricks 는 **스냅샷 갱신 때만** 조회하고, 화면 요청은 parque
 | `web/src/` | 화면 (Inventory / Dashboard / Summary / Compare / Ips …) |
 | `app.py` | **구 Streamlit 화면 — 운영 미사용.** 배포는 `serve.py` 만 쓴다 |
 
+표의 **열 너비·순서·숨김·정렬·고정은 계정별로 저장**된다(`/api/prefs` → 캐시의 `prefs_<계정>.json`).
+한 번 맞춰 두면 다른 기기에서 로그인해도 같은 모습이고, 헤더의 열 아이콘으로 전체를 기본값으로 되돌릴 수 있다.
+
 ### 로컬 실행
 
 ```bash

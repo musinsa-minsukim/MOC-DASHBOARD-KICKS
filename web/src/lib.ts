@@ -122,6 +122,10 @@ export const api = {
     req("/customer/country" + qs + (qs ? "&" : "?") + `limit=${limit}`),
   inventory: (qs: string) => req("/inventory" + qs),
   refreshSnapshot: () => req("/refresh/snapshot", { method: "POST" }),
+  // 계정별 화면 설정(표의 열 너비·순서·숨김·정렬·고정) — 기기가 바뀌어도 따라온다.
+  getPrefs: () => req("/prefs"),
+  putPrefs: (grids: any) => req("/prefs", { method: "PUT", body: JSON.stringify({ grids }) }),
+  resetPrefs: () => req("/prefs", { method: "DELETE" }),
   compare: (qs: string) => req("/compare" + qs),
   target: (qs = "") => req("/target" + qs),
   pnl: (qs = "") => req("/pnl" + qs),

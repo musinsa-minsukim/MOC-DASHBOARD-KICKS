@@ -15,8 +15,10 @@ import {
   Layers,
   Sun,
   Moon,
+  Columns3,
 } from "lucide-react";
 import { api, getName, getToken, setAuth, emptyFilters, daysBeforeISO, todayISO, type Filters } from "./lib";
+import { setGridViews, resetGridViews, hasGridViews } from "./Grid";
 import { Spinner } from "./ui";
 import Login from "./Login";
 import FilterBar from "./FilterBar";
@@ -109,9 +111,9 @@ function fmtTs(s?: string | null) {
   return String(s).slice(5, 16).replace("T", " ");
 }
 
-function Topbar({ title, dark, onTheme, status }: {
+function Topbar({ title, dark, onTheme, status, viewsSaved, setViewsSaved }: {
   title: string; dark: boolean; onTheme: () => void;
-  status: any;
+  status: any; viewsSaved: boolean; setViewsSaved: (v: boolean) => void;
 }) {
   return (
     <header className="sticky top-0 z-10 flex min-h-[4rem] items-center gap-3 border-b border-slate-200/70 bg-white/70 px-5 pt-[env(safe-area-inset-top)] backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-900/70">
@@ -141,6 +143,16 @@ function Topbar({ title, dark, onTheme, status }: {
           <span>재고 데이터 <b className="font-semibold text-slate-600 dark:text-slate-300">{status?.inventory_pivot_data_date ?? "—"}</b> · 이동 {status?.store_moves_data_date ?? "—"} · 갱신 {fmtDT(status?.inventory_pivot_refreshed_at)}</span>
           <span className="text-amber-500 dark:text-amber-400/90">CP·입객은 익일 반영 · 순이익 오늘자는 잠정 추정 (원천 1일 지연)</span>
         </div>
+        {/* 저장된 개인 뷰가 있을 때만 노출 — 저장본이 꼬이거나 열을 숨겨버렸을 때 되돌릴 길을 항상 남겨둔다. */}
+        {viewsSaved && (
+          <button
+            onClick={() => { resetGridViews(); setViewsSaved(false); }}
+            title="내 표 보기 초기화 — 모든 탭의 열 너비·순서·숨김·정렬을 기본값으로 되돌립니다(이 계정에만 적용)"
+            className="rounded-lg p-2 text-slate-400 transition-colors duration-150 hover:bg-slate-100 hover:text-slate-600 active:scale-95 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+          >
+            <Columns3 size={18} />
+          </button>
+        )}
         <button
           onClick={onTheme}
           title={dark ? "라이트 모드" : "다크 모드"}
@@ -158,6 +170,7 @@ function Topbar({ title, dark, onTheme, status }: {
           <button
             onClick={() => {
               setAuth(null);
+              setGridViews({});                 // 다음 로그인 계정에 이전 사용자의 뷰가 남지 않게
               window.dispatchEvent(new Event("auth-expired"));
             }}
             title="로그아웃"
@@ -213,6 +226,19 @@ export default function App() {
 
   // 데이터 신선도 상태 — 1분마다 + 창 포커스 시 재조회(Scheduler가 갱신한 최신 갱신시각 반영).
   // (기존엔 로그인 시 1회만 불러 세션 유지 중 갱신시각이 고정되던 문제 수정)
+  // 계정별 화면 설정(표 레이아웃) — 로그인 직후 1회 받아와 이미 떠 있는 표에도 적용한다.
+  const [viewsSaved, setViewsSaved] = useState(false);
+  useEffect(() => {
+    if (!authed) { setGridViews({}); setViewsSaved(false); return; }
+    let alive = true;
+    api.getPrefs()
+      .then((p: any) => { if (!alive) return; setGridViews(p?.grids ?? {}); setViewsSaved(hasGridViews()); })
+      .catch(() => {});                      // 설정을 못 받아도 화면은 기본값으로 정상 동작
+    const onSaved = () => setViewsSaved(hasGridViews());
+    window.addEventListener("grid-view-saved", onSaved);
+    return () => { alive = false; window.removeEventListener("grid-view-saved", onSaved); };
+  }, [authed]);
+
   useEffect(() => {
     if (!authed) return;
     const load = () => api.status().then(setStatus).catch(() => {});
@@ -272,7 +298,8 @@ export default function App() {
     <div className="flex min-h-screen">
       <Sidebar view={view} setView={setView} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar title={navLabel} dark={dark} onTheme={toggleDark} status={status} />
+        <Topbar title={navLabel} dark={dark} onTheme={toggleDark} status={status}
+                viewsSaved={viewsSaved} setViewsSaved={setViewsSaved} />
         <MobileNav view={view} setView={setView} />
         <main className="animate-rise mx-auto w-full max-w-[1440px] flex-1 space-y-5 p-4 md:p-6">
           {view !== "summary" && view !== "target" && view !== "ips" && view !== "floor" && (
