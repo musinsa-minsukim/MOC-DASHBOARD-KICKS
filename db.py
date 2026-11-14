@@ -1904,7 +1904,18 @@ def fetch_store_flow() -> pd.DataFrame:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     for c in STORE_FLOW_DATE_COLS:                       # 지시일(최근) — 'yyyy-MM-dd' 문자열, 없으면 공란
         df[c] = df[c].fillna("").astype(str) if c in df.columns else ""
-    return df[STORE_FLOW_ALL_COLS]
+    out = df[STORE_FLOW_ALL_COLS]                        # attrs 는 반환 객체에 직접 건다(열 선택 시 유실 방지)
+    try:   # 이동 원장 기준시각 — 화면 '이동 기준' 표기용.
+        #   ⚠️ ocmp.scm_hub 의 created_at/updated_at 은 **KST 벽시계**로 적재된다(업무시간 9~18시 분포로 확인).
+        #      from_utc_timestamp 를 걸면 9시간 틀어진다. team.scm.stock.updated_at 은 반대로 UTC 라 변환이 필요하다.
+        ts = run_df("""SELECT date_format(GREATEST(
+                         (SELECT MAX(updated_at) FROM ocmp.scm_hub.stock_movement_item),
+                         (SELECT MAX(updated_at) FROM ocmp.scm_hub.inbound_item)
+                       ), 'yyyy-MM-dd HH:mm') t""").iloc[0, 0]
+        out.attrs["data_date"] = str(ts)
+    except Exception:
+        pass
+    return out
 
 
 @st.cache_data(ttl=3600, show_spinner=False)

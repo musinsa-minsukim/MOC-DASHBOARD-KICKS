@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList, Cell, PieChart, Pie } from "recharts";
 import { Boxes, Warehouse, Package, Tags, Download, Palette, Grid2x2, RefreshCw } from "lucide-react";
 import { api, num, getToken, toQuery, type Filters } from "./lib";
@@ -139,11 +139,22 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
     try {
       const r = await api.refreshSnapshot();
       window.dispatchEvent(new Event("refresh-started"));   // 최상단 '갱신 중' 표시 즉시 반영
-      setRefreshMsg(r?.message || "재고 갱신 요청됨 — 수 분 후 반영");
+      setRefreshMsg(r?.message || "재고 갱신 시작");
     } catch (e: any) {
       setRefreshMsg("갱신 요청 실패: " + (e?.message || "권한/토큰 확인"));
     } finally { setRefreshing(false); }
   };
+
+  // 재고 REFRESH 진행 상태(서버 판정). 완료로 바뀌는 순간 화면 수치도 새로 불러온다 — 새로고침을 누를 필요가 없게.
+  const stockState: string = status?.stock_refresh?.state ?? "";
+  const prevStockState = useRef<string>("");
+  useEffect(() => {
+    if (prevStockState.current === "running" && stockState === "done") {
+      setRefreshMsg("");
+      setReloadKey((k) => k + 1);
+    }
+    prevStockState.current = stockState;
+  }, [stockState]);
 
   const qs = useMemo(() => toQuery(filters, { withDate: false }), [filters]);
 
@@ -334,12 +345,34 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
           ? "최신 스냅샷 · 상품·옵션(barcode) 단위 · 점재고=가용(매장 보유−할당) · 물류: 총 보유 / 무신사 슬롯 재고(가용) / 온라인 판매 제외 · 통합 재고 원장(매입+위탁, 매시) · 기간 필터 미적용"
           : "최신 스냅샷 · 상품·옵션(barcode) 단위 · 위탁 점재고=SCM-HUB 실시간(판매가능재고) · 창고: MFS / 허브1000(온라인·오프라인·반품) / 허브1700 · 기간 필터 미적용"}</p>
         <div className="flex items-center gap-2">
-          {/* 재고 REFRESH가 실제 갱신하는 대상(위탁 실시간 재고·STO 이동)의 최근 갱신 시각.
-              상단 '재고 데이터'는 야간 전체 스냅샷(editorial inventory_pivot)이라 이 버튼과 무관. */}
+          {/* 데이터 '기준시각'(원천이 언제까지 반영됐나)과 '갱신'(우리 캐시를 언제 다시 만들었나)은 다르다 — 둘 다 보여준다. */}
           <span className="hidden text-[11px] leading-tight text-slate-400 sm:inline dark:text-slate-500"
-                title="재고 REFRESH 버튼이 갱신하는 위탁 실시간 재고(SCM-HUB)·STO 이동의 최근 갱신 시각 (GitHub Actions, 완료까지 수 분). 상단의 '재고 데이터 기준일/갱신'은 야간 editorial 전체 스냅샷이라 이 버튼으로는 바뀌지 않음">
-            {unified ? "재고 원장 갱신" : "위탁 실시간 갱신"} {fmtRt(unified ? status?.inventory_pivot_refreshed_at : status?.scm_store_stock_refreshed_at)} · 이동 {fmtRt(status?.store_moves_refreshed_at)}
+                title={"기준 = 원천이 그 시각까지 반영됨 (재고 원장 team.scm.stock 은 매시 적재 / 이동 원장 SCM-HUB 는 준실시간) · "
+                     + "갱신 = 이 수치를 담은 캐시를 다시 만든 시각 (재고 REFRESH 또는 정기 스케줄 10:00·16:00·22:00 KST) · "
+                     + "기준 이후에 원천에서 바뀐 건은 다음 갱신까지 반영되지 않는다"}>
+            재고 기준 <b className="font-semibold text-slate-500 dark:text-slate-400">{fmtRt((status?.inventory_pivot_data_date || "").replace(" ", "T"))}</b>
+            {" · 이동 기준 "}<b className="font-semibold text-slate-500 dark:text-slate-400">{fmtRt((status?.store_moves_data_date || "").replace(" ", "T"))}</b>
+            {" · 갱신 "}{fmtRt(status?.inventory_pivot_refreshed_at)}
           </span>
+          {/* 재고 REFRESH 는 GitHub Actions 에서 수 분 돌아 서버에 흔적이 없다 → 요청 시각 대비 파켓 mtime 으로 진행/완료 판정. */}
+          {stockState === "running" && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-600 ring-1 ring-inset ring-indigo-100 dark:bg-indigo-950/60 dark:text-indigo-300 dark:ring-indigo-900/60"
+                  title={`${status?.stock_refresh?.requested_at ?? ""} 요청 · 보통 1~3분 걸립니다`}>
+              <RefreshCw size={13} className="animate-spin" /> 갱신 중 {status?.stock_refresh?.elapsed_min ?? 0}분
+            </span>
+          )}
+          {stockState === "done" && (status?.stock_refresh?.elapsed_min ?? 999) <= 30 && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-100 dark:bg-emerald-950/60 dark:text-emerald-300 dark:ring-emerald-900/60"
+                  title="재고 REFRESH 가 끝나 화면도 새 수치로 다시 불러왔습니다">
+              ✓ 갱신 완료 {fmtRt(status?.stock_refresh?.finished_at)}
+            </span>
+          )}
+          {stockState === "timeout" && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-100 dark:bg-amber-950/60 dark:text-amber-300 dark:ring-amber-900/60"
+                  title="30분이 지나도 스냅샷이 갱신되지 않았습니다 — GitHub Actions(refresh-stock) 실행 로그를 확인하세요">
+              ⚠ 갱신 지연 · 로그 확인
+            </span>
+          )}
           {refreshMsg && <span className="text-xs text-slate-500 dark:text-slate-400">{refreshMsg}</span>}
           {loading && <Spinner className="h-4 w-4" />}
           <button onClick={doRefresh} disabled={refreshing}

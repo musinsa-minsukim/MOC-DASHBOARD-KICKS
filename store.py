@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import json
+import time
 import datetime as dt
 
 import pandas as pd
@@ -259,6 +260,45 @@ def is_ready() -> bool:
     return not missing()
 
 
+# ------------------------------------------------------- 재고 REFRESH 진행 상태
+#   재고 REFRESH 는 GitHub Actions(refresh-stock.yml)에서 수 분간 돌아 서버 프로세스에 흔적이 없다.
+#   → 버튼이 요청 시각을 캐시(GCS)에 적어두고, 스냅샷 parquet 의 mtime 이 그 시각을 넘으면 '완료'로 본다.
+#   (인스턴스가 scale-to-zero 로 죽어도, 다른 인스턴스가 받아도 동일하게 판정된다.)
+_STOCK_REFRESH_TIMEOUT_SEC = 30 * 60     # 이 시간을 넘기면 실패/유실로 보고 '시간 초과' 표기
+
+
+def mark_stock_refresh_requested(by: str = "") -> None:
+    """재고 REFRESH 버튼이 워크플로를 띄운 순간을 기록(진행 상태 판정 기준점)."""
+    write_json("stock_refresh", {"requested_epoch": time.time(),
+                                 "requested_at": now_kst_min(), "by": by})
+
+
+def stock_refresh_state() -> dict:
+    """{state: ''|'running'|'done'|'timeout', requested_at, finished_at, elapsed_min}.
+       done/timeout 판정 = STOCK_REFRESH_NAMES 파켓 mtime 이 요청 시각 이후인가."""
+    j = read_json("stock_refresh")
+    req = j.get("requested_epoch")
+    if not req:
+        return {"state": ""}
+    done = []
+    for nm in STOCK_REFRESH_NAMES:
+        try:
+            done.append(os.path.getmtime(_path(nm)))
+        except OSError:
+            done.append(0.0)
+    finished = min(done)                      # 전부 새로 써졌을 때만 완료
+    out = {"requested_at": j.get("requested_at"), "by": j.get("by") or ""}
+    if finished >= req:
+        out["state"] = "done"
+        out["finished_at"] = dt.datetime.fromtimestamp(max(done), KST).strftime("%Y-%m-%dT%H:%M")
+    elif time.time() - req > _STOCK_REFRESH_TIMEOUT_SEC:
+        out["state"] = "timeout"
+    else:
+        out["state"] = "running"
+    out["elapsed_min"] = int((time.time() - req) // 60)
+    return out
+
+
 def _mtime_kst(name: str) -> str | None:
     """캐시 parquet 파일의 실제 수정시각(KST 'YYYY-MM-DDTHH:MM'). = 실제 갱신 시각."""
     try:
@@ -280,6 +320,9 @@ def status() -> dict:
         t = _mtime_kst(nm)
         if t:
             m[key] = t
+    st = stock_refresh_state()               # 재고 REFRESH 진행/완료 (GitHub Actions)
+    m["stock_refresh"] = st
+    m["refreshing_stock"] = st.get("state") == "running"
     try:
         d = query("SELECT CAST(max(sales_date) AS DATE) d FROM sales").iloc[0]["d"]
         if d is not None:

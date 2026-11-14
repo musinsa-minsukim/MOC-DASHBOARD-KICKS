@@ -116,7 +116,7 @@ function Topbar({ title, dark, onTheme, status }: {
   return (
     <header className="sticky top-0 z-10 flex min-h-[4rem] items-center gap-3 border-b border-slate-200/70 bg-white/70 px-5 pt-[env(safe-area-inset-top)] backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-900/70">
       {/* 데이터 갱신 중 — 최상단 인디터미닛 진행바(스크롤해도 sticky 헤더에 고정 노출) */}
-      {status?.refreshing && (
+      {(status?.refreshing || status?.refreshing_stock) && (
         <div className="pointer-events-none absolute inset-x-0 top-0 h-[3px] overflow-hidden">
           <div className="refreshbar h-full w-full bg-gradient-to-r from-indigo-400 via-indigo-600 to-indigo-400 dark:from-indigo-500 dark:via-indigo-300 dark:to-indigo-500" />
         </div>
@@ -129,15 +129,16 @@ function Topbar({ title, dark, onTheme, status }: {
       <h2 className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h2>
       <div className="ml-auto flex items-center gap-2">
         {/* 데이터 갱신 중 배지(스피너) — sticky 헤더라 스크롤해도 노출 */}
-        {status?.refreshing && (
+        {(status?.refreshing || status?.refreshing_stock) && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-600 ring-1 ring-inset ring-indigo-100 dark:bg-indigo-950/60 dark:text-indigo-300 dark:ring-indigo-900/60">
-            <RefreshCw size={13} className="animate-spin" /> 데이터 갱신 중
+            <RefreshCw size={13} className="animate-spin" />
+            {status?.refreshing_stock ? `재고 갱신 중 ${status?.stock_refresh?.elapsed_min ?? 0}분` : "데이터 갱신 중"}
           </span>
         )}
         {/* 데이터 신선도 — 판매(증분)·재고(스냅샷) 기준일/갱신 */}
         <div className="hidden flex-col text-[11px] leading-tight text-slate-400 lg:flex dark:text-slate-500" title="판매=MOSS 증분(준실시간) · 재고=일별 스냅샷">
           <span>판매 데이터 <b className="font-semibold text-slate-600 dark:text-slate-300">{status?.sales_max_date ?? "—"}</b> · 최근거래 {fmtTs(status?.sales_max_ts)} · 갱신 {fmtDT(status?.sales_refreshed_at)}</span>
-          <span>재고 데이터 <b className="font-semibold text-slate-600 dark:text-slate-300">{status?.inventory_pivot_data_date ?? "—"}</b> · 갱신 {fmtDT(status?.inventory_pivot_refreshed_at)}</span>
+          <span>재고 데이터 <b className="font-semibold text-slate-600 dark:text-slate-300">{status?.inventory_pivot_data_date ?? "—"}</b> · 이동 {status?.store_moves_data_date ?? "—"} · 갱신 {fmtDT(status?.inventory_pivot_refreshed_at)}</span>
           <span className="text-amber-500 dark:text-amber-400/90">CP·입객은 익일 반영 · 순이익 오늘자는 잠정 추정 (원천 1일 지연)</span>
         </div>
         <button
@@ -216,7 +217,8 @@ export default function App() {
     if (!authed) return;
     const load = () => api.status().then(setStatus).catch(() => {});
     load();
-    const id = window.setInterval(load, status?.refreshing ? 5_000 : 60_000);  // 갱신 중엔 빠르게 폴링 → 즉시 표시/해제
+    // 갱신 중엔 빠르게 폴링 → 완료 즉시 표시/해제. 재고 REFRESH 는 GitHub Actions 라 수 분 걸려 10초 간격.
+    const id = window.setInterval(load, status?.refreshing ? 5_000 : status?.refreshing_stock ? 10_000 : 60_000);
     const onFocus = () => load();
     const onStarted = () => load();                                            // 재고/판매 REFRESH 직후 즉시 상태 반영
     window.addEventListener("focus", onFocus);
@@ -226,7 +228,7 @@ export default function App() {
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("refresh-started", onStarted);
     };
-  }, [authed, dataVersion, status?.refreshing]);
+  }, [authed, dataVersion, status?.refreshing, status?.refreshing_stock]);
 
   // meta 로드되면 기본 기간 = 최신 데이터일(오늘) 단일일 (시작=종료=오늘)
   useEffect(() => {

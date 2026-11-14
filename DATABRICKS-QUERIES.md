@@ -108,7 +108,16 @@ editorial 매장 재고 요약. 통합 원장으로 대체돼 함수째 삭제�
   ⚠️ `ocmp.scm_hub` 의 `created_at` 은 **KST 벽시계**로 적재된다(업무시간 9~18시 분포로 확인) — `from_utc_timestamp` 변환 금지.
 - **점재고(가용)**: 재고 피벗의 매장 수량 자체가 가용 기준이다(9-1의 `STORE_QTY_BASIS`). 이 표에서 따로 빼지 않는다.
 - 미결 문서 = 상태 `CREATED`/`PENDING`/`PARTIALLY_SHIPPED`. `CANCELED`·`FAILED` 제외. 오래 묵은 미결도 그대로 포함.
+- **기준시각**: `MAX(updated_at)` of `stock_movement_item` ∪ `inbound_item` → `store_moves_data_date`(화면 '이동 기준').
+  ⚠️ `ocmp.scm_hub` 의 시각 컬럼은 **KST 벽시계**라 변환하지 않는다(`team.scm.stock.updated_at` 은 UTC → `from_utc_timestamp` 필요).
 - 정의·검증 쿼리는 스킬 `musinsa-stock-flow-status` 참조.
+
+### 재고 REFRESH 진행 상태 (화면 표기)
+버튼은 GitHub Actions(`refresh-stock.yml`)를 띄울 뿐이라 서버 프로세스에 진행 흔적이 없다.
+→ 버튼이 요청 시각을 캐시(`stock_refresh.json`, GCS)에 적고, `STOCK_REFRESH_NAMES` 파켓 **mtime 이 모두 그 시각을 넘으면 완료**로 본다
+(`store.stock_refresh_state()`, 30분 초과 시 `timeout`). `/api/status` 의 `stock_refresh` · `refreshing_stock` 로 내려가고,
+화면은 상단 진행바·헤더 배지·재고 탭 칩으로 표시하며 완료 순간 재고 탭을 자동 재조회한다.
+인스턴스가 scale-to-zero 로 죽거나 다른 인스턴스가 받아도 판정이 같다(상태를 메모리에 두지 않음).
 
 ## 10. 파생(쿼리 없음, pandas) — `load_inventory_goods_unified()` / `load_inventory_store_long_unified()` [db.py]
 9-1 피벗을 goods_no 단위 합산 / (goods_no×매장) 롱포맷으로 변환. Databricks 재조회 없음.

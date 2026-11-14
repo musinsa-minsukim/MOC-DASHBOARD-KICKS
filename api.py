@@ -448,7 +448,8 @@ def refresh_snapshot_ep(_: str = Depends(require_writer)):
     """재고 REFRESH — refresh-stock.yml dispatch(위탁 실시간 재고+STO 이동 재빌드 → GCS → 다음 조회 반영).
        Cloud Run 4Gi OOM 회피 위해 무거운 재빌드는 GitHub Actions(16GB)에서 수행."""
     code = _gh_dispatch(_GH_WORKFLOWS["stock"])
-    return {"ok": True, "status": code, "message": "재고 갱신 요청됨 — 수 분 후 반영(GitHub Actions)"}
+    store.mark_stock_refresh_requested(_)     # 진행 상태 판정 기준점(파켓 mtime 이 이 시각을 넘으면 완료)
+    return {"ok": True, "status": code, "message": "재고 갱신 시작 — 완료되면 이 줄에 표시됩니다"}
 
 
 # ----------------------------------------------------------------- Cron 갱신 (Cloud Scheduler)
