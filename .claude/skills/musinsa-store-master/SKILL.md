@@ -61,8 +61,8 @@ ORDER BY s.shop_no;
 
 ## 활용 (다른 스킬과 연결)
 - **위탁(SCM-HUB) 재고/이동**: `scmhub_storage_id`를 `ocmp.scm_hub`·`mfs_stock_daily`·`selectshop_offline_shop_stock_v`의 창고코드로 사용.
-- **매입(ERP) 재고/이동**: ERP 매장코드는 **(plant, lgort) 쌍**이다 — `erp_plant1000_lgort`/`erp_plant1700_lgort`를 `raw_erp_stock`·`pbo.moms.iif_sap_sto`(GR_LGORT) 등에 쓸 때 **plant와 함께** 필터(`CONCAT(WERKS,'-',GR_LGORT)`), lgort 단독 필터 금지(플랜트별 코드 재사용).
-- 판매/재고/이동 스킬: `musinsa-offline-sales` / `musinsa-store-stock` / `erp-inventory-move-flow` · `scm-hub-inventory-move-flow` · `inventory-move-flow-all`.
+- **매입(ERP) 코드**: ⚠️ 재고·이동은 2026-11-14 부터 SCM-HUB/통합 원장으로 일원화됐다 — **매입도 `scmhub_storage_id`를 쓴다.** ERP (plant, lgort) 쌍은 과거 대사·SAP 연동 확인용으로만 남긴다. 쓸 때는 반드시 **쌍으로** 필터(`CONCAT(WERKS,'-',GR_LGORT)`), lgort 단독 필터 금지(플랜트별 코드 재사용).
+- 판매/재고/이동 스킬: `musinsa-offline-sales` / `musinsa-store-stock` / `scm-hub-inventory-move-flow` · `musinsa-stock-flow-status`.
 
 ## 규칙
 - 한글 컬럼 별칭은 **백틱** 필수.

@@ -351,4 +351,4 @@ ORDER BY `입고예정_합계` DESC, `반납지시` DESC;
 - 현재 보유 수량(매장·센터, 매입+위탁): `musinsa-store-stock`
 - 매장 코드(shop_no ↔ storage_id ↔ ERP): `musinsa-store-master`
 - 상품 속성·가격: `musinsa-goods-master`
-- 이동 문서 4단계(구 방식, ERP+SCM 분리): `inventory-move-flow-all` — 매입도 SCM-HUB에 있으므로 이 스킬(D)을 우선 쓴다.
+- 이동 문서 4단계(출고확정前/출고확정/이동중/매장입고확정)를 goods_no×사이즈로 보려면: `scm-hub-inventory-move-flow`(매입+위탁 한 원장).

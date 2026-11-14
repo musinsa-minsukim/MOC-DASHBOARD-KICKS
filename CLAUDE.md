@@ -16,9 +16,7 @@
 | `musinsa-store-footfall` | 매장 입객 | 매장×일 방문자수 | `team.sales.retail_editorialshop_visitors_v` |
 | `musinsa-goods-master` | 상품 마스터 + 온라인가 + 이미지·링크 | 상품명·브랜드·스타일No·정상가·판매가·쿠폰가·이미지 URL | `musinsa.bizest.goods`, `itgg.goods_sale_price_changes` |
 | `musinsa-store-master` | 매장코드 크로스워크 | shop_no ↔ SCM-HUB storage_id ↔ ERP plant·lgort | `team.commercepm.offline_shopno_storageid`, `ocmp.moss.shop_location` |
-| `erp-inventory-move-flow` | 매입 재고이동(STO) | 출고확정前/출고확정/이동중/매장입고확정 | `pbo.moms`, `musinsa.stock` |
-| `scm-hub-inventory-move-flow` | 위탁 재고이동(SCM-HUB) | 위 4단계 + 매장출고·직납 | `ocmp.scm_hub` |
-| `inventory-move-flow-all` | 매입+위탁 통합 이동 | 위 4단계를 구분 열과 함께 통합 | (위 두 개 통합) |
+| `scm-hub-inventory-move-flow` | 재고이동(매입+위탁) | 출고확정前/출고확정/이동중/매장입고확정 + 매장출고·직납 | `ocmp.scm_hub` |
 | `musinsa-stock-flow-status` | 재고 흐름 상태값(파트너사→물류→매장→반납) | 입고 신청·하차 완료 / 센터 가용·할당·출고작업중·패킹완료 / 온라인 판매 제외 / 매장 입고 예정 5단계 / 반납 3단계 | `pbo.logistics`(MWMS), `ocmp.scm_hub`, `team.scm.stock` |
 
 대시보드 화면이 쓰는 쿼리 전체 목록은 `DATABRICKS-QUERIES.md`, 실제 로직은 `db.py`.
@@ -43,8 +41,11 @@
 - **매장 필터 누락 주의**: 매장 조인 없이 MOSS 를 집계하면 무신사 스탠다드·29CM 까지 잡혀 숫자가 약 3배가 된다.
 - **MOSS 적재 주기**: 매시 27분 배치, 직전 시각까지만 반영(실시간 아님). 당일 첫 판매는 11:30경.
   "오늘 vs 전주 동시간대" 비교는 당일 전사 `MAX(hour)` 로 양쪽을 같이 자른다.
-- **매입/위탁 코드**: `business_model_type` / `hist_goods_type` 은 **S = 매입(ERP), P = 위탁** (알파벳과 반대라 헷갈림 주의).
-  매입 재고는 ERP, 위탁 재고는 SCM-HUB(MFS).
+- **매입/위탁 코드**: `business_model_type` / `hist_goods_type` 은 **S = 매입, P = 위탁** (알파벳과 반대라 헷갈림 주의).
+- **ERP(SAP) 는 재고·이동 조회에서 뺐다 (2026-11-14).** 보유 재고는 통합 원장 `team.scm.stock`, 이동은 `ocmp.scm_hub` 하나로 본다.
+  매입 이동도 SCM-HUB 에 적재된다(최근 30일 실측: 매입 447,054 라인 / 위탁 187,290 — 매입이 더 많다).
+  **ERP(`pbo.moms.oif_sap_str`, `musinsa.stock.erp_inout_bound`)를 함께 더하면 매입이 이중 집계된다.**
+  구 `erp-inventory-move-flow` / `inventory-move-flow-all` 스킬과 대시보드 레거시 로더는 같은 이유로 제거했다(필요하면 git 이력).
 - **불량재고**: `goods_summary.bad_kqty` 사용(`bad_qty` 는 미사용). 매입은 `AND kqty > 0` 없으면 약 5배로 부풀려진다.
 - **CDC 테이블**(goods_summary/product/itgg.goods 등)은 키별 최신·비삭제 행만 취한다.
 - **ERP 매장 코드**는 (plant, lgort) 쌍으로 쓴다. lgort 단독 필터 금지.

@@ -1,3 +1,4 @@
+"""재고 피벗 로더 스모크 — 통합 원장(team.scm.stock) 기준. 실행: .venv/Scripts/python.exe test_pivot.py"""
 import sys
 sys.stdout.reconfigure(encoding="utf-8")
 import truststore
@@ -6,10 +7,9 @@ import time
 import db
 
 t = time.time()
-df = db.load_inventory_pivot()
+df = db.load_inventory_pivot_unified()
 print(f"LOADED {len(df):,} rows in {time.time()-t:.1f}s")
-print("HUBSUMS:", {k: float(df[k].sum()) for k in ["MFS", "허브1000", "허브1700", "점재고합계"]})
-hav = df[df["brand_nm"].str.contains("하바이", na=False)]
-print(f"하바이아나스 rows: {len(hav)}  허브1700합: {float(hav['허브1700'].sum()):,.0f}  점재고합: {float(hav['점재고합계'].sum()):,.0f}")
-print(hav[["brand_nm", "goods_nm", "goods_opt", "점재고합계", "허브1000", "허브1700", "MFS"]].head(6).to_string())
+cols = [c for c in db.LOGI_COLS if c in df.columns] + ["점재고합계"]
+print("SUMS:", {k: float(df[k].sum()) for k in cols})
+print("stock_basis:", df.attrs.get("stock_basis"), "| data_date:", df.attrs.get("data_date"))
 print("DONE")

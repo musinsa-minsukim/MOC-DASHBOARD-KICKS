@@ -1,18 +1,23 @@
 ---
 name: scm-hub-inventory-move-flow
 description: >-
-  SCM-HUB 재고이동플로우 — 무신사 위탁(SCM-HUB/WMS) 상품의 허브→매장 재고이동을 단계별
-  수량으로 조회한다. goods_no × 사이즈별로 출고확정前 / 출고확정 / 이동중 / 매장입고확정
-  4단계를 한 번에 뽑는다. 사용자가 특정 매장으로의 위탁(SCM) 이동지시/출고/입고 현황,
-  이동 진행상태(shipped/received), 매장 입고 예정/확정 수량을 물으면 사용한다.
-  매장 출고 흐름(매장에서 나가는 수량 음수 표기)·직납(브랜드→매장 직접 입고, STORE_INBOUND)
-  포함 조회도 지원한다. ERP(매입) 버전은 erp-inventory-move-flow. Databricks(ocmp.scm_hub + musinsa.itgg) 기반.
+  SCM-HUB 재고이동플로우 — 무신사 상품의 허브→매장 재고이동을 단계별 수량으로 조회한다.
+  **매입(1P/PB)·위탁(3P) 모두 SCM-HUB 한 원장에 있다** — ERP(pbo.moms/SAP)는 쓰지 않는다(이중 집계).
+  goods_no × 사이즈별로 출고확정前 / 출고확정 / 이동중 / 매장입고확정 4단계를 한 번에 뽑는다.
+  사용자가 특정 매장으로의 이동지시/출고/입고 현황, 이동 진행상태(shipped/received),
+  매장 입고 예정/확정 수량을 물으면 사용한다. 매장 출고 흐름(매장에서 나가는 수량 음수 표기)·
+  직납(브랜드→매장 직접 입고, STORE_INBOUND) 포함 조회도 지원한다.
+  상태값 전체(입고 신청~반납)는 musinsa-stock-flow-status. Databricks(ocmp.scm_hub + musinsa.itgg) 기반.
 ---
 
-# SCM-HUB 재고이동플로우 (위탁, 매장 이동)
+# SCM-HUB 재고이동플로우 (매입+위탁, 매장 이동)
 
-무신사 **위탁(SCM-HUB / WMS)** 상품이 허브에서 매장으로 이동하는 흐름을 `goods_no × 사이즈` 단위로 4단계 수량으로 조회한다.
-매입(ERP/SAP)은 별도 스킬 `erp-inventory-move-flow`. **위탁=SCM-HUB, 매입=ERP** 로 소스가 완전히 다르다.
+무신사 상품이 허브에서 매장으로 이동하는 흐름을 `goods_no × 사이즈` 단위로 4단계 수량으로 조회한다.
+
+> ⚠️ **2026-11-14: 매입(1P/PB) 이동도 SCM-HUB 에 적재된다.** 최근 30일 이동 라인 실측 — 매입 447,054 / 위탁 187,290 으로
+> 오히려 매입이 많다. 따라서 **이 스킬 하나로 매입·위탁을 모두 본다.** ERP(`pbo.moms.oif_sap_str`/`musinsa.stock.erp_inout_bound`)를
+> 함께 더하면 매입이 **이중 집계**된다. 구 `erp-inventory-move-flow` / `inventory-move-flow-all` 스킬은 이 이유로 삭제했다
+> (과거 SAP 전표 대사가 필요하면 git 이력에서 꺼내 쓴다). 대시보드 재고 탭도 SCM-HUB 단일 원장으로 돌아간다.
 
 - 실행: Databricks MCP `mcp__databricks__execute_sql` (없으면 `ToolSearch "select:mcp__databricks__execute_sql"` 로 로드)
 - ERP와 달리 SCM-HUB는 **한 테이블(`stock_movement_item`)에 요청/출고/입고 수량이 모두** 있어 훨씬 간단하다.
@@ -172,4 +177,4 @@ ORDER BY goods_no, `사이즈`, `구분`;
 - `CANCELED` 상태 제외 (이동). 직납은 `inbound_item_status='CANCELLED'` 제외 (L 두 개, 철자 다름 주의).
 - 매장코드는 `storage._id`(SCM) — ERP lgort와 혼동 금지.
 - **출고 흐름/직납은 위 "매장 출고 흐름 + 직납" 섹션 참조**: 매장 출발(source) 이동은 음수, 직납은 `inbound`(STORE_INBOUND)라 `stock_movement`에 없음.
-- 관련 배경: 메모리 `inventory-move-confirmed-recipe`, `stock-business-model-type-code`. 매입 버전은 `erp-inventory-move-flow`.
+- 관련 배경: 메모리 `inventory-move-confirmed-recipe`, `stock-business-model-type-code`. 단계별 상태값 사전은 `musinsa-stock-flow-status`.

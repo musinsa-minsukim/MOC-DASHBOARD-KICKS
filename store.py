@@ -22,30 +22,24 @@ CACHE = os.environ.get(
 )
 SALES_WINDOW_DAYS = 45
 
-# 재고 스냅샷 원천: 기본 = 통합 원장(team.scm.stock_detail, 매입+위탁·매장+센터, 매시). 2026-11 이행.
-#   env INVENTORY_SOURCE=legacy 로 두면 기존 5원천 로더(editorial/sap1700/raw_erp/mfs)로 되돌아간다(롤백 스위치, 코드 수정 불필요).
-#   파일명·키 컬럼(barcode/goods_no/매장열/점재고합계/허브합계)은 동일. 창고 열만 통합=‘물류 재고’ 1열, 레거시=MFS/허브1000/허브1700.
-INVENTORY_UNIFIED = os.environ.get("INVENTORY_SOURCE", "unified").strip().lower() != "legacy"
+# 재고 스냅샷 원천 = 통합 원장 team.scm.stock(_detail) 하나. 매입+위탁 · 매장+센터 · 매시 갱신.
+#   2026-11-14: 레거시 5원천(editorial/sap1700/raw_erp/mfs)과 ERP 이동 경로를 **제거**했다(INVENTORY_SOURCE 스위치도 삭제).
+#   매입 이동도 SCM-HUB 에 적재되므로 ERP 를 함께 쓰면 이중 집계된다. 되돌려야 하면 git revert 로 한다.
 
 _SNAPSHOTS = {
     "goods_master": db.load_goods_master,
-    "inventory_pivot": db.load_inventory_pivot_unified if INVENTORY_UNIFIED else db.load_inventory_pivot,
-    "inventory_goods": db.load_inventory_goods_unified if INVENTORY_UNIFIED else db.load_inventory_goods,
-    "inventory_store_long": db.load_inventory_store_long_unified if INVENTORY_UNIFIED else db.load_inventory_store_long,
+    "inventory_pivot": db.load_inventory_pivot_unified,
+    "inventory_goods": db.load_inventory_goods_unified,
+    "inventory_store_long": db.load_inventory_store_long_unified,
     "customer": db.load_customer,
     "target_daily": db.fetch_targets,   # 매장별 일 목표(gspread) — 목표 대비 실적 탭
     "footfall": db.fetch_footfall,             # 매장 입객수(일자×매장) — 구매전환율
     "global_customer": db.fetch_global_customer,  # 국가별 GMV(일자×매장×국적) — 고객 탭
     "ips": db.fetch_ips,                                # 통합 IPS 브랜드×구분(매입/위탁) — IPS 탭 전용
     "ips_goods": db.fetch_ips_goods,                    # 통합 IPS 상품단위(드릴다운) — IPS 탭 상품 드릴
-    # 매장 이동: 통합 = SCM-HUB(매입+위탁) 이동 문서 + 직납(입고 지시·이동중·반납 지시 열 추가) /
-    #           레거시 = ERP(매입)+SCM 이동중. 파일명·기존 열(in_qty/out_qty/hist_recv)은 같다.
-    "store_moves": db.fetch_store_flow if INVENTORY_UNIFIED else db.fetch_store_moves,
+    # 매장 이동 = SCM-HUB(매입+위탁) 이동 문서 + 브랜드 직납. 입고 지시·이동중·반출 예정·지시일 열을 함께 낸다.
+    "store_moves": db.fetch_store_flow,
 }
-# 위탁 실시간 매장재고(scm_hub_inventory_status_v) — **레거시 전용**. 통합 원장 모드에선 원장이 대체하므로 등록하지 않는다
-#   (등록해 두면 무거운 뷰를 계속 조회·보관하게 되고, 재고 탭 오버레이도 이미 건너뛴다).
-if not INVENTORY_UNIFIED:
-    _SNAPSHOTS["scm_store_stock"] = db.fetch_scm_store_stock
 # 증분(윈도우) 스냅샷 — {name: (fetch_fn, window_days)}. sales_date 기준 최근 N일만 재적재하고 과거는 보존.
 # editorial_summary_v는 296만행(2023-10~) 전이력이라 매 daily마다 전체 재집계하면 느림 →
 # 최근 90일만 재적재(과거는 _incremental이 유지). CP는 ~2개월 내 확정되므로 90일 윈도우면 최신성 충분.
@@ -57,7 +51,7 @@ _INCR_SNAPSHOTS = {
 }
 # readiness(=앱 구동 가능)에서 제외하는 선택 스냅샷: 아직 캐시에 없어도 앱은 정상 동작하고,
 # 다음 full 갱신(mode=full/rebuild) 때 생성되면 자동으로 뷰가 잡힌다(receipts와 동일 취급).
-_OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option", "settlement_daily", "ips", "ips_goods", "store_moves", "scm_store_stock"}
+_OPTIONAL = {"target_daily", "footfall", "global_customer", "settlement", "settlement_option", "settlement_daily", "ips", "ips_goods", "store_moves"}
 _ALL = ["sales", *_SNAPSHOTS, *_INCR_SNAPSHOTS]
 # DuckDB 뷰 생성 대상(=_ALL + 객단가용 영수증). receipts는 readiness(missing) 게이트에는 넣지 않아
 # 기존 캐시만 있어도 앱이 동작하고, 판매 갱신/빌드 시 생성되면 자동으로 뷰가 잡힌다.
@@ -209,13 +203,11 @@ def refresh_snapshot(name: str) -> int:
 
 # 야간 full(refresh_all)에서 제외하는 무거운 스냅샷 — 별도 스케줄러 잡이 mode=snap 으로 갱신.
 # (IPS는 웜 ~10분이라 동기 full HTTP의 Cloud Run 요청 타임아웃을 압박 → core 리프레시와 분리)
-_DECOUPLED = {"ips", "ips_goods", "scm_store_stock", "store_moves"}   # 무거운 원천 → 메인 --snapshots에서 제외, 독립 갱신(refresh --stock)
+_DECOUPLED = {"ips", "ips_goods", "store_moves"}   # 무거운 원천 → 메인 --snapshots에서 제외, 독립 갱신(refresh --stock)
 
 # 재고 REFRESH(refresh.py --stock / refresh-stock.yml)가 갱신하는 스냅샷.
-#   통합: 재고 피벗 3종(매시 원장, 수십 초) + STO 이동. 위탁 실시간 오버레이(scm_store_stock, 5~15분 뷰)는 원장이 대체해 불필요.
-#   레거시: 기존 그대로(scm_store_stock + store_moves).
-STOCK_REFRESH_NAMES = (["inventory_pivot", "inventory_goods", "inventory_store_long", "store_moves"]
-                       if INVENTORY_UNIFIED else ["scm_store_stock", "store_moves"])
+#   재고 피벗 3종(매시 원장, 수십 초) + 매장 이동(SCM-HUB). 구 위탁 실시간 뷰(scm_store_stock, 5~15분)는 원장이 대체해 제거했다.
+STOCK_REFRESH_NAMES = ["inventory_pivot", "inventory_goods", "inventory_store_long", "store_moves"]
 
 
 def refresh_snapshots(full: bool = False) -> dict:
@@ -282,7 +274,6 @@ def status() -> dict:
     # (갱신시각 = parquet 파일 mtime, 판매 데이터일 = 캐시 라이브 MAX)
     for nm, key in (("sales", "sales_refreshed_at"),
                     ("inventory_pivot", "inventory_pivot_refreshed_at"),
-                    ("scm_store_stock", "scm_store_stock_refreshed_at"),   # 재고 REFRESH 버튼이 실제 갱신하는 위탁 실시간 재고
                     ("store_moves", "store_moves_refreshed_at"),           # 〃 STO 이동/이력
                     ("customer", "customer_refreshed_at"),
                     ("goods_master", "goods_master_refreshed_at")):
@@ -359,14 +350,6 @@ def get_store_moves() -> pd.DataFrame:
         return _read_cached("store_moves")
     except OSError:
         return pd.DataFrame(columns=["store_name", "goods_no", "option", "in_qty", "out_qty", "hist_recv"])
-
-
-def get_scm_store_stock() -> pd.DataFrame:
-    """위탁 실시간 매장재고(판매가능/입고예정/출고예정). 캐시 없으면 빈 df(→ 위탁도 기존 editorial 폴백)."""
-    try:
-        return _read_cached("scm_store_stock")
-    except OSError:
-        return pd.DataFrame(columns=["store_name", "goods_no", "option", "barcode", "sellable", "in_plan", "out_plan"])
 
 
 def get_store_sku_status() -> dict:

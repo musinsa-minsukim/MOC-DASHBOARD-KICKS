@@ -1,10 +1,8 @@
 name: Refresh stock (heavy)
 
-# 재고 탭 원천 독립 갱신 — (통합 원장 이행 후) 재고 피벗 3종(inventory_*, 매시 원장) + STO 이동/이력(store_moves).
-#   레거시(INVENTORY_SOURCE=legacy): 위탁 실시간 재고(scm_store_stock) + store_moves.
-# ⚠️ scm_hub_inventory_status_v 뷰가 초헤비(~5~15분)라 야간 full(refresh.yml)·시간별 판매와 분리.
-#    _DECOUPLED에 등록되어 daily --snapshots에서는 제외됨 → 여기서만 갱신.
-# 흐름: _meta.json 내려받기 → refresh.py --stock (scm_store_stock·store_moves parquet 재생성) → GCS 업로드 → 슬랙(실패시).
+# 재고 탭 원천 독립 갱신 — 통합 원장 재고 피벗 3종(inventory_*, 매시) + 매장 이동(store_moves, SCM-HUB).
+# ⚠️ 무거워서 야간 full(refresh.yml)·시간별 판매와 분리. _DECOUPLED 라 daily --snapshots 에서는 제외 → 여기서만 갱신.
+# 흐름: _meta.json 내려받기 → refresh.py --stock (parquet 재생성) → GCS 업로드 → 슬랙(실패시).
 # 트리거: 스케줄(하루 3회, 영업시간대) + 재고 REFRESH 버튼(workflow_dispatch).
 
 on:
@@ -51,7 +49,7 @@ jobs:
           B="gs://${{ vars.GCS_CACHE_BUCKET }}"
           gcloud storage cp "$B/_meta.json" ./cache/ || true
 
-      - name: Run stock refresh (scm_store_stock·store_moves)
+      - name: Run stock refresh (inventory_* · store_moves)
         env:
           WAREHOUSE_CACHE: ${{ github.workspace }}/cache
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
@@ -64,9 +62,8 @@ jobs:
         run: |
           B="gs://${{ vars.GCS_CACHE_BUCKET }}"
           # 있을 때만 업로드(빌드 실패해도 core 캐시는 안 건드림).
-          #   통합 원장(기본): inventory_pivot·inventory_goods·inventory_store_long + store_moves 가 생성됨.
-          #   INVENTORY_SOURCE=legacy 로 돌리면 scm_store_stock + store_moves (기존과 동일).
-          for f in inventory_pivot inventory_goods inventory_store_long scm_store_stock store_moves; do
+          #   생성물: inventory_pivot · inventory_goods · inventory_store_long · store_moves.
+          for f in inventory_pivot inventory_goods inventory_store_long store_moves; do
             if [ -f "./cache/$f.parquet" ]; then gcloud storage cp "./cache/$f.parquet" "$B/"; fi
           done
           gcloud storage cp ./cache/_meta.json "$B/" || true

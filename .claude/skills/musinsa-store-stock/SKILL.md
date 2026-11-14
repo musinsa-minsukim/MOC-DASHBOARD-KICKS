@@ -67,7 +67,7 @@ ORDER BY goods_no, s.namespace, `보유재고` DESC;
 - 한글 컬럼 별칭 **백틱** 필수. goods_no는 `CAST(... AS BIGINT)`, uid(mapping)는 이미 bigint.
 - 수량 합계 시 매핑은 **반드시 `platform='MUSINSA' AND is_rep_uid_option_code_musinsa=TRUE`**(안 걸면 1:N로 부풀림. 옛 열 이름 `is_rep_uid_musinsa` 는 없어짐). 내 테이블 LEFT JOIN 유지(미매핑 SKU 안 빠지게).
 - 상품명/브랜드는 goods_no로 `musinsa-goods-master` 보강. 매장명↔shop_no↔ERP/SCM코드는 `musinsa-store-master`.
-- 스냅샷(현재 보유)만. **허브→매장 이동 진행(출고확정前/이동중/입고확정)**은 `erp-inventory-move-flow`/`scm-hub-inventory-move-flow`/`inventory-move-flow-all`. (이동중 별도수량은 신규모델서 4Q 개발중)
+- 스냅샷(현재 보유)만. **허브→매장 이동 진행(출고확정前/이동중/입고확정)**은 `scm-hub-inventory-move-flow`(매입+위탁 한 원장) 또는 단계 전체는 `musinsa-stock-flow-status`.
 - 파티션: `team.scm.stock`은 파티션 없음. `*_snapshot_daily`는 `snapshot_date` WHERE 필수.
 
 ---
