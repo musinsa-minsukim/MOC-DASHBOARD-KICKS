@@ -232,10 +232,36 @@ export default function DataGrid({
   const viewKey = useMemo(() => columns.map((c: any) => c.field ?? c.colId ?? c.headerName).join("|"), [columns]);
 
   // 사용자가 직접 바꾼 레이아웃만 저장한다(자동 조정·초기화 이벤트는 제외 → 되살리기 루프 없음).
+  //   ⚠️ 드래그 '중' 에는 저장본을 다시 입히면 안 된다 — 매 이동마다 이전 폭으로 되돌아가
+  //      두 번째 드래그부터 열 너비가 아예 안 바뀐다(2026-11-15 실제 증상). colDragRef 로 그 구간을 비워둔다.
+  //      (셀 범위 선택용 draggingRef 와는 다른 것 — 이름 겹치지 않게 분리)
+  //   ⚠️ 플래그는 **그리드 이벤트가 아니라 DOM mousedown 으로** 세운다 —
+  //      AG Grid 는 displayedColumnsChanged 를 columnResized 보다 **먼저** 쏘기 때문에,
+  //      columnResized 에서 세우면 이미 한 박자 늦어 저장본이 덮어쓴다(실측 로그: applyView saved=174 cur=294).
+  const colDragRef = useRef(false);
+  useEffect(() => {
+    const down = (ev: any) => {
+      const t = ev?.target as HTMLElement | null;
+      if (t && typeof t.closest === "function" && t.closest(".ag-header-cell-resize")) colDragRef.current = true;
+    };
+    const up = () => { if (colDragRef.current) setTimeout(() => { colDragRef.current = false; }, 80); };
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("mousedown", down, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("mouseup", up, true);
+    document.addEventListener("pointercancel", up, true);
+    return () => {
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("mousedown", down, true);
+      document.removeEventListener("pointerup", up, true);
+      document.removeEventListener("mouseup", up, true);
+      document.removeEventListener("pointercancel", up, true);
+    };
+  }, []);
   const captureView = (e: any) => {
     const src = String(e?.source || "");
     if (!src || PROGRAMMATIC.has(src)) return;
-    if (e?.finished === false) return;                    // 드래그 중간 단계는 넘김
+    if (e?.finished === false) return;                 // 드래그 중간 단계 (플래그는 아래 DOM 리스너가 관리)
     const gapi = apiRef.current; if (!gapi) return;
     try {
       GRID_VIEWS[viewKey] = gapi.getColumnState();
@@ -476,7 +502,7 @@ export default function DataGrid({
         onColumnPinned={captureView}
         onSortChanged={captureView}
         onDisplayedColumnsChanged={() => {
-          if (applyingRef.current) return;                 // 내가 적용하면서 난 이벤트는 무시
+          if (applyingRef.current || colDragRef.current) return;   // 내가 적용 중이거나 사용자가 열을 끄는 중이면 건드리지 않는다
           const gapi = apiRef.current; if (gapi) applyView(gapi);
         }}
         onCellClicked={onCellClicked}
