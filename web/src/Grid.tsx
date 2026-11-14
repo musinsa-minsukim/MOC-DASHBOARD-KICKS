@@ -85,6 +85,9 @@ function fmtVal(v: any, fmt: Fmt): string {
 
 // ---- 컬럼 정의 헬퍼 ----
 // 텍스트 컬럼. 열 너비는 내용 길이에 맞춰 자동조정(모바일·PC 공통) → 화면을 넘치면 가로 스크롤로 본다.
+// 표(열 구성)별 사용자 조정 너비 — 컴포넌트 리마운트·열 재적용에도 유지되도록 모듈 레벨에 둔다.
+const USER_WIDTHS = new Map<string, Record<string, number>>();
+
 export function colText(field: string, header: string, opts: Partial<ColDef> = {}): ColDef {
   return { field, headerName: header, minWidth: 110, ...opts };
 }
@@ -190,12 +193,38 @@ export default function DataGrid({
     return () => mq.removeEventListener("change", h);
   }, []);
 
+  // 사용자가 끌어서 맞춘 열 너비. 표(열 구성)별로 **모듈 레벨**에 보관한다 —
+  //   AG Grid 는 columnDefs 가 다시 적용되면 선언 너비로 되돌리고, 데이터가 바뀌면 호출부가 key 로 리마운트하기도 해서
+  //   컴포넌트 안(useRef)에 두면 둘 다에 날아간다. 세션 동안 유지 → 필터를 바꿔도 조정한 폭이 그대로다.
+  const sizeKey = useMemo(() => columns.map((c: any) => c.field ?? c.colId ?? c.headerName).join("|"), [columns]);
+  const userSized = USER_WIDTHS.get(sizeKey) ?? (USER_WIDTHS.set(sizeKey, {}), USER_WIDTHS.get(sizeKey)!);
+  const onColumnResized = (e: any) => {
+    if (!e?.finished) return;
+    if (String(e.source || "") !== "uiColumnResized") return;      // 드래그로 끝낸 경우만(api 로 바꾼 건 제외 → 되살리기 루프 방지)
+    const cols = e.columns ?? (e.column ? [e.column] : []);
+    for (const c of cols) { try { userSized[c.getColId()] = c.getActualWidth(); } catch { /* noop */ } }
+  };
+  // 자동 조정·열 재적용 뒤에 사용자가 맞춘 폭을 되살린다.
+  const applyUserWidths = (api: any) => {
+    const items = Object.entries(userSized)
+      .filter(([k]) => { try { return !!api.getColumn(k); } catch { return false; } })
+      .map(([key, newWidth]) => ({ key, newWidth: newWidth as number }));
+    if (items.length) { try { api.setColumnWidths(items, true); } catch { /* noop */ } }
+  };
+
   // 데이터가 바뀌면 각 열을 내용(헤더 포함) 길이에 맞춰 자동 너비 조정(모바일·PC 공통).
   //   모바일은 글자가 작아 열이 더 좁지만, 넘치는 만큼 가로 스크롤로 탐색(글자 축소 대신).
+  //   제외 = ① 사용자가 끌어서 맞춘 열 ② colDef.context.noAutoSize(좁은 기본폭을 의도한 열).
+  //   ⚠️ 기본폭을 maxWidth 로 고정하면 **드래그로 넓히는 것까지 막힌다** → width + noAutoSize 로 쓸 것.
   const autoSize = () => {
     const api = apiRef.current; if (!api) return;
     try {
-      api.autoSizeAllColumns(false);
+      const ids = (api.getColumns() ?? [])
+        .filter((c: any) => userSized[c.getColId()] === undefined)
+        .filter((c: any) => !c.getColDef()?.context?.noAutoSize)
+        .map((c: any) => c.getColId());
+      if (ids.length) api.autoSizeColumns(ids, false);
+      applyUserWidths(api);                // 사용자가 맞춘 폭 우선
       api.refreshCells({ force: true });   // pinned(합계) 행이 새 열 너비로 다시 그려지도록 → 본문과 정렬
     } catch { /* noop */ }
   };
@@ -388,6 +417,8 @@ export default function DataGrid({
         onGridReady={(e: any) => { apiRef.current = e.api; }}
         onFirstDataRendered={autoSize}
         onRowDataUpdated={autoSize}
+        onColumnResized={onColumnResized}
+        onDisplayedColumnsChanged={() => { const api = apiRef.current; if (api) applyUserWidths(api); }}
         onCellClicked={onCellClicked}
         onCellMouseDown={onCellMouseDown}
         onCellMouseOver={onCellMouseOver}

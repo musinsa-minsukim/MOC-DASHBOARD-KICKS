@@ -194,32 +194,33 @@ export default function Inventory({ meta, dark, filters, status, onPick }: { met
   const RED_CELL = (p: any): any => ((Number(p.value) || 0) > 0 ? { textAlign: "right", color: dark ? "#f87171" : "#dc2626", fontWeight: 600 } : { textAlign: "right", color: dark ? "#64748b" : "#94a3b8" });
   // 흐름 열(6개)이 켜지면 이미지·SKU ID 는 고정을 푼다 — 고정 폭이 850px 넘으면 좁은 화면에서 입고/출고 열이
   //   가로 스크롤 밖으로 밀려 안 보인다(고정 영역은 항상 먼저 자리를 차지). 고정 = 브랜드·상품·매장명·점재고.
-  //   (열 너비는 autoSizeAllColumns 가 내용에 맞추므로 상한은 maxWidth 로 건다.)
+  //   (기본폭은 width + context.noAutoSize 로 준다 — maxWidth 로 고정하면 사용자가 드래그로 넓히는 것까지 막힌다.
+  //    사용자가 한 번 끌어서 조정한 열은 DataGrid 가 이후 자동 너비 조정에서 제외한다.)
   const idCols = () => [
     colThumb("img_url", "이미지", { pinned: flowOn ? undefined : "left" }),
     colText("sku_id", "SKU ID", { pinned: flowOn ? undefined : "left", minWidth: 124, headerTooltip: "SCM-HUB SKU ID (옵션·바코드 단위) · 매입·위탁 모두 · 미매핑은 공란" }),
   ];
   const invCols = useMemo(() => [
     ...(flowOn ? [] : idCols()),
-    colText("brand_nm", "브랜드", { pinned: "left", minWidth: flowOn ? 88 : 110, ...(flowOn ? { maxWidth: 92 } : {}) }),
-    colGoodsLink("goods_nm", "상품", { pinned: "left", minWidth: flowOn ? 120 : 190, ...(flowOn ? { maxWidth: 128 } : {}) }),
+    colText("brand_nm", "브랜드", { pinned: "left", minWidth: flowOn ? 60 : 110, ...(flowOn ? { width: 92, context: { noAutoSize: true } } : {}) }),
+    colGoodsLink("goods_nm", "상품", { pinned: "left", minWidth: flowOn ? 80 : 190, ...(flowOn ? { width: 128, context: { noAutoSize: true } } : {}) }),
     colText("매장명", "매장명", {
-      pinned: "left", minWidth: flowOn ? 110 : 118, ...(flowOn ? { maxWidth: 118 } : {}), headerTooltip: "매장별 행 · '(창고 대기)'=선택 매장 재고 없이 허브에만 있는 상품",
+      pinned: "left", minWidth: flowOn ? 80 : 118, ...(flowOn ? { width: 118, context: { noAutoSize: true } } : {}), headerTooltip: "매장별 행 · '(창고 대기)'=선택 매장 재고 없이 허브에만 있는 상품",
       cellStyle: (p: any): any => (p.value === "(창고 대기)" ? { color: dark ? "#94a3b8" : "#94a3b8", fontStyle: "italic" } : { fontWeight: 600 }),
     }),
     ...(flowOn ? [
       // 통합 흐름 열(사용자 정의 2026-11): 점재고(가용) / 입고 예정 = 입고 지시 + 이동중 / 출고 예정 ⊇ 반납 지시(출고 확정 전)
       //   좌측 고정은 점재고(가용)까지만 — 여섯 열을 모두 고정하면 고정 폭이 그리드보다 넓어져 AG Grid 가 앞쪽 열 고정을 자동 해제한다.
       //   나머지 다섯 열은 고정 바로 뒤에 붙어 1,000px 안팎 화면에서도 가로 스크롤 없이 보인다.
-      colNum("점재고", jaegoLabel, "num", { pinned: "left", minWidth: 88, maxWidth: 94, headerTooltip: availOn ? "그 매장에서 지금 쓸 수 있는 재고 = 총 보유 − 할당(반납 지시 등으로 묶인 수량) · 할당이 보유보다 많으면 0 · 옵션·barcode 단위 · 이 탭과 판매·요약·드릴의 점재고가 모두 이 기준" : "그 매장의 점재고(옵션·barcode 단위)" }),
-      colNum("입고예정", "입고예정", "num", { minWidth: 70, maxWidth: 74, headerTooltip: "그 매장으로 올 물량 합계 = 입고 지시 + 이동중 · 점재고 없이 입고 예정만 있으면 신규입고 행", cellStyle: GREEN_CELL }),
-      colNum("입고지시", "입고지시", "num", { minWidth: 70, maxWidth: 74, headerTooltip: "입고가 지시됐지만 아직 센터에서 출고되지 않은 수량(요청 − 센터 출고) · 브랜드 직납은 도착 전 수량", cellStyle: GREEN_CELL }),
-      colNum("이동중", "이동중", "num", { minWidth: 66, maxWidth: 70, headerTooltip: "센터에서 출고됐고 매장 입고확정 전인 수량(센터 출고 − 매장 입고확정) · 브랜드 직납은 도착 후 확정 전 수량", cellStyle: GREEN_CELL }),
-      ...(hasInOrderAt ? [colText("입고지시일", "입고지시일", { minWidth: 92, maxWidth: 96, headerTooltip: "남아 있는 입고(지시·이동중) 문서 중 가장 최근 지시일(KST) · 90일 넘게 묵은 지시는 호박색", cellStyle: DATE_CELL })] : []),
+      colNum("점재고", jaegoLabel, "num", { pinned: "left", minWidth: 60, width: 94, context: { noAutoSize: true }, headerTooltip: availOn ? "그 매장에서 지금 쓸 수 있는 재고 = 총 보유 − 할당(반납 지시 등으로 묶인 수량) · 할당이 보유보다 많으면 0 · 옵션·barcode 단위 · 이 탭과 판매·요약·드릴의 점재고가 모두 이 기준" : "그 매장의 점재고(옵션·barcode 단위)" }),
+      colNum("입고예정", "입고예정", "num", { minWidth: 56, width: 74, context: { noAutoSize: true }, headerTooltip: "그 매장으로 올 물량 합계 = 입고 지시 + 이동중 · 점재고 없이 입고 예정만 있으면 신규입고 행", cellStyle: GREEN_CELL }),
+      colNum("입고지시", "입고지시", "num", { minWidth: 56, width: 74, context: { noAutoSize: true }, headerTooltip: "입고가 지시됐지만 아직 센터에서 출고되지 않은 수량(요청 − 센터 출고) · 브랜드 직납은 도착 전 수량", cellStyle: GREEN_CELL }),
+      colNum("이동중", "이동중", "num", { minWidth: 56, width: 70, context: { noAutoSize: true }, headerTooltip: "센터에서 출고됐고 매장 입고확정 전인 수량(센터 출고 − 매장 입고확정) · 브랜드 직납은 도착 후 확정 전 수량", cellStyle: GREEN_CELL }),
+      ...(hasInOrderAt ? [colText("입고지시일", "입고지시일", { minWidth: 70, width: 96, context: { noAutoSize: true }, headerTooltip: "남아 있는 입고(지시·이동중) 문서 중 가장 최근 지시일(KST) · 90일 넘게 묵은 지시는 호박색", cellStyle: DATE_CELL })] : []),
       // 출고 쪽은 '반출예정' 한 열(사용자 결정 2026-11-14) — 기준은 반납 지시(요청 − 매장 출고).
       //   '요청 − 물류 입고확정'(매장 출고분 포함)은 이미 나간 물량까지 세어 점재고보다 커 보여 쓰지 않는다.
-      colNum("반납지시", "반출예정", "num", { minWidth: 70, maxWidth: 74, headerTooltip: "그 매장에서 나갈 예정인 수량 = 반납·매장간 이동 지시 − 매장 출고 확정 · 아직 매장에 있는 물량(이미 출고된 분은 제외)", cellStyle: RED_CELL }),
-      ...(hasRetAt ? [colText("반출지시일", "반출지시일", { minWidth: 92, maxWidth: 96, headerTooltip: "남아 있는 반납·매장간 이동 지시 중 가장 최근 지시일(KST) · 90일 넘게 묵은 지시는 호박색", cellStyle: DATE_CELL })] : []),
+      colNum("반납지시", "반출예정", "num", { minWidth: 56, width: 74, context: { noAutoSize: true }, headerTooltip: "그 매장에서 나갈 예정인 수량 = 반납·매장간 이동 지시 − 매장 출고 확정 · 아직 매장에 있는 물량(이미 출고된 분은 제외)", cellStyle: RED_CELL }),
+      ...(hasRetAt ? [colText("반출지시일", "반출지시일", { minWidth: 70, width: 96, context: { noAutoSize: true }, headerTooltip: "남아 있는 반납·매장간 이동 지시 중 가장 최근 지시일(KST) · 90일 넘게 묵은 지시는 호박색", cellStyle: DATE_CELL })] : []),
       ...idCols(),                       // 이미지·SKU ID 는 재고 열 뒤로(식별용, 가로 스크롤 영역)
     ] : [
       colNum("점재고", "점재고", "num", { pinned: "left", minWidth: 82, headerTooltip: "그 매장의 점재고(옵션·barcode 단위)" }),
