@@ -61,31 +61,23 @@ goods_no → `goods_nm, brand_nm, reg_date, style_no, normal_price, sale_price`.
 ## 6. MD 한글명 — `load_md_names()` [db.py:310]
 md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerportal.company + bizest.goods), md_id별 최빈값.
 
-## 7. 재고 스냅샷 — `load_inventory()` [db.py:329]
-매장 재고 요약(판매가능/가용 수량). 소스 `team.sales.dsh_d_upt_editorial_stock_summary` **최신 ord_state_date**.
-- 위탁매입: `ord_com_type` '입점(위탁)'→위탁 / '공급(매입)'→매입. 그레인: 위탁매입×매장×shop_type×브랜드×goods_no.
+## 7. 재고 스냅샷 — ~~`load_inventory()`~~  🗑️ **2026-11-14 제거**
+editorial 매장 재고 요약. 통합 원장으로 대체돼 함수째 삭제했다 → **9-1** 참조.
 
 ## 8. 고객/외국인 — `load_customer()` [db.py:360]
 소스 `team.sales.dsh_d_upt_editorial_summary_customer` (`summary_period_unit='daily_total'`).
 - 그레인: 일자×매장×shop_type×성별×연령대×회원여부. 지표: gmv, normal_gmv, foreign_gmv(tax), qty, buyer, foreign_buyer.
 
-## 9. 재고 피벗 — `load_inventory_pivot()` [db.py:395]  (가장 복잡)
-바코드(상품·옵션) × 매장 + 허브 재고 피벗. 전산 정의:
-- **위탁 = MFS**(SCM-HUB), **매입 = 허브1000**(plant1000 창고 `2000·2010·2020·2060`) **+ 허브1700**(plant1700 `2000`) **+ 오프라인 매장재고**.
-- 소스(5종):
-  - 매장재고: `team.sales.dsh_d_upt_editorial_stock_summary`(최신) — barcode별 매장 sellable_qty.
-  - 플랜트1700 매장재고: `ocmp.moss.sap_inventory` ⋈ `ocmp.moss.shop_location`(plant/location→shop_no) ⋈ dim_store.
-  - 허브1000/1700: `team.partner.raw_erp_stock`(최신 dt, store_cd/lgort 필터).
-  - MFS(위탁): `team.commercepm.mfs_stock_daily` ⋈ `team.scm.scm_hub_goods_meta`(sku_id→supplier_barcode).
-  - 허브 메타(이름): `team.scm.scm_hub_goods_meta`.
-- 행 기준 = 매장 ∪ 허브1700 ∪ MFS 바코드(허브1000 단독은 값만 유지, 행 제외).
-- ⚠️ **이름 보강 slim 쿼리([db.py:525])는 아직 `bizest.goods` 600만 행(3컬럼) 전체 조회** — 재고는 미판매 상품도
-  있어 `load_goods_master`의 '판매 goods' 필터를 그대로 못 씀. 현재 4Gi에서 7시 full 102.9초로 OK이나,
-  **향후 최적화 후보**: 재고 바코드의 goods_no 집합으로 서브쿼리 필터.
+## 9. 재고 피벗 — ~~`load_inventory_pivot()`~~  🗑️ **2026-11-14 제거**
+구 5원천(editorial / `ocmp.moss.sap_inventory` / `team.partner.raw_erp_stock` / `team.commercepm.mfs_stock_daily` /
+`team.scm.scm_hub_goods_meta`) 조인 피벗. 통합 원장으로 일원화하면서 **함수·롤백 스위치(`INVENTORY_SOURCE`)까지 삭제**했다 → **9-1**.
+> 재고·이동에서 ERP(SAP)를 뺀 이유: 매입 이동도 SCM-HUB 에 적재돼, ERP 를 함께 더하면 **매입이 이중 집계**된다.
+> (실측 2026-11-14, 최근 30일 SCM-HUB 이동 라인 — 매입 447,054 / 위탁 187,290.)
+> 과거 전표 대사가 필요하면 git 이력에서 꺼내 쓰고, 신규/구 원장 수량 대사는 `tools/recon_stock_store.sql`.
 
 ## 9-1. 통합 원장 재고 피벗 — `load_inventory_pivot_unified()` [db.py]  ⭐2026-11 이행(현재 스냅샷 원천)
 `inventory_pivot` 스냅샷의 **기본 원천**. 출력 계약은 9번과 같고(barcode × 매장 + 창고), 수량 원천만 통합 원장으로 바꿈.
-`store.py` 의 env `INVENTORY_SOURCE=legacy` 로 9번(기존 5원천)으로 되돌릴 수 있다.
+**유일한 재고 피벗 원천**이다 — 2026-11-14 에 9번(기존 5원천)과 `INVENTORY_SOURCE` 롤백 스위치를 제거했다(되돌리려면 git revert).
 - **수량**: `team.scm.stock_detail`(매입+위탁, 매시) — 매장 = `namespace='STORE'`, `root_node_id`==shop_no → dim_store.
   센터 = `namespace='FC'`(20곳) 합 → **`물류 재고`** 1열(기존 MFS/허브1000/허브1700 대체). `허브합계` = `물류 재고`(키 호환).
   **매장 수량 = 가용**(`db.STORE_QTY_BASIS="available"`): 총 보유 − 할당(원장 `remaining_quantity`), 할당이 보유보다 많으면 0,
@@ -100,7 +92,7 @@ md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerp
   editorial 에 없는 바코드만 SKU 매핑 대표 uid + 상품마스터로 보강.
 - SKU 매핑(`team.scm.mst_sku_mapping_uid_option_code`) 대표 플래그는 `platform='MUSINSA' AND is_rep_uid_option_code_musinsa`(2026-11-12 열 이름 변경, SKU당 1행). 옛 `is_rep_uid_musinsa` 는 없음.
 - 쿼리 2개(수량 long 3열 / 바코드 메타 — 상품마스터 조인은 서버에서, 수량 0 행 미수신) + 보정 4개 + 기준시각 1개. `bizest.goods` 전량 수신·raw_erp·mfs·goods_meta·sap_inventory 스캔 없음. `inventory_store_long` 은 수량 ≠ 0 조합만 싣는다.
-- 위탁 실시간 오버레이(`fetch_scm_store_stock`, `scm_hub_inventory_status_v`)는 원장이 대체 → 재고 REFRESH 는 이 피벗 3종 + `store_moves`.
+- 위탁 실시간 오버레이(`fetch_scm_store_stock`, `scm_hub_inventory_status_v`)는 원장이 대체 → **2026-11-14 제거**. 재고 REFRESH 는 이 피벗 3종 + `store_moves`.
 - 대사: `python tools/dbx.py tools/recon_stock_store.sql` (레거시 editorial ↔ 신규 원장, 매장×사업구분).
 - 경량 롱포맷(거점×goods_no, 1쿼리)이 필요하면 `fetch_stock_long()`.
 
@@ -118,8 +110,9 @@ md_id → 한글명. 소스 3곳 UNION(editorial_stock_summary 최신 + partnerp
 - 미결 문서 = 상태 `CREATED`/`PENDING`/`PARTIALLY_SHIPPED`. `CANCELED`·`FAILED` 제외. 오래 묵은 미결도 그대로 포함.
 - 정의·검증 쿼리는 스킬 `musinsa-stock-flow-status` 참조.
 
-## 10. 파생(쿼리 없음, pandas) — `load_inventory_goods()` [db.py:559] / `load_inventory_store_long()` [db.py:573]
-피벗을 goods_no 단위 합산 / (goods_no×매장) 롱포맷으로 변환. Databricks 재조회 없음.
+## 10. 파생(쿼리 없음, pandas) — `load_inventory_goods_unified()` / `load_inventory_store_long_unified()` [db.py]
+9-1 피벗을 goods_no 단위 합산 / (goods_no×매장) 롱포맷으로 변환. Databricks 재조회 없음.
+(구 `load_inventory_goods` / `load_inventory_store_long` 은 9번과 함께 제거.)
 
 ---
 
