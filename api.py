@@ -1579,6 +1579,32 @@ def sales_brands_csv(f: dict = Depends(get_filters),
         raise HTTPException(status_code=500, detail=f"브랜드 CSV 오류: {type(e).__name__}: {e}")
 
 
+@app.get("/api/sales/stores.csv")
+def sales_stores_csv(f: dict = Depends(get_filters),
+                     _: str = Depends(require_user), __: None = Depends(require_ready)):
+    """매장별 GMV CSV — **일자(YYYY-MM-DD) × 매장** 단위. 사이드바 필터(기간·매장·브랜드·카테·사업구분·MD·UID) 반영.
+       열 = 일자·매장·매장타입·순판매수량·GMV·외국인GMV·내국인GMV·정상가매출·실결제·할인율%."""
+    import io, csv
+    where, params = build_where(f)
+    df = store.query(f"""
+        SELECT strftime(sales_date, '%Y-%m-%d') AS d, store_name, any_value(shop_type) shop_type,
+               CAST(sum(qty) AS DOUBLE) qty, CAST(sum(gmv) AS DOUBLE) gmv,
+               CAST(sum(foreign_gmv) AS DOUBLE) foreign_gmv,
+               CAST(sum(normal_amt) AS DOUBLE) normal_amt, CAST(sum(pay) AS DOUBLE) pay
+        FROM sales{where} GROUP BY 1, 2 HAVING sum(qty) <> 0 OR sum(gmv) <> 0
+        ORDER BY store_name, d""", params)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["일자", "매장", "매장타입", "순판매수량", "GMV", "외국인GMV", "내국인GMV",
+                "정상가매출", "실결제", "할인율%"])
+    for r in df.itertuples():
+        gmv, normal, fgn = _num(r.gmv), _num(r.normal_amt), _num(r.foreign_gmv)
+        w.writerow([r.d, r.store_name, r.shop_type, int(_num(r.qty)), int(gmv), int(fgn), int(gmv - fgn),
+                    int(normal), int(_num(r.pay)), round((1 - gmv / normal) * 100, 1) if normal else 0])
+    data = ("﻿" + buf.getvalue()).encode("utf-8")
+    return _csv_response(data, "offline_sales_by_date_store.csv")
+
+
 @app.get("/api/pnl")
 def pnl(mode: str = "month", period: str | None = None, level: str = "store",
         date_from: str | None = None, date_to: str | None = None,

@@ -346,6 +346,17 @@ async function brandStoreCsv(qs: string) {
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "offline_sales_by_brand_store.csv"; a.click(); URL.revokeObjectURL(a.href);
 }
 
+async function storeCsv(qs: string) {
+  // 매장별 GMV CSV — 일자별(YYYY-MM-DD) × 매장. 백엔드 생성.
+  const r = await fetch("/api/sales/stores.csv" + qs, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (!r.ok) {
+    let detail = ""; try { detail = (await r.json()).detail || ""; } catch { /* non-json */ }
+    alert("CSV 실패 (" + r.status + ")" + (detail ? "\n" + detail : "")); return;
+  }
+  const blob = await r.blob();
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "offline_sales_by_date_store.csv"; a.click(); URL.revokeObjectURL(a.href);
+}
+
 async function goodsCsv(qs: string) {
   const r = await fetch("/api/sales/goods.csv" + qs, { headers: { Authorization: `Bearer ${getToken()}` } });
   if (!r.ok) {
@@ -585,7 +596,14 @@ export default function Dashboard({ meta, dark, filters, onPick }: { meta: Meta;
       </p>
 
       {/* ── 매장 (최상단) ── */}
-      <SegBar title="매장별 GMV" sub="내국인 / 외국인(면세) · 막대 끝 = GMV / 판매수량" rows={byStore} height={430} C={C} pickKey="store" onPick={onPick} active={f.store} showQty right={<SectionStat cur={cur} byBiz={byBiz} />} />
+      <SegBar title="매장별 GMV" sub="내국인 / 외국인(면세) · 막대 끝 = GMV / 판매수량" rows={byStore} height={430} C={C} pickKey="store" onPick={onPick} active={f.store} showQty right={
+        <div className="flex items-center gap-3">
+          <button onClick={() => storeCsv(qs)} className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700">
+            <Download size={14} /> CSV (일자별)
+          </button>
+          <SectionStat cur={cur} byBiz={byBiz} />
+        </div>
+      } />
 
       {/* ── 브랜드 ── */}
       <SegBar title="브랜드 GMV Top 30" sub="내국인 / 외국인(면세) · 막대 끝 = GMV / 판매수량 (전체 매출 비중)" rows={byBrand} height={620} C={C} pickKey="brand" onPick={onPick} active={f.brand} showShare showQty right={<SectionStat cur={cur} byBiz={byBiz} />} />
